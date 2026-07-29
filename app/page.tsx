@@ -1,304 +1,149 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type Category = "全部" | "产品研发" | "组织人事" | "销售市场" | "财务法务";
-
-type KnowledgeItem = {
-  id: number;
-  title: string;
-  excerpt: string;
-  category: Exclude<Category, "全部">;
-  owner: string;
-  updated: string;
-  views: string;
-  tag: string;
-  readTime: string;
-  status: "已发布" | "待复核";
+type View = "library" | "admin" | "favorites" | "audit";
+type DocumentStatus = "draft" | "review" | "published" | "rejected" | "archived";
+type KnowledgeDocument = {
+  id: number; title: string; summary: string; content: string; category: string; tags: string;
+  status: DocumentStatus; securityLevel: string; owner: string; uploader: string;
+  sourceName?: string | null; mimeType?: string | null; size?: number; version: number;
+  reviewDueAt?: string | null; createdAt: string; updatedAt: string;
 };
+type AuditLog = { id: number; documentId?: number | null; action: string; actor: string; detail: string; createdAt: string };
 
-const categories: { name: Category; count: number; icon: string }[] = [
-  { name: "全部", count: 328, icon: "⌂" },
-  { name: "产品研发", count: 86, icon: "◇" },
-  { name: "组织人事", count: 64, icon: "◎" },
-  { name: "销售市场", count: 103, icon: "↗" },
-  { name: "财务法务", count: 75, icon: "▤" },
+const fallbackDocuments: KnowledgeDocument[] = [
+  { id: 1, title: "新员工入职指南", summary: "从账号开通、办公环境到团队融入，一份完整的新员工上手手册。", content: "欢迎加入知域。本指南覆盖入职第一周需要完成的账号开通、设备领取、安全培训、导师沟通和团队融入事项。\n\n第一天：完成工牌、邮箱、即时通讯与代码仓库账号开通。\n第一周：完成信息安全培训，与直属主管确认试用期目标。", category: "组织人事", tags: "入职,新员工", status: "published", securityLevel: "内部公开", owner: "People 团队", uploader: "林晓", sourceName: "新员工入职指南.pdf", mimeType: "application/pdf", size: 2457600, version: 3, reviewDueAt: "2027-01-15", createdAt: "2026-03-18", updatedAt: "2026-07-28" },
+  { id: 2, title: "产品需求评审规范", summary: "明确 PRD 准入标准、评审角色、决策记录与变更管理流程。", content: "所有产品需求在进入研发排期前，必须完成业务价值、用户影响、技术可行性、数据口径和风险评审。评审结论分为通过、有条件通过和驳回。", category: "产品研发", tags: "PRD,评审,核心流程", status: "published", securityLevel: "内部公开", owner: "产品委员会", uploader: "周屿", sourceName: "产品需求评审规范.docx", mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", size: 866304, version: 5, reviewDueAt: "2026-12-20", createdAt: "2025-11-02", updatedAt: "2026-07-25" },
+  { id: 3, title: "客户数据安全与分级标准", summary: "客户信息采集、存储、使用、共享与销毁的全生命周期要求。", content: "客户数据按照公开、内部、敏感、核心四级管理。任何下载、外发和复制行为均需符合最小权限原则，并进入安全审计。", category: "财务法务", tags: "安全,合规", status: "review", securityLevel: "敏感", owner: "安全合规部", uploader: "陈默", sourceName: "客户数据分级标准.pdf", mimeType: "application/pdf", size: 1572864, version: 2, reviewDueAt: "2026-08-15", createdAt: "2026-01-11", updatedAt: "2026-07-23" },
+  { id: 4, title: "差旅及费用报销制度", summary: "差旅申请、费用标准、票据要求与报销时限说明。", content: "出差前需完成差旅申请。返程后 10 个工作日内提交报销，发票抬头与税号必须准确。超标准费用需附业务负责人审批记录。", category: "财务法务", tags: "报销,差旅,制度", status: "published", securityLevel: "内部公开", owner: "财务共享中心", uploader: "苏晴", sourceName: "费用报销制度.pdf", mimeType: "application/pdf", size: 1048576, version: 4, reviewDueAt: "2027-02-01", createdAt: "2025-09-16", updatedAt: "2026-07-20" },
+  { id: 5, title: "品牌视觉使用手册", summary: "统一品牌标识、色彩、字体及对外传播素材的使用方式。", content: "所有对外材料应使用标准品牌标识和指定色彩。不得拉伸、描边或改变标识比例。", category: "销售市场", tags: "品牌,视觉", status: "published", securityLevel: "内部公开", owner: "品牌中心", uploader: "唐颖", sourceName: "品牌视觉手册.pdf", mimeType: "application/pdf", size: 5242880, version: 6, reviewDueAt: "2027-03-10", createdAt: "2025-06-01", updatedAt: "2026-07-18" },
 ];
+const fallbackLogs: AuditLog[] = [
+  { id: 1, documentId: 3, action: "SUBMIT_REVIEW", actor: "陈默", detail: "提交《客户数据安全与分级标准》复核", createdAt: "2026-07-29 09:32" },
+  { id: 2, documentId: 2, action: "UPDATE", actor: "周屿", detail: "更新产品评审角色与 SLA", createdAt: "2026-07-28 16:08" },
+  { id: 3, documentId: 4, action: "DOWNLOAD", actor: "李然", detail: "下载《差旅及费用报销制度》", createdAt: "2026-07-28 14:21" },
+];
+const categories = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
+const statusLabel: Record<DocumentStatus, string> = { draft: "草稿", review: "待审核", published: "已发布", rejected: "已驳回", archived: "已归档" };
 
-const knowledge: KnowledgeItem[] = [
-  {
-    id: 1,
-    title: "新员工入职指南",
-    excerpt: "从账号开通、办公环境到团队融入，一份完整的新员工上手手册。",
-    category: "组织人事",
-    owner: "People 团队",
-    updated: "2 天前",
-    views: "2.4k",
-    tag: "新手必读",
-    readTime: "8 分钟",
-    status: "已发布",
-  },
-  {
-    id: 2,
-    title: "产品需求评审规范",
-    excerpt: "明确 PRD 准入标准、评审角色、决策记录与变更管理流程。",
-    category: "产品研发",
-    owner: "产品委员会",
-    updated: "5 天前",
-    views: "1.8k",
-    tag: "核心流程",
-    readTime: "12 分钟",
-    status: "已发布",
-  },
-  {
-    id: 3,
-    title: "客户数据安全与分级标准",
-    excerpt: "客户信息采集、存储、使用、共享与销毁的全生命周期要求。",
-    category: "财务法务",
-    owner: "安全合规部",
-    updated: "1 周前",
-    views: "1.2k",
-    tag: "合规",
-    readTime: "15 分钟",
-    status: "待复核",
-  },
-  {
-    id: 4,
-    title: "品牌视觉使用手册",
-    excerpt: "统一品牌标识、色彩、字体及对外传播素材的使用方式。",
-    category: "销售市场",
-    owner: "品牌中心",
-    updated: "8 天前",
-    views: "986",
-    tag: "品牌资产",
-    readTime: "10 分钟",
-    status: "已发布",
-  },
-];
-
-const quickLinks = [
-  { icon: "▱", title: "请假与考勤", meta: "制度 · 6 篇" },
-  { icon: "⌘", title: "IT 服务台", meta: "指南 · 12 篇" },
-  { icon: "◫", title: "费用报销", meta: "流程 · 8 篇" },
-  { icon: "◉", title: "信息安全", meta: "规范 · 15 篇" },
-];
+function fmtSize(size = 0) { return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "在线文档"; }
+function downloadBlob(name: string, body: string, type: string) {
+  const url = URL.createObjectURL(new Blob([body], { type }));
+  const link = document.createElement("a"); link.href = url; link.download = name; link.click(); URL.revokeObjectURL(url);
+}
 
 export default function Home() {
-  const [category, setCategory] = useState<Category>("全部");
+  const [view, setView] = useState<View>("library");
+  const [documents, setDocuments] = useState<KnowledgeDocument[]>(fallbackDocuments);
+  const [logs, setLogs] = useState<AuditLog[]>(fallbackLogs);
   const [query, setQuery] = useState("");
-  const [showAi, setShowAi] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [category, setCategory] = useState("全部");
+  const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
+  const [favorites, setFavorites] = useState<number[]>([]);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [toast, setToast] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const filtered = useMemo(() => {
-    const keyword = query.trim().toLowerCase();
-    return knowledge.filter((item) => {
-      const categoryMatch = category === "全部" || item.category === category;
-      const searchMatch =
-        !keyword ||
-        `${item.title}${item.excerpt}${item.category}${item.owner}`
-          .toLowerCase()
-          .includes(keyword);
-      return categoryMatch && searchMatch;
-    });
-  }, [category, query]);
+  useEffect(() => {
+    fetch("/api/documents").then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
+      if (data.documents?.length) setDocuments(data.documents);
+      if (data.logs?.length) setLogs(data.logs);
+    }).catch(() => undefined);
+  }, []);
 
-  function triggerNotice(message: string) {
-    setNotice(message);
-    window.setTimeout(() => setNotice(""), 2400);
+  const published = documents.filter((item) => item.status === "published" || item.status === "review");
+  const filtered = useMemo(() => published.filter((item) => {
+    const text = `${item.title}${item.summary}${item.content}${item.tags}${item.owner}${item.uploader}`.toLowerCase();
+    return (category === "全部" || item.category === category) && (!query.trim() || text.includes(query.trim().toLowerCase()));
+  }), [published, category, query]);
+  const visible = view === "favorites" ? filtered.filter((item) => favorites.includes(item.id)) : filtered;
+
+  function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2300); }
+  function toggleFavorite(id: number) { setFavorites((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
+  async function audit(documentId: number, action: string, detail: string) {
+    setLogs((current) => [{ id: Date.now(), documentId, action, actor: "李然", detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
+  }
+  async function updateStatus(id: number, action: "approve" | "reject" | "archive") {
+    const next = action === "approve" ? "published" : action === "reject" ? "rejected" : "archived";
+    setDocuments((current) => current.map((item) => item.id === id ? { ...item, status: next, updatedAt: new Date().toISOString() } : item));
+    try { await fetch("/api/documents", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action }) }); } catch { /* UI remains usable in local demo mode */ }
+    await audit(id, action.toUpperCase(), `文档状态更新为${statusLabel[next]}`); notify(`已${action === "approve" ? "通过并发布" : action === "reject" ? "驳回" : "归档"}`);
+  }
+  async function submitUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault(); setLoading(true);
+    const form = event.currentTarget; const data = new FormData(form);
+    try {
+      const response = await fetch("/api/documents", { method: "POST", body: data });
+      if (!response.ok) throw new Error();
+      const result = await response.json(); setDocuments((current) => [result.document, ...current]);
+    } catch {
+      const file = data.get("file") as File | null;
+      const demo: KnowledgeDocument = { id: Date.now(), title: String(data.get("title")), summary: String(data.get("summary")), content: String(data.get("content")), category: String(data.get("category")), tags: String(data.get("tags")), status: String(data.get("status")) as DocumentStatus, securityLevel: String(data.get("securityLevel")), owner: String(data.get("owner")), uploader: "当前维护人", sourceName: file?.name, mimeType: file?.type, size: file?.size, version: 1, reviewDueAt: String(data.get("reviewDueAt")), createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+      setDocuments((current) => [demo, ...current]);
+    }
+    setLoading(false); setUploadOpen(false); form.reset(); notify("资料已上传，处理记录已生成");
   }
 
-  return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#" aria-label="知域知识库首页">
-          <span className="brand-mark">Z</span>
-          <span>知域</span>
-        </a>
-        <nav className="main-nav" aria-label="主导航">
-          <a className="active" href="#">知识广场</a>
-          <a href="#favorites">我的收藏</a>
-          <a href="#workspace">团队空间</a>
-        </nav>
-        <div className="header-actions">
-          <button className="icon-button" aria-label="查看通知" onClick={() => triggerNotice("你有 3 条待处理通知")}>
-            ♢<span className="notification-dot" />
-          </button>
-          <button className="avatar" aria-label="打开个人菜单">L</button>
-        </div>
+  return <div className="enterprise-app">
+    <aside className="sidebar">
+      <button className="brand side-brand" onClick={() => setView("library")}><span className="brand-mark">Z</span><span>知域<small>企业知识中台</small></span></button>
+      <nav className="side-nav" aria-label="功能导航">
+        <span>知识服务</span>
+        <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><i>⌂</i>知识广场</button>
+        <button className={view === "favorites" ? "active" : ""} onClick={() => setView("favorites")}><i>☆</i>我的收藏 <em>{favorites.length}</em></button>
+        <span>知识治理</span>
+        <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><i>▦</i>维护工作台</button>
+        <button className={view === "audit" ? "active" : ""} onClick={() => setView("audit")}><i>≡</i>审计日志</button>
+      </nav>
+      <div className="user-card"><span>L</span><div><b>李然</b><small>知识维护人</small></div><i>•••</i></div>
+    </aside>
+
+    <div className="app-main">
+      <header className="app-header">
+        <div className="global-search"><span>⌕</span><input aria-label="全局搜索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索标题、正文、标签、负责人..." /><kbd>⌘ K</kbd></div>
+        <button className="header-icon" onClick={() => notify("3 条待办：1 条审核、2 条即将到期")}>♢<i /></button>
+        <button className="primary-action" onClick={() => setUploadOpen(true)}>＋ 上传资料</button>
       </header>
 
-      <main>
-        <section className="hero">
-          <div className="hero-glow hero-glow-one" />
-          <div className="hero-glow hero-glow-two" />
-          <div className="hero-content">
-            <span className="eyebrow"><i /> 让知识流动起来</span>
-            <h1>每一次查找，都离答案更近一步</h1>
-            <p>沉淀团队经验，连接组织智慧。这里有你工作所需的一切知识。</p>
-            <div className="search-wrap">
-              <span aria-hidden="true">⌕</span>
-              <input
-                aria-label="搜索知识库"
-                placeholder="搜索知识、文档或问题..."
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") triggerNotice(`已找到 ${filtered.length} 条相关内容`);
-                }}
-              />
-              <kbd>⌘ K</kbd>
-              <button onClick={() => triggerNotice(`已找到 ${filtered.length} 条相关内容`)}>搜索</button>
-            </div>
-            <div className="hot-search">
-              <span>热门搜索</span>
-              {["入职流程", "报销制度", "产品规范", "客户案例"].map((term) => (
-                <button key={term} onClick={() => setQuery(term)}>{term}</button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="content-section" aria-labelledby="category-title">
-          <div className="section-heading">
-            <div>
-              <span className="section-kicker">EXPLORE</span>
-              <h2 id="category-title">探索知识分类</h2>
-            </div>
-            <button className="text-button" onClick={() => setCategory("全部")}>查看全部 <span>→</span></button>
-          </div>
-          <div className="category-grid">
-            {categories.slice(1).map((item, index) => (
-              <button
-                className={`category-card tone-${index + 1} ${category === item.name ? "selected" : ""}`}
-                key={item.name}
-                onClick={() => setCategory(item.name)}
-              >
-                <span className="category-icon">{item.icon}</span>
-                <span className="category-copy">
-                  <strong>{item.name}</strong>
-                  <small>{item.count} 篇知识</small>
-                </span>
-                <span className="card-arrow">↗</span>
-              </button>
-            ))}
-          </div>
-        </section>
-
-        <section className="content-section knowledge-section">
-          <div className="section-heading">
-            <div>
-              <span className="section-kicker">FEATURED</span>
-              <h2>精选知识</h2>
-            </div>
-            <div className="tabs" role="tablist" aria-label="知识筛选">
-              {categories.map((item) => (
-                <button
-                  role="tab"
-                  aria-selected={category === item.name}
-                  className={category === item.name ? "active" : ""}
-                  key={item.name}
-                  onClick={() => setCategory(item.name)}
-                >
-                  {item.name}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {filtered.length ? (
-            <div className="knowledge-grid">
-              {filtered.map((item) => (
-                <article className="knowledge-card" key={item.id}>
-                  <div className="card-topline">
-                    <span className="label">{item.tag}</span>
-                    <span className={`status ${item.status === "待复核" ? "review" : ""}`}>{item.status}</span>
-                  </div>
-                  <h3>{item.title}</h3>
-                  <p>{item.excerpt}</p>
-                  <div className="document-meta">
-                    <span>{item.category}</span><i />
-                    <span>{item.readTime}</span><i />
-                    <span>浏览 {item.views}</span>
-                  </div>
-                  <div className="owner-row">
-                    <span className="mini-avatar">{item.owner.slice(0, 1)}</span>
-                    <span><b>{item.owner}</b><small>更新于 {item.updated}</small></span>
-                    <button aria-label={`打开${item.title}`} onClick={() => triggerNotice(`正在打开「${item.title}」`)}>→</button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state">
-              <span>⌕</span>
-              <h3>没有找到相关知识</h3>
-              <p>换个关键词，或清除筛选后再试试。</p>
-              <button onClick={() => { setQuery(""); setCategory("全部"); }}>清除筛选</button>
-            </div>
-          )}
-        </section>
-
-        <section className="quick-section">
-          <div className="quick-inner">
-            <div className="section-heading">
-              <div>
-                <span className="section-kicker">QUICK ACCESS</span>
-                <h2>常用入口</h2>
-              </div>
-              <span className="subtle-copy">高频制度与服务，一步直达</span>
-            </div>
-            <div className="quick-grid">
-              {quickLinks.map((item) => (
-                <button key={item.title} onClick={() => triggerNotice(`已进入${item.title}`)}>
-                  <span>{item.icon}</span>
-                  <span><b>{item.title}</b><small>{item.meta}</small></span>
-                  <i>→</i>
-                </button>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        <section className="workflow-section" id="workspace">
-          <div className="workflow-copy">
-            <span className="section-kicker">KNOWLEDGE LIFECYCLE</span>
-            <h2>从经验，到组织资产</h2>
-            <p>清晰的责任人与治理机制，让每一份知识都可信、可追溯、持续更新。</p>
-          </div>
-          <ol className="workflow">
-            <li><span>01</span><b>创建草稿</b><small>模板化沉淀经验</small></li>
-            <li><span>02</span><b>协作评审</b><small>专家校验与留痕</small></li>
-            <li><span>03</span><b>审批发布</b><small>权限与版本生效</small></li>
-            <li><span>04</span><b>复核迭代</b><small>反馈驱动持续更新</small></li>
-          </ol>
-        </section>
-      </main>
-
-      <button className="ai-fab" onClick={() => setShowAi(true)} aria-label="打开智能问答">
-        <span>✦</span>
-        <span><b>问问小知</b><small>AI 智能问答</small></span>
-      </button>
-
-      {showAi && (
-        <div className="modal-backdrop" onMouseDown={() => setShowAi(false)}>
-          <section className="ai-panel" role="dialog" aria-modal="true" aria-labelledby="ai-title" onMouseDown={(event) => event.stopPropagation()}>
-            <button className="close-button" onClick={() => setShowAi(false)} aria-label="关闭">×</button>
-            <span className="ai-orb">✦</span>
-            <h2 id="ai-title">你好，我是小知</h2>
-            <p>我会基于已授权的企业知识回答，并标注引用来源。</p>
-            <div className="suggestions">
-              <button onClick={() => setQuery("入职流程")}>新员工第一周要做什么？</button>
-              <button onClick={() => setQuery("报销制度")}>差旅费用怎么报销？</button>
-            </div>
-            <div className="ai-input">
-              <input aria-label="向小知提问" placeholder="输入你的问题..." />
-              <button onClick={() => triggerNotice("演示模式：回答将引用企业内部知识")}>发送</button>
-            </div>
-          </section>
-        </div>
-      )}
-
-      {notice && <div className="toast" role="status">{notice}</div>}
+      {view === "admin" ? <AdminView documents={documents} onUpload={() => setUploadOpen(true)} onSelect={setSelected} onStatus={updateStatus} />
+      : view === "audit" ? <AuditView logs={logs} documents={documents} />
+      : <LibraryView documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { setSelected(doc); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
     </div>
-  );
+
+    {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}`, { method: "PUT" }); if (!response.ok) throw new Error(); const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); } catch { downloadBlob(selected.sourceName ?? `${selected.title}.txt`, selected.content, "text/plain;charset=utf-8"); } audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("下载任务已开始"); }} />}
+
+    {uploadOpen && <UploadModal loading={loading} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
+    {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try { await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) }); } catch { /* demo fallback */ } audit(selected.id, "FEEDBACK", content); setFeedbackOpen(false); notify("反馈已提交给知识负责人"); }} />}
+    <button className="ai-fab" onClick={() => setAiOpen(true)}><span>✦</span><span><b>问问小知</b><small>回答会标注知识来源</small></span></button>
+    {aiOpen && <AiPanel documents={published} onClose={() => setAiOpen(false)} onOpen={(doc) => { setSelected(doc); setAiOpen(false); }} />}
+    {toast && <div className="toast" role="status">✓ {toast}</div>}
+  </div>;
 }
+
+function LibraryView({ documents, allCount, query, category, setCategory, setQuery, favorites, toggleFavorite, onSelect, favoriteMode }: { documents: KnowledgeDocument[]; allCount: number; query: string; category: string; setCategory: (v: string) => void; setQuery: (v: string) => void; favorites: number[]; toggleFavorite: (id: number) => void; onSelect: (doc: KnowledgeDocument) => void; favoriteMode: boolean }) {
+  return <main className="workspace">
+    <section className="welcome"><div><span className="page-kicker">KNOWLEDGE HUB</span><h1>{favoriteMode ? "我的收藏" : "下午好，李然"}</h1><p>{favoriteMode ? "集中查看你持续关注的知识资产。" : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}</p></div><div className="governance-chip"><span>知识健康度</span><b>92<small>%</small></b><i>较上月 +3.2%</i></div></section>
+    {!favoriteMode && <section className="hero-search"><span>⌕</span><div><small>在企业知识中寻找答案</small><input aria-label="知识检索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：差旅报销需要哪些材料？" /></div><button>搜索</button></section>}
+    <section className="library-section"><div className="section-title"><div><span className="page-kicker">CURATED KNOWLEDGE</span><h2>{favoriteMode ? "已收藏知识" : "知识目录"}</h2></div><div className="filter-tabs" role="tablist">{categories.map((item) => <button role="tab" aria-selected={category === item} className={category === item ? "active" : ""} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div></div>
+      {documents.length ? <div className="doc-grid">{documents.map((doc) => <article className="doc-card" key={doc.id}><div className="doc-card-head"><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><button aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`} onClick={() => toggleFavorite(doc.id)}>{favorites.includes(doc.id) ? "★" : "☆"}</button></div><button className="doc-main" onClick={() => onSelect(doc)}><span className="file-tile">{doc.mimeType?.includes("pdf") ? "PDF" : doc.mimeType?.includes("word") ? "DOC" : "DOC"}</span><h3>{doc.title}</h3><p>{doc.summary}</p></button><div className="tag-row">{doc.tags.split(",").filter(Boolean).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="doc-foot"><span className="mini-avatar">{doc.owner.slice(0, 1)}</span><div><b>{doc.owner}</b><small>{doc.uploader} 上传 · V{doc.version}.0</small></div><span>{doc.category}</span></div></article>)}</div>
+      : <div className="empty-state"><b>⌕</b><h3>没有匹配的知识</h3><p>尝试搜索“报销”“入职”或清除筛选。</p><button onClick={() => { setQuery(""); setCategory("全部"); }}>清除筛选</button></div>}</section>
+  </main>;
+}
+
+function AdminView({ documents, onUpload, onSelect, onStatus }: { documents: KnowledgeDocument[]; onUpload: () => void; onSelect: (d: KnowledgeDocument) => void; onStatus: (id: number, action: "approve" | "reject" | "archive") => void }) {
+  const cards = [{ label: "知识总量", value: documents.length, hint: "本月 +12" }, { label: "待审核", value: documents.filter(d => d.status === "review").length, hint: "需及时处理" }, { label: "即将复核", value: 7, hint: "未来 30 天" }, { label: "本月浏览", value: "18.6k", hint: "同比 +8.4%" }];
+  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">GOVERNANCE CONSOLE</span><h1>知识维护工作台</h1><p>管理资料入库、审核发布、版本与生命周期。</p></div><button className="primary-action" onClick={onUpload}>＋ 上传新资料</button></section><div className="metric-grid">{cards.map(card => <div key={card.label}><span>{card.label}</span><b>{card.value}</b><small>{card.hint}</small></div>)}</div><section className="table-card"><div className="table-title"><div><h2>资料与审批记录</h2><p>所有上传记录均保留操作者、来源和当前状态</p></div><button>筛选 ▾</button></div><div className="data-table"><div className="data-row table-head"><span>资料名称</span><span>分类 / 密级</span><span>上传人与负责人</span><span>版本 / 复核日</span><span>状态</span><span>操作</span></div>{documents.map(doc => <div className="data-row" key={doc.id}><button className="table-document" onClick={() => onSelect(doc)}><span>{doc.mimeType?.includes("pdf") ? "P" : "W"}</span><div><b>{doc.title}</b><small>{doc.sourceName ?? "在线文档"} · {fmtSize(doc.size)}</small></div></button><span><b>{doc.category}</b><small>{doc.securityLevel}</small></span><span><b>{doc.uploader}</b><small>负责人：{doc.owner}</small></span><span><b>V{doc.version}.0</b><small>{doc.reviewDueAt || "未设置"}</small></span><span><i className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</i></span><span className="row-actions">{doc.status === "review" ? <><button onClick={() => onStatus(doc.id, "approve")}>通过</button><button onClick={() => onStatus(doc.id, "reject")}>驳回</button></> : <button onClick={() => onSelect(doc)}>查看</button>}</span></div>)}</div></section></main>;
+}
+
+function AuditView({ logs, documents }: { logs: AuditLog[]; documents: KnowledgeDocument[] }) { const action: Record<string, string> = { VIEW: "查看", DOWNLOAD: "下载", EXPORT: "导出", FEEDBACK: "提交反馈", UPDATE: "更新", UPLOAD: "上传", APPROVE: "审批通过", REJECT: "驳回", SUBMIT_REVIEW: "提交复核" }; return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">AUDIT TRAIL</span><h1>审计日志</h1><p>追踪资料从上传到消费的全部关键操作。</p></div><button className="outline-action" onClick={() => downloadBlob("知识库审计日志.csv", `时间,操作者,操作,详情\n${logs.map(l => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`, "text/csv;charset=utf-8")}>导出 CSV</button></section><section className="audit-card">{logs.map(log => <div className="audit-item" key={log.id}><span className="audit-icon">{log.action === "DOWNLOAD" ? "↓" : log.action === "VIEW" ? "◉" : "✓"}</span><div><b>{log.actor} · {action[log.action] ?? log.action}</b><p>{log.detail || documents.find(d => d.id === log.documentId)?.title}</p></div><time>{log.createdAt}</time></div>)}</section></main>; }
+
+function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void }) { return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button onClick={onClose}>×</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary}</p></header><div className="drawer-actions"><button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onDownload}>↓ 下载原件</button><button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div><section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>上传人</span><b>{doc.uploader}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div><div><span>下次复核</span><b>{doc.reviewDueAt || "未设置"}</b></div></section><article className="doc-content"><h3>文档正文</h3>{doc.content.split("\n").map((p, i) => <p key={i}>{p}</p>)}</article><section className="version-list"><h3>版本记录</h3><div><span>V{doc.version}.0</span><p><b>当前版本</b><small>{doc.uploader} 更新 · {doc.updatedAt.slice(0, 10)}</small></p></div><div><span>V{Math.max(1, doc.version - 1)}.0</span><p><b>历史版本</b><small>完成内容复核与格式修订</small></p></div></section></aside></div>; }
+
+function UploadModal({ loading, onSubmit, onClose }: { loading: boolean; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) { return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>系统将生成上传记录、初始版本和审计日志。</p></div><button type="button" onClick={onClose}>×</button></header><label className="file-drop"><input name="file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt"/><span>⇧</span><b>点击选择或拖入文件</b><small>支持 PDF、Word、Excel、PPT、TXT，单文件不超过 50 MB</small></label><div className="form-grid"><label><span>资料标题 *</span><input name="title" required placeholder="例如：2026 差旅管理制度" /></label><label><span>知识分类 *</span><select name="category" required defaultValue=""><option value="" disabled>请选择分类</option>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label><label><span>知识负责人 *</span><input name="owner" required placeholder="姓名或团队" /></label><label><span>安全密级</span><select name="securityLevel"><option>内部公开</option><option>部门可见</option><option>敏感</option><option>核心机密</option></select></label><label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label><label><span>下次复核日</span><input name="reviewDueAt" type="date" /></label><label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label><label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label></div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交审核</label></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary-action" disabled={loading}>{loading ? "正在处理..." : "上传并生成记录"}</button></footer></form></div>; }
+
+function FeedbackModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (v: string) => void }) { const [value, setValue] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><div className="feedback-modal" onMouseDown={e => e.stopPropagation()}><h2>提交纠错反馈</h2><p>反馈将自动关联当前文档与版本，并通知知识负责人。</p><textarea aria-label="反馈内容" value={value} onChange={e => setValue(e.target.value)} rows={5} placeholder="请描述错误、过期内容或补充建议..."/><div><button onClick={onClose}>取消</button><button className="primary-action" disabled={!value.trim()} onClick={() => onSubmit(value)}>提交反馈</button></div></div></div>; }
+
+function AiPanel({ documents, onClose, onOpen }: { documents: KnowledgeDocument[]; onClose: () => void; onOpen: (d: KnowledgeDocument) => void }) { const [question, setQuestion] = useState(""); const [answer, setAnswer] = useState<{ text: string; source: KnowledgeDocument } | null>(null); function ask() { const source = documents.find(d => `${d.title}${d.tags}${d.content}`.includes(question.includes("报销") ? "报销" : question.includes("入职") ? "入职" : "产品")) ?? documents[0]; setAnswer({ text: source.content.split("。")[0] + "。具体执行时请以引用的最新版本为准。", source }); } return <div className="modal-backdrop" onMouseDown={onClose}><section className="ai-panel enterprise-ai" onMouseDown={e => e.stopPropagation()}><button className="close-button" onClick={onClose}>×</button><span className="ai-orb">✦</span><h2>企业知识问答</h2><p>仅检索你有权限查看的已发布知识，回答附带可追溯引用。</p>{answer ? <div className="ai-answer"><span>小知</span><p>{answer.text}</p><button onClick={() => onOpen(answer.source)}><b>引用 1</b>{answer.source.title} · V{answer.source.version}.0 →</button></div> : <div className="suggestions"><button onClick={() => setQuestion("差旅报销需要哪些材料？")}>差旅报销需要哪些材料？</button><button onClick={() => setQuestion("新员工第一周做什么？")}>新员工第一周做什么？</button></div>}<div className="ai-input"><input aria-label="向企业知识库提问" value={question} onChange={e => setQuestion(e.target.value)} placeholder="输入问题..." onKeyDown={e => { if (e.key === "Enter" && question.trim()) ask(); }}/><button onClick={ask} disabled={!question.trim()}>发送</button></div></section></div>; }

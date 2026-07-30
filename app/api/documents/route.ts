@@ -55,7 +55,8 @@ export async function POST(request: Request) {
       size = file.size;
       sourceKey = `documents/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const bucket = (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES;
-      if (bucket) await bucket.put(sourceKey, await file.arrayBuffer(), { httpMetadata: { contentType: mimeType } });
+      if (!bucket) throw new Error("文件存储服务暂不可用，请联系管理员检查 KNOWLEDGE_FILES 绑定");
+      await bucket.put(sourceKey, file.stream(), { httpMetadata: { contentType: mimeType } });
     }
 
     const uploader = user?.displayName ?? "面试演示用户";
@@ -76,10 +77,8 @@ export async function POST(request: Request) {
       mimeType,
       size,
     }).returning();
-    await db.batch([
-      db.insert(documentVersions).values({ documentId: document.id, version: 1, changeNote: "上传并创建知识", operator: uploader }),
-      db.insert(auditLogs).values({ documentId: document.id, action: "UPLOAD", actor: uploader, detail: sourceName ? `上传文件 ${sourceName}` : "创建在线文档" }),
-    ]);
+    await db.insert(documentVersions).values({ documentId: document.id, version: 1, changeNote: "上传并创建知识", operator: uploader });
+    await db.insert(auditLogs).values({ documentId: document.id, action: "UPLOAD", actor: uploader, detail: sourceName ? `上传文件 ${sourceName}` : "创建在线文档" });
     return Response.json({ document }, { status: 201 });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "上传失败" }, { status: 500 });

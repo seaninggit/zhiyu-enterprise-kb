@@ -1,40 +1,52 @@
-import { eq } from "drizzle-orm";
 import { env } from "cloudflare:workers";
-import { getDb } from "../../../../db";
-import { auditLogs, documents, documentVersions, feedback } from "../../../../db/schema";
-import { getChatGPTUser } from "../../../chatgpt-auth";
+import { getD1 } from "../../../../db";
+import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
+import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../../lib/authz";
+
+async function authorizedDocument(id: number, ctx: Awaited<ReturnType<typeof requireApiUser>>) {
+  const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
+  if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在");
+  const deptId = Number(doc.dept_id); const ownDept = ctx.deptIds.includes(deptId); const creator = Number(doc.create_user_id) === ctx.userId;
+  const readable = ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ownDept) || (ownDept && (doc.status === "ARCHIVED_ACTIVE" || creator)) || (doc.share_scope === "CROSS_DEPT" && doc.status === "ARCHIVED_ACTIVE");
+  if (!readable) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权访问该文档"); return doc;
+}
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  const documentId = Number(id);
-  const db = getDb();
-  const [document] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
-  if (!document) return Response.json({ error: "文档不存在" }, { status: 404 });
-  if (new URL(request.url).searchParams.get("download") === "1") {
-    if (!document.sourceKey) return Response.json({ error: "该知识没有原始附件" }, { status: 404 });
-    const bucket = (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES;
-    const object = await bucket?.get(document.sourceKey);
-    if (!object) return Response.json({ error: "附件不存在或尚未完成存储" }, { status: 404 });
-    return new Response(object.body, { headers: {
-      "content-type": document.mimeType ?? "application/octet-stream",
-      "content-length": String(object.size),
-      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(document.sourceName ?? "document")}`,
-      "cache-control": "private, no-store",
-    } });
-  }
-  const versions = await db.select().from(documentVersions).where(eq(documentVersions.documentId, documentId));
-  return Response.json({ document, versions });
+  const rid = requestId(request);
+  try {
+    const ctx = await requireApiUser(); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const db = getD1();
+    if (new URL(request.url).searchParams.get("download") === "1") {
+      await enforceRateLimit(ctx, "download", 120, 60); if (!doc.source_key) throw new ApiError(404, "NO_ATTACHMENT", "该知识没有原始附件");
+      const bucket = (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES; const object = await bucket?.get(String(doc.source_key)); if (!object) throw new ApiError(404, "FILE_NOT_FOUND", "附件不存在");
+      await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "DOWNLOAD", ctx.userId, ctx.displayName, doc.source_name, rid).run();
+      return new Response(object.body, { headers: { "content-type": String(doc.mime_type || "application/octet-stream"), "content-length": String(object.size), "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(doc.source_name || "document"))}`, "cache-control": "private, no-store" } });
+    }
+    const versions = await db.prepare("SELECT * FROM document_versions WHERE document_id=? ORDER BY version DESC").bind(id).all();
+    return ok({ document: doc, versions: versions.results }, rid);
+  } catch (error) { return fail(error, rid); }
+}
+
+export async function PUT(request: Request, context: { params: Promise<{ id: string }> }) {
+  const rid = requestId(request);
+  try {
+    const ctx = await requireApiUser(); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const deptId = Number(doc.dept_id);
+    if (!(canManageDepartment(ctx, deptId) || Number(doc.create_user_id) === ctx.userId)) throw new ApiError(403, "EDIT_FORBIDDEN", "仅上传人或本部门管理员可编辑");
+    const payload = await request.json() as { title?: string; content?: string; summary?: string }; const title = safeText(payload.title || doc.title, 200); const content = safeText(payload.content || doc.content, 50000); const nextVersion = Number(doc.version) + 1; const db = getD1();
+    await db.batch([
+      db.prepare("UPDATE documents SET title=?,summary=?,content=?,version=?,status='DRAFT',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(title, safeText(payload.summary || doc.summary, 1000), content, nextVersion, ctx.userId, id),
+      db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,?,?,?,?,?,?)").bind(id, nextVersion, title, content, "内容更新，重新进入草稿", ctx.userId, ctx.displayName),
+      db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, deptId, "UPDATE", ctx.userId, ctx.displayName, `更新至 V${nextVersion}`, rid),
+    ]);
+    return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first() }, rid);
+  } catch (error) { return fail(error, rid); }
 }
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
-  const { id } = await context.params;
-  const documentId = Number(id);
-  const payload = await request.json() as { type?: string; content?: string };
-  const user = await getChatGPTUser();
-  const reporter = user?.displayName ?? "普通员工";
-  if (!payload.content?.trim()) return Response.json({ error: "反馈内容不能为空" }, { status: 400 });
-  const db = getDb();
-  const [item] = await db.insert(feedback).values({ documentId, type: payload.type ?? "纠错", content: payload.content.trim(), reporter }).returning();
-  await db.insert(auditLogs).values({ documentId, action: "FEEDBACK", actor: reporter, detail: payload.content.trim() });
-  return Response.json({ feedback: item }, { status: 201 });
+  const rid = requestId(request);
+  try { const ctx = await requireApiUser(); await enforceRateLimit(ctx, "feedback", 20, 60); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const payload = await request.json() as { type?: string; content?: string }; const content = safeText(payload.content, 2000); if (!content) throw new ApiError(400, "VALIDATION_ERROR", "反馈内容不能为空"); const db = getD1(); await db.batch([db.prepare("INSERT INTO feedback(document_id,type,content,reporter_user_id,reporter) VALUES(?,?,?,?,?)").bind(id, safeText(payload.type || "纠错", 30), content, ctx.userId, ctx.displayName), db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "FEEDBACK", ctx.userId, ctx.displayName, content, rid)]); return ok({ submitted: true }, rid, 201); } catch (error) { return fail(error, rid); }
+}
+
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  const rid = requestId(request);
+  try { const ctx = await requireApiUser(); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const deptId = Number(doc.dept_id); if (!canManageDepartment(ctx, deptId)) throw new ApiError(403, "DELETE_FORBIDDEN", "仅管理员可作废文档"); const hard = new URL(request.url).searchParams.get("hard") === "1"; const db = getD1(); if (hard && ctx.role !== "SUPER_ADMIN") throw new ApiError(403, "HARD_DELETE_FORBIDDEN", "仅超级管理员可彻底删除"); if (hard) await db.batch([db.prepare("DELETE FROM document_tags WHERE document_id=?").bind(id), db.prepare("DELETE FROM document_visibility WHERE document_id=?").bind(id), db.prepare("DELETE FROM document_versions WHERE document_id=?").bind(id), db.prepare("DELETE FROM documents WHERE id=?").bind(id)]); else await db.prepare("UPDATE documents SET is_deleted=1,deleted_by=?,deleted_at=CURRENT_TIMESTAMP,update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(ctx.userId, ctx.userId, id).run(); await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, deptId, hard ? "HARD_DELETE" : "SOFT_DELETE", ctx.userId, ctx.displayName, "文档删除", rid).run(); return ok({ deleted: true, hard }, rid); } catch (error) { return fail(error, rid); }
 }

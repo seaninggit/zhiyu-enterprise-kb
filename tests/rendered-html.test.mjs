@@ -19,10 +19,23 @@ test("enterprise knowledge hub metadata and product copy are configured", async 
 });
 
 test("knowledge API implements lifecycle operations", async () => {
-  const route = await readFile(new URL("../app/api/documents/route.ts", import.meta.url), "utf8");
+  const [route, detailRoute, authz, schema] = await Promise.all([
+    readFile(new URL("../app/api/documents/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/documents/[id]/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/authz.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
   assert.match(route, /export async function GET/);
   assert.match(route, /export async function POST/);
   assert.match(route, /export async function PATCH/);
-  assert.match(route, /auditLogs/);
-  assert.match(route, /documentVersions/);
+  assert.match(route, /requireApiUser/);
+  assert.match(route, /d\.dept_id IN/);
+  assert.match(detailRoute, /ROW_ACCESS_DENIED/);
+  assert.match(detailRoute, /export async function DELETE/);
+  assert.match(authz, /SUPER_ADMIN/);
+  assert.match(authz, /DEPT_ADMIN/);
+  assert.match(authz, /EMPLOYEE/);
+  assert.match(schema, /documents_status_check/);
+  assert.match(schema, /documentVisibility/);
+  assert.match(schema, /userDepartments/);
 });

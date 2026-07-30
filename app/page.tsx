@@ -27,6 +27,17 @@ const fallbackLogs: AuditLog[] = [
 const categories = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
 const statusLabel: Record<DocumentStatus, string> = { draft: "草稿", review: "待审核", published: "已发布", rejected: "已驳回", archived: "已归档" };
 
+function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
+  const rawStatus = String(row.status ?? "DRAFT");
+  const status: DocumentStatus = rawStatus === "PENDING_DEPT_REVIEW" ? "review" : rawStatus === "ARCHIVED_ACTIVE" ? "published" : rawStatus === "EXPIRED_VOID" ? "archived" : "draft";
+  return {
+    id: Number(row.id), title: String(row.title ?? ""), summary: String(row.summary ?? ""), content: String(row.content ?? ""), category: String(row.category ?? "未分类"),
+    tags: String(row.tags ?? ""), status, securityLevel: String(row.securityLevel ?? row.security_level ?? "INTERNAL"), owner: String(row.owner ?? ""), uploader: String(row.uploader ?? row.creator_name ?? ""),
+    sourceName: row.sourceName as string ?? row.source_name as string ?? null, mimeType: row.mimeType as string ?? row.mime_type as string ?? null, size: Number(row.size ?? 0), version: Number(row.version ?? 1),
+    reviewDueAt: row.reviewDueAt as string ?? row.review_due_at as string ?? null, createdAt: String(row.createdAt ?? row.create_time ?? ""), updatedAt: String(row.updatedAt ?? row.update_time ?? ""),
+  };
+}
+
 function fmtSize(size = 0) { return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "在线文档"; }
 function downloadBlob(name: string, body: string, type: string) {
   const url = URL.createObjectURL(new Blob([body], { type }));
@@ -46,11 +57,13 @@ export default function Home() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState({ displayName: "李然", role: "EMPLOYEE", primaryDeptId: 1 });
 
   useEffect(() => {
     fetch("/api/documents").then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
-      if (data.documents?.length) setDocuments(data.documents);
-      if (data.logs?.length) setLogs(data.logs);
+      if (data.data?.documents?.length) setDocuments(data.data.documents.map(normalizeDocument));
+      if (data.data?.logs?.length) setLogs(data.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
+      if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
     }).catch(() => undefined);
   }, []);
 
@@ -68,9 +81,12 @@ export default function Home() {
   }
   async function updateStatus(id: number, action: "approve" | "reject" | "archive") {
     const next = action === "approve" ? "published" : action === "reject" ? "rejected" : "archived";
-    setDocuments((current) => current.map((item) => item.id === id ? { ...item, status: next, updatedAt: new Date().toISOString() } : item));
-    try { await fetch("/api/documents", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action }) }); } catch { /* UI remains usable in local demo mode */ }
-    await audit(id, action.toUpperCase(), `文档状态更新为${statusLabel[next]}`); notify(`已${action === "approve" ? "通过并发布" : action === "reject" ? "驳回" : "归档"}`);
+    try {
+      const response = await fetch("/api/documents", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action }) });
+      const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
+      setDocuments((current) => current.map((item) => item.id === id ? { ...item, status: next, updatedAt: new Date().toISOString() } : item));
+      await audit(id, action.toUpperCase(), `文档状态更新为${statusLabel[next]}`); notify(`已${action === "approve" ? "通过并发布" : action === "reject" ? "驳回" : "归档"}`);
+    } catch (error) { notify(error instanceof Error ? error.message : "操作失败"); }
   }
   async function submitUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setLoading(true);
@@ -79,9 +95,9 @@ export default function Home() {
       const response = await fetch("/api/documents", { method: "POST", body: data });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({ error: "上传失败，请稍后重试" }));
-        throw new Error(payload.error ?? "上传失败，请稍后重试");
+        throw new Error(payload.error?.message ?? "上传失败，请稍后重试");
       }
-      const result = await response.json(); setDocuments((current) => [result.document, ...current]);
+      const result = await response.json(); setDocuments((current) => [normalizeDocument(result.data.document), ...current]);
       setLoading(false); setUploadOpen(false); form.reset(); notify("资料与原文件已保存，处理记录已生成");
     } catch (error) {
       setLoading(false);
@@ -101,7 +117,7 @@ export default function Home() {
         <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><i>▦</i>维护工作台</button>
         <button className={view === "audit" ? "active" : ""} onClick={() => setView("audit")}><i>≡</i>审计日志</button>
       </nav>
-      <div className="user-card"><span>L</span><div><b>李然</b><small>知识维护人</small></div><i>•••</i></div>
+      <div className="user-card"><span>{currentUser.displayName.slice(0, 1)}</span><div><b>{currentUser.displayName}</b><small>{currentUser.role === "SUPER_ADMIN" ? "超级管理员" : currentUser.role === "DEPT_ADMIN" ? "部门管理员" : "普通员工"}</small></div><i>•••</i></div>
     </aside>
 
     <div className="app-main">
@@ -116,9 +132,9 @@ export default function Home() {
       : <LibraryView documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { setSelected(doc); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
     </div>
 
-    {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: "原文件加载失败" })); throw new Error(payload.error); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
+    {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: { message: "原文件加载失败" } })); throw new Error(payload.error?.message ?? "原文件加载失败"); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
 
-    {uploadOpen && <UploadModal loading={loading} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
+    {uploadOpen && <UploadModal loading={loading} role={currentUser.role} primaryDeptId={currentUser.primaryDeptId} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
     {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try { await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) }); } catch { /* demo fallback */ } audit(selected.id, "FEEDBACK", content); setFeedbackOpen(false); notify("反馈已提交给知识负责人"); }} />}
     <button className="ai-fab" onClick={() => setAiOpen(true)}><span>✦</span><span><b>问问小知</b><small>回答会标注知识来源</small></span></button>
     {aiOpen && <AiPanel documents={published} onClose={() => setAiOpen(false)} onOpen={(doc) => { setSelected(doc); setAiOpen(false); }} />}
@@ -145,7 +161,7 @@ function AuditView({ logs, documents }: { logs: AuditLog[]; documents: Knowledge
 
 function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void }) { return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button onClick={onClose}>×</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary}</p></header><div className="drawer-actions"><button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onDownload}>↓ 下载原件</button><button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div><section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>上传人</span><b>{doc.uploader}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div><div><span>下次复核</span><b>{doc.reviewDueAt || "未设置"}</b></div></section><article className="doc-content"><h3>文档正文</h3>{doc.content.split("\n").map((p, i) => <p key={i}>{p}</p>)}</article><section className="version-list"><h3>版本记录</h3><div><span>V{doc.version}.0</span><p><b>当前版本</b><small>{doc.uploader} 更新 · {doc.updatedAt.slice(0, 10)}</small></p></div><div><span>V{Math.max(1, doc.version - 1)}.0</span><p><b>历史版本</b><small>完成内容复核与格式修订</small></p></div></section></aside></div>; }
 
-function UploadModal({ loading, onSubmit, onClose }: { loading: boolean; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) { const [fileName, setFileName] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>系统将保存原文件，并生成上传记录、初始版本和审计日志。</p></div><button type="button" onClick={onClose}>×</button></header><label className={`file-drop ${fileName ? "has-file" : ""}`}><input name="file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" onChange={e => setFileName(e.target.files?.[0]?.name ?? "")}/><span>{fileName ? "✓" : "⇧"}</span><b>{fileName || "点击选择或拖入文件"}</b><small>{fileName ? "文件已选择，可继续填写资料信息" : "支持 PDF、Word、Excel、PPT、TXT；不设置应用内文件大小限制"}</small></label><div className="form-grid"><label><span>资料标题 *</span><input name="title" required placeholder="例如：2026 差旅管理制度" /></label><label><span>知识分类 *</span><select name="category" required defaultValue=""><option value="" disabled>请选择分类</option>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label><label><span>知识负责人 *</span><input name="owner" required placeholder="姓名或团队" /></label><label><span>安全密级</span><select name="securityLevel"><option>内部公开</option><option>部门可见</option><option>敏感</option><option>核心机密</option></select></label><label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label><label><span>下次复核日</span><input name="reviewDueAt" type="date" /></label><label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label><label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label></div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交审核</label></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary-action" disabled={loading}>{loading ? "正在上传原文件..." : "上传并生成记录"}</button></footer></form></div>; }
+function UploadModal({ loading, role, primaryDeptId, onSubmit, onClose }: { loading: boolean; role: string; primaryDeptId: number; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) { const [fileName, setFileName] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>系统将保存原文件，并生成上传记录、初始版本和审计日志。</p></div><button type="button" onClick={onClose}>×</button></header><label className={`file-drop ${fileName ? "has-file" : ""}`}><input name="file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" onChange={e => setFileName(e.target.files?.[0]?.name ?? "")}/><span>{fileName ? "✓" : "⇧"}</span><b>{fileName || "点击选择或拖入文件"}</b><small>{fileName ? "文件已选择，可继续填写资料信息" : "支持 PDF、Word、Excel、PPT、TXT；不设置应用内文件大小限制"}</small></label><div className="form-grid"><label><span>资料标题 *</span><input name="title" required placeholder="例如：2026 差旅管理制度" /></label><label><span>知识分类 *</span><select name="category" required defaultValue=""><option value="" disabled>请选择分类</option>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label><label><span>归属部门</span><select name="deptId" defaultValue={String(primaryDeptId)} disabled={role !== "SUPER_ADMIN"}>{[[1,"综合管理部"],[2,"产品研发部"],[3,"人力行政部"],[4,"销售市场部"],[5,"财务法务部"]].map(([id,name]) => <option key={id} value={id}>{name}</option>)}</select>{role !== "SUPER_ADMIN" && <input type="hidden" name="deptId" value={primaryDeptId}/>}</label><label><span>知识负责人 *</span><input name="owner" required placeholder="姓名或团队" /></label><label><span>安全密级</span><select name="securityLevel"><option value="INTERNAL">内部公开</option><option value="DEPT">部门可见</option><option value="SENSITIVE">敏感</option><option value="CONFIDENTIAL">核心机密</option></select></label><label><span>共享范围</span><select name="shareScope" disabled={role === "EMPLOYEE"}><option value="DEPT">仅本部门</option><option value="CROSS_DEPT">跨部门共享</option></select></label><label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label><label><span>下次复核日</span><input name="reviewDueAt" type="date" /></label><label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label><label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label></div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交审核</label></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary-action" disabled={loading}>{loading ? "正在上传原文件..." : "上传并生成记录"}</button></footer></form></div>; }
 
 function FeedbackModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (v: string) => void }) { const [value, setValue] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><div className="feedback-modal" onMouseDown={e => e.stopPropagation()}><h2>提交纠错反馈</h2><p>反馈将自动关联当前文档与版本，并通知知识负责人。</p><textarea aria-label="反馈内容" value={value} onChange={e => setValue(e.target.value)} rows={5} placeholder="请描述错误、过期内容或补充建议..."/><div><button onClick={onClose}>取消</button><button className="primary-action" disabled={!value.trim()} onClick={() => onSubmit(value)}>提交反馈</button></div></div></div>; }
 

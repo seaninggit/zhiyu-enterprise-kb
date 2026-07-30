@@ -11,6 +11,9 @@ type KnowledgeDocument = {
   reviewDueAt?: string | null; createdAt: string; updatedAt: string;
 };
 type AuditLog = { id: number; documentId?: number | null; action: string; actor: string; detail: string; createdAt: string };
+type UploadDepartment = { id: number; code: string; name: string; parent_id?: number | null; approver: string };
+type UploadMember = { id: number; dept_id: number; display_name: string };
+type UploadOptions = { departments: UploadDepartment[]; members: UploadMember[] };
 
 const fallbackDocuments: KnowledgeDocument[] = [
   { id: 1, title: "新员工入职指南", summary: "从账号开通、办公环境到团队融入，一份完整的新员工上手手册。", content: "欢迎加入知域。本指南覆盖入职第一周需要完成的账号开通、设备领取、安全培训、导师沟通和团队融入事项。\n\n第一天：完成工牌、邮箱、即时通讯与代码仓库账号开通。\n第一周：完成信息安全培训，与直属主管确认试用期目标。", category: "组织人事", tags: "入职,新员工", status: "published", securityLevel: "内部公开", owner: "People 团队", uploader: "林晓", sourceName: "新员工入职指南.pdf", mimeType: "application/pdf", size: 2457600, version: 3, reviewDueAt: "2027-01-15", createdAt: "2026-03-18", updatedAt: "2026-07-28" },
@@ -58,12 +61,14 @@ export default function Home() {
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState({ displayName: "李然", role: "EMPLOYEE", primaryDeptId: 1 });
+  const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
 
   useEffect(() => {
     fetch("/api/documents").then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
       if (data.data?.documents?.length) setDocuments(data.data.documents.map(normalizeDocument));
       if (data.data?.logs?.length) setLogs(data.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
       if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
+      if (data.data?.uploadOptions?.departments?.length) setUploadOptions(data.data.uploadOptions);
     }).catch(() => undefined);
   }, []);
 
@@ -92,7 +97,16 @@ export default function Home() {
     event.preventDefault(); setLoading(true);
     const form = event.currentTarget; const data = new FormData(form);
     try {
-      const response = await fetch("/api/documents", { method: "POST", body: data });
+      const file = data.get("file");
+      let stored: Record<string, unknown> = {};
+      if (file instanceof File && file.size > 0) {
+        const uploadResponse = await fetch("/api/uploads", { method: "PUT", headers: { "content-type": file.type || "application/octet-stream", "x-file-name": encodeURIComponent(file.name), "x-dept-id": String(data.get("deptId") || currentUser.primaryDeptId) }, body: file });
+        const uploadPayload = await uploadResponse.json().catch(() => ({ error: { message: "原文件存储失败" } }));
+        if (!uploadResponse.ok) throw new Error(uploadPayload.error?.message ?? "原文件存储失败");
+        stored = uploadPayload.data;
+      }
+      const metadata = Object.fromEntries(Array.from(data.entries()).filter(([key]) => key !== "file"));
+      const response = await fetch("/api/documents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...metadata, ...stored }) });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({ error: "上传失败，请稍后重试" }));
         throw new Error(payload.error?.message ?? "上传失败，请稍后重试");
@@ -134,7 +148,7 @@ export default function Home() {
 
     {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: { message: "原文件加载失败" } })); throw new Error(payload.error?.message ?? "原文件加载失败"); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
 
-    {uploadOpen && <UploadModal loading={loading} role={currentUser.role} primaryDeptId={currentUser.primaryDeptId} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
+    {uploadOpen && <UploadModal loading={loading} currentUser={currentUser} options={uploadOptions} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
     {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try { await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) }); } catch { /* demo fallback */ } audit(selected.id, "FEEDBACK", content); setFeedbackOpen(false); notify("反馈已提交给知识负责人"); }} />}
     <button className="ai-fab" onClick={() => setAiOpen(true)}><span>✦</span><span><b>问问小知</b><small>回答会标注知识来源</small></span></button>
     {aiOpen && <AiPanel documents={published} onClose={() => setAiOpen(false)} onOpen={(doc) => { setSelected(doc); setAiOpen(false); }} />}
@@ -161,7 +175,33 @@ function AuditView({ logs, documents }: { logs: AuditLog[]; documents: Knowledge
 
 function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void }) { return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button onClick={onClose}>×</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary}</p></header><div className="drawer-actions"><button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onDownload}>↓ 下载原件</button><button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div><section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>上传人</span><b>{doc.uploader}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div><div><span>下次复核</span><b>{doc.reviewDueAt || "未设置"}</b></div></section><article className="doc-content"><h3>文档正文</h3>{doc.content.split("\n").map((p, i) => <p key={i}>{p}</p>)}</article><section className="version-list"><h3>版本记录</h3><div><span>V{doc.version}.0</span><p><b>当前版本</b><small>{doc.uploader} 更新 · {doc.updatedAt.slice(0, 10)}</small></p></div><div><span>V{Math.max(1, doc.version - 1)}.0</span><p><b>历史版本</b><small>完成内容复核与格式修订</small></p></div></section></aside></div>; }
 
-function UploadModal({ loading, role, primaryDeptId, onSubmit, onClose }: { loading: boolean; role: string; primaryDeptId: number; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) { const [fileName, setFileName] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>系统将保存原文件，并生成上传记录、初始版本和审计日志。</p></div><button type="button" onClick={onClose}>×</button></header><label className={`file-drop ${fileName ? "has-file" : ""}`}><input name="file" type="file" accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt" onChange={e => setFileName(e.target.files?.[0]?.name ?? "")}/><span>{fileName ? "✓" : "⇧"}</span><b>{fileName || "点击选择或拖入文件"}</b><small>{fileName ? "文件已选择，可继续填写资料信息" : "支持 PDF、Word、Excel、PPT、TXT；不设置应用内文件大小限制"}</small></label><div className="form-grid"><label><span>资料标题 *</span><input name="title" required placeholder="例如：2026 差旅管理制度" /></label><label><span>知识分类 *</span><select name="category" required defaultValue=""><option value="" disabled>请选择分类</option>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label><label><span>归属部门</span><select name="deptId" defaultValue={String(primaryDeptId)} disabled={role !== "SUPER_ADMIN"}>{[[1,"综合管理部"],[2,"产品研发部"],[3,"人力行政部"],[4,"销售市场部"],[5,"财务法务部"]].map(([id,name]) => <option key={id} value={id}>{name}</option>)}</select>{role !== "SUPER_ADMIN" && <input type="hidden" name="deptId" value={primaryDeptId}/>}</label><label><span>知识负责人 *</span><input name="owner" required placeholder="姓名或团队" /></label><label><span>安全密级</span><select name="securityLevel"><option value="INTERNAL">内部公开</option><option value="DEPT">部门可见</option><option value="SENSITIVE">敏感</option><option value="CONFIDENTIAL">核心机密</option></select></label><label><span>共享范围</span><select name="shareScope" disabled={role === "EMPLOYEE"}><option value="DEPT">仅本部门</option><option value="CROSS_DEPT">跨部门共享</option></select></label><label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label><label><span>下次复核日</span><input name="reviewDueAt" type="date" /></label><label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label><label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label></div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交审核</label></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary-action" disabled={loading}>{loading ? "正在上传原文件..." : "上传并生成记录"}</button></footer></form></div>; }
+function UploadModal({ loading, currentUser, options, onSubmit, onClose }: { loading: boolean; currentUser: { displayName: string; role: string; primaryDeptId: number }; options: UploadOptions; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
+  const [fileName, setFileName] = useState("");
+  const [title, setTitle] = useState("");
+  const [deptId, setDeptId] = useState(currentUser.primaryDeptId);
+  const [reviewDate] = useState(() => new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10));
+  const department = options.departments.find(item => item.id === deptId) ?? options.departments[0];
+  const departmentMembers = options.members.filter(item => item.dept_id === deptId);
+  const categoryByDepartment: Record<string, string> = { PRODUCT: "产品研发", HR: "组织人事", SALES: "销售市场", FINANCE: "财务法务", GENERAL: "组织人事" };
+  const defaultCategory = categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
+  const defaultOwner = departmentMembers.find(item => item.display_name === currentUser.displayName)?.display_name ?? departmentMembers[0]?.display_name ?? currentUser.displayName;
+  return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>身份与组织信息已按权限自动联动，文件将直接写入企业对象存储。</p></div><button type="button" onClick={onClose}>×</button></header>
+    <label className={`file-drop ${fileName ? "has-file" : ""}`}><input name="file" type="file" onChange={e => { const file = e.target.files?.[0]; setFileName(file?.name ?? ""); if (file && !title) setTitle(file.name.replace(/\.[^.]+$/, "")); }}/><span>{fileName ? "✓" : "⇧"}</span><b>{fileName || "点击选择或拖入文件"}</b><small>{fileName ? "文件已选择，标题已由文件名自动生成" : "支持企业常用文件格式；应用层不设置文件大小限制"}</small></label>
+    <div className="form-grid">
+      <label><span>资料标题 *</span><input name="title" value={title} onChange={e => setTitle(e.target.value)} required placeholder="选择文件后自动生成，可修改" /></label>
+      <label><span>知识分类 *</span><select key={`${deptId}-${defaultCategory}`} name="category" required defaultValue={defaultCategory}>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label>
+      <label><span>归属部门</span><select name="deptId" value={deptId} onChange={e => setDeptId(Number(e.target.value))} disabled={currentUser.role !== "SUPER_ADMIN"}>{options.departments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{currentUser.role !== "SUPER_ADMIN" && <input type="hidden" name="deptId" value={deptId}/>}</label>
+      <label><span>知识负责人 *</span><select key={`${deptId}-${defaultOwner}`} name="owner" required defaultValue={defaultOwner}>{departmentMembers.length ? departmentMembers.map(member => <option key={member.id}>{member.display_name}</option>) : <option>{currentUser.displayName}</option>}</select></label>
+      <label><span>上传人（系统带出）</span><input value={currentUser.displayName} readOnly /></label>
+      <label><span>审核人（部门权限联动）</span><input value={department?.approver ?? "待配置部门管理员"} readOnly /></label>
+      <label><span>安全密级</span><select name="securityLevel" defaultValue="INTERNAL"><option value="INTERNAL">内部公开</option><option value="DEPT">部门可见</option><option value="SENSITIVE">敏感</option><option value="CONFIDENTIAL">核心机密</option></select></label>
+      <label><span>共享范围</span><select name="shareScope" disabled={currentUser.role === "EMPLOYEE"}><option value="DEPT">仅本部门</option><option value="CROSS_DEPT">跨部门共享</option></select>{currentUser.role === "EMPLOYEE" && <input type="hidden" name="shareScope" value="DEPT" />}</label>
+      <label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label>
+      <label><span>下次复核日</span><input name="reviewDueAt" type="date" defaultValue={reviewDate} /></label>
+      <label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label>
+      <label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label>
+    </div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交部门审核</label></div><footer><button type="button" onClick={onClose}>取消</button><button className="primary-action" disabled={loading}>{loading ? "正在写入文件并生成记录..." : "上传并生成记录"}</button></footer></form></div>;
+}
 
 function FeedbackModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (v: string) => void }) { const [value, setValue] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><div className="feedback-modal" onMouseDown={e => e.stopPropagation()}><h2>提交纠错反馈</h2><p>反馈将自动关联当前文档与版本，并通知知识负责人。</p><textarea aria-label="反馈内容" value={value} onChange={e => setValue(e.target.value)} rows={5} placeholder="请描述错误、过期内容或补充建议..."/><div><button onClick={onClose}>取消</button><button className="primary-action" disabled={!value.trim()} onClick={() => onSubmit(value)}>提交反馈</button></div></div></div>; }
 

@@ -21,7 +21,15 @@ export async function GET(request: Request) {
       FROM documents d JOIN users u ON u.id=d.create_user_id JOIN departments dep ON dep.id=d.dept_id
       WHERE ${where} ORDER BY d.update_time DESC, d.id DESC LIMIT 500`).bind(...binds).all();
     const logs = ctx.role === "SUPER_ADMIN" ? await db.prepare("SELECT * FROM audit_logs ORDER BY create_time DESC LIMIT 50").all() : await db.prepare(`SELECT * FROM audit_logs WHERE dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
-    return ok({ documents: result.results, logs: logs.results, currentUser: ctx }, rid);
+    const departmentWhere = ctx.role === "SUPER_ADMIN" ? "d.is_active=1" : `d.is_active=1 AND d.id IN (${placeholders(ctx.deptIds)})`;
+    const departments = await db.prepare(`SELECT d.id,d.code,d.name,d.parent_id,
+      COALESCE((SELECT u.display_name FROM users u WHERE u.id=d.manager_user_id),
+        (SELECT u.display_name FROM user_departments ud JOIN users u ON u.id=ud.user_id WHERE ud.dept_id=d.id AND ud.is_dept_admin=1 AND u.status='ACTIVE' LIMIT 1), '待配置部门管理员') AS approver
+      FROM departments d WHERE ${departmentWhere} ORDER BY d.id`).bind(...(ctx.role === "SUPER_ADMIN" ? [] : ctx.deptIds)).all();
+    const members = await db.prepare(`SELECT ud.dept_id,u.id,u.display_name FROM user_departments ud JOIN users u ON u.id=ud.user_id
+      WHERE u.status='ACTIVE' AND ud.dept_id IN (${placeholders(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)}) ORDER BY u.display_name`)
+      .bind(...(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)).all();
+    return ok({ documents: result.results, logs: logs.results, currentUser: ctx, uploadOptions: { departments: departments.results, members: members.results } }, rid);
   } catch (error) { return fail(error, rid); }
 }
 
@@ -29,13 +37,17 @@ export async function POST(request: Request) {
   const rid = requestId(request); let sourceKey: string | null = null;
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "upload", 20, 60);
-    const form = await request.formData();
-    const title = requiredText(form.get("title"), "标题"); const category = requiredText(form.get("category"), "分类", 50); const owner = requiredText(form.get("owner"), "负责人", 100);
-    const deptId = Number(form.get("deptId") || ctx.primaryDeptId);
+    const contentType = request.headers.get("content-type") || "";
+    const input = contentType.includes("application/json") ? await request.json() as Record<string, unknown> : Object.fromEntries(await request.formData());
+    const value = (key: string) => input[key] ?? null;
+    const title = requiredText(value("title") as string | null, "标题"); const category = requiredText(value("category") as string | null, "分类", 50); const owner = requiredText(value("owner") as string | null, "负责人", 100);
+    const deptId = Number(value("deptId") || ctx.primaryDeptId);
     if (!ctx.deptIds.includes(deptId) && ctx.role !== "SUPER_ADMIN") throw new ApiError(403, "DEPARTMENT_FORBIDDEN", "只能在所属部门创建文档");
-    const requestedStatus = String(form.get("status") ?? "DRAFT"); const status = requestedStatus === "review" || requestedStatus === "PENDING_DEPT_REVIEW" ? "PENDING_DEPT_REVIEW" : "DRAFT";
-    const shareScope = String(form.get("shareScope") ?? "DEPT") === "CROSS_DEPT" && canManageDepartment(ctx, deptId) ? "CROSS_DEPT" : "DEPT";
-    const file = form.get("file"); let sourceName: string | null = null; let mimeType: string | null = null; let size = 0;
+    const requestedStatus = String(value("status") ?? "DRAFT"); const status = requestedStatus === "review" || requestedStatus === "PENDING_DEPT_REVIEW" ? "PENDING_DEPT_REVIEW" : "DRAFT";
+    const shareScope = String(value("shareScope") ?? "DEPT") === "CROSS_DEPT" && canManageDepartment(ctx, deptId) ? "CROSS_DEPT" : "DEPT";
+    const file = value("file"); let sourceName = safeText(value("sourceName"), 240) || null; let mimeType = safeText(value("mimeType"), 200) || null; let size = Number(value("size") || 0);
+    sourceKey = safeText(value("sourceKey"), 600) || null;
+    if (sourceKey && !sourceKey.startsWith(`documents/${deptId}/`)) throw new ApiError(403, "FILE_SCOPE_MISMATCH", "文件与归属部门不匹配");
     if (file instanceof File && file.size > 0) {
       sourceName = file.name; mimeType = file.type || "application/octet-stream"; size = file.size; sourceKey = `documents/${deptId}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
       const bucket = (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES;
@@ -45,11 +57,11 @@ export async function POST(request: Request) {
     const db = getD1(); const id = crypto.getRandomValues(new Uint32Array(1))[0];
     await db.batch([
       db.prepare(`INSERT INTO documents(id,dept_id,create_user_id,update_user_id,title,summary,content,category,status,share_scope,security_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,is_deleted)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).bind(id, deptId, ctx.userId, ctx.userId, title, safeText(form.get("summary"), 1000), safeText(form.get("content"), 50000), category, status, shareScope, safeText(form.get("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(form.get("reviewDueAt"), 30) || null),
-      db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,1,?,?,?,?,?)").bind(id, title, safeText(form.get("content"), 50000), "上传并创建知识", ctx.userId, ctx.displayName),
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).bind(id, deptId, ctx.userId, ctx.userId, title, safeText(value("summary"), 1000), safeText(value("content"), 50000), category, status, shareScope, safeText(value("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null),
+      db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,1,?,?,?,?,?)").bind(id, title, safeText(value("content"), 50000), "上传并创建知识", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'CREATE',?,?,?,?)").bind(id, deptId, ctx.userId, ctx.displayName, sourceName ? `上传文件 ${sourceName}` : "创建在线文档", rid),
     ]);
-    const tagNames = safeText(form.get("tags"), 500).split(",").map(t => t.trim()).filter(Boolean).slice(0, 20);
+    const tagNames = safeText(value("tags"), 500).split(",").map(t => t.trim()).filter(Boolean).slice(0, 20);
     for (const name of tagNames) { await db.prepare("INSERT OR IGNORE INTO tags(name,dept_id) VALUES(?,?)").bind(name, deptId).run(); await db.prepare("INSERT OR IGNORE INTO document_tags(document_id,tag_id) SELECT ?,id FROM tags WHERE name=? AND dept_id=?").bind(id, name, deptId).run(); }
     const document = await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first();
     return ok({ document }, rid, 201);

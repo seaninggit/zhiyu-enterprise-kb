@@ -73,3 +73,12 @@ test("knowledge consumption actions are persisted", async () => {
   assert.doesNotMatch(schema, /workflowRequests/);
   assert.doesNotMatch(page, /发起差旅申请/);
 });
+
+test("enterprise demo corpus covers five departments and lifecycle states", async () => {
+  const seed = await readFile(new URL("../drizzle/0004_enterprise_demo_corpus.sql", import.meta.url), "utf8");
+  const ids = [...seed.matchAll(/\(91\d{2},\d,900\d/g)];
+  assert.equal(ids.length, 20);
+  for (const title of ["信息安全事件报告与处置规范", "产品需求评审与准入规范", "新员工入职与首月融入指南", "客户分级与经营管理办法", "员工费用报销管理制度"]) assert.match(seed, new RegExp(title));
+  for (const status of ["ARCHIVED_ACTIVE", "PENDING_DEPT_REVIEW", "DRAFT", "EXPIRED_VOID"]) assert.match(seed, new RegExp(status));
+  assert.match(seed, /document_chunks/);
+});

@@ -66,10 +66,10 @@ test("knowledge consumption actions are persisted", async () => {
   ]);
   assert.match(route, /SUBSCRIBE/);
   assert.match(route, /AI_HELPFUL/);
-  assert.match(route, /START_WORKFLOW/);
   assert.match(route, /ROW_ACCESS_DENIED/);
   assert.match(schema, /knowledgeSubscriptions/);
-  assert.match(schema, /workflowRequests/);
   assert.match(page, /查看引用/);
-  assert.match(page, /发起差旅申请/);
+  assert.doesNotMatch(route, /START_WORKFLOW/);
+  assert.doesNotMatch(schema, /workflowRequests/);
+  assert.doesNotMatch(page, /发起差旅申请/);
 });

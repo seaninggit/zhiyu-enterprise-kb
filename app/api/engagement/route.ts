@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "engagement", 60, 60);
-    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL" | "START_WORKFLOW"; documentId?: number; queryLogId?: number; helpful?: boolean; reason?: string; workflowType?: string; title?: string };
+    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL"; documentId?: number; queryLogId?: number; helpful?: boolean; reason?: string };
     if (!payload.action) throw new ApiError(400, "VALIDATION_ERROR", "操作类型不能为空"); const db = getD1();
     if (payload.action === "AI_HELPFUL") {
       if (!payload.queryLogId) throw new ApiError(400, "VALIDATION_ERROR", "问答记录不能为空");
@@ -26,11 +26,6 @@ export async function POST(request: Request) {
     if (!payload.documentId) throw new ApiError(400, "VALIDATION_ERROR", "文档不能为空"); const doc = await readableDocument(payload.documentId, ctx);
     if (payload.action === "SUBSCRIBE") {
       await db.prepare("INSERT INTO knowledge_subscriptions(document_id,user_id,is_active) VALUES(?,?,1) ON CONFLICT(document_id,user_id) DO UPDATE SET is_active=1,update_time=CURRENT_TIMESTAMP").bind(payload.documentId, ctx.userId).run();
-    } else if (payload.action === "START_WORKFLOW") {
-      const workflowType = safeText(payload.workflowType || "KNOWLEDGE_ACTION", 50); const title = safeText(payload.title || `根据《${doc.title}》发起业务申请`, 200);
-      const created = await db.prepare("INSERT INTO workflow_requests(type,title,document_id,applicant_user_id,dept_id,status,payload) VALUES(?,?,?,?,?,'SUBMITTED',?)").bind(workflowType, title, payload.documentId, ctx.userId, ctx.primaryDeptId, JSON.stringify({ sourceVersion: doc.version, sourceTitle: doc.title })).run();
-      await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.documentId, doc.dept_id, "START_WORKFLOW", ctx.userId, ctx.displayName, title, rid).run();
-      return ok({ workflowId: created.meta.last_row_id, status: "SUBMITTED" }, rid, 201);
     }
     await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.documentId, doc.dept_id, payload.action, ctx.userId, ctx.displayName, payload.action === "CONTACT_OWNER" ? `联系知识负责人：${doc.owner}` : "复制内部知识链接", rid).run();
     return ok({ recorded: true }, rid, 201);

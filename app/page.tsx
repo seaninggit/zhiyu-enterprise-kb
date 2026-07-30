@@ -64,7 +64,7 @@ export default function Home() {
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
 
   useEffect(() => {
-    fetch("/api/documents").then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
+    fetch("/api/documents", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
       if (data.data?.documents?.length) setDocuments(data.data.documents.map(normalizeDocument));
       if (data.data?.logs?.length) setLogs(data.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
       if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
@@ -72,7 +72,7 @@ export default function Home() {
     }).catch(() => undefined);
   }, []);
 
-  const published = documents.filter((item) => item.status === "published" || item.status === "review");
+  const published = documents.filter((item) => item.status === "published");
   const filtered = useMemo(() => published.filter((item) => {
     const text = `${item.title}${item.summary}${item.content}${item.tags}${item.owner}${item.uploader}`.toLowerCase();
     return (category === "全部" || item.category === category) && (!query.trim() || text.includes(query.trim().toLowerCase()));
@@ -111,8 +111,14 @@ export default function Home() {
         const payload = await response.json().catch(() => ({ error: "上传失败，请稍后重试" }));
         throw new Error(payload.error?.message ?? "上传失败，请稍后重试");
       }
-      const result = await response.json(); setDocuments((current) => [normalizeDocument(result.data.document), ...current]);
-      setLoading(false); setUploadOpen(false); form.reset(); notify("资料与原文件已保存，处理记录已生成");
+      const result = await response.json();
+      const created = normalizeDocument(result.data.document);
+      setDocuments((current) => [created, ...current.filter(item => item.id !== created.id)]);
+      setView("admin"); setLoading(false); setUploadOpen(false); form.reset();
+      const refreshed = await fetch("/api/documents", { cache: "no-store" }).then(item => item.ok ? item.json() : null).catch(() => null);
+      if (refreshed?.data?.documents) setDocuments(refreshed.data.documents.map(normalizeDocument));
+      if (refreshed?.data?.logs) setLogs(refreshed.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
+      notify(created.status === "review" ? "资料已进入维护工作台，部门审核通过后进入知识目录" : "草稿已进入维护工作台，提交并审核通过后进入知识目录");
     } catch (error) {
       setLoading(false);
       notify(error instanceof Error ? error.message : "上传失败，请稍后重试");

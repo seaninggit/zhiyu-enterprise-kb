@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "ai-question", 30, 60);
-    const payload = await request.json() as { question?: string }; const question = safeText(payload.question, 500);
+    const payload = await request.json() as { question?: string; history?: Array<{ role?: string; content?: string }> }; const question = safeText(payload.question, 500);
     if (question.length < 2) throw new ApiError(400, "VALIDATION_ERROR", "请输入完整问题");
     const db = getD1(); let scope = "d.status='ARCHIVED_ACTIVE' AND d.is_deleted=0"; const binds: unknown[] = [];
     if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT')`; binds.push(...ctx.deptIds); }
@@ -34,11 +34,12 @@ export async function POST(request: Request) {
     let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";
     if (sources.length) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
-      const generated = await generateGroundedAnswer(question, context, ctx.userId).catch(() => null);
+      const recent = (payload.history ?? []).slice(-4).map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
+      const generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       answer = generated || `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`;
       mode = generated ? "rag" : "retrieval_only";
     }
-    await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id) VALUES(?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid).run();
-    return ok({ answer, sources, mode }, rid);
+    const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id) VALUES(?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid).run();
+    return ok({ answer, sources, mode, queryLogId: log.meta.last_row_id }, rid);
   } catch (error) { return fail(error, rid); }
 }

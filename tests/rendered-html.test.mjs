@@ -55,4 +55,21 @@ test("AI knowledge endpoint is permission-aware and grounded", async () => {
   assert.match(rag, /没有足够依据/);
   assert.match(schema, /documentChunks/);
   assert.match(schema, /aiQueryLogs/);
+  assert.match(route, /queryLogId/);
+});
+
+test("knowledge consumption actions are persisted", async () => {
+  const [route, schema, page] = await Promise.all([
+    readFile(new URL("../app/api/engagement/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /SUBSCRIBE/);
+  assert.match(route, /AI_HELPFUL/);
+  assert.match(route, /START_WORKFLOW/);
+  assert.match(route, /ROW_ACCESS_DENIED/);
+  assert.match(schema, /knowledgeSubscriptions/);
+  assert.match(schema, /workflowRequests/);
+  assert.match(page, /查看引用/);
+  assert.match(page, /发起差旅申请/);
 });

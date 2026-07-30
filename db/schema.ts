@@ -60,6 +60,8 @@ export const documents = sqliteTable("documents", {
   size: integer("size").notNull().default(0),
   version: integer("version").notNull().default(1),
   reviewDueAt: text("review_due_at"),
+  aiIndexStatus: text("ai_index_status").notNull().default("PENDING"),
+  aiIndexedAt: text("ai_indexed_at"),
   isDeleted: integer("is_deleted", { mode: "boolean" }).notNull().default(false),
   deletedBy: integer("deleted_by"),
   deletedAt: text("deleted_at"),
@@ -82,3 +84,11 @@ export const approvalRecords = sqliteTable("approval_records", { id: integer("id
 export const auditLogs = sqliteTable("audit_logs", { id: integer("id").primaryKey({ autoIncrement: true }), documentId: integer("document_id"), deptId: integer("dept_id"), action: text("action").notNull(), actorUserId: integer("actor_user_id").notNull().default(1), actor: text("actor").notNull(), detail: text("detail").notNull().default(""), requestId: text("request_id").notNull().default(""), createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`) }, (table) => [index("audit_logs_doc_idx").on(table.documentId), index("audit_logs_dept_time_idx").on(table.deptId, table.createTime)]);
 export const feedback = sqliteTable("feedback", { id: integer("id").primaryKey({ autoIncrement: true }), documentId: integer("document_id").notNull().references(() => documents.id), type: text("type").notNull(), content: text("content").notNull(), reporterUserId: integer("reporter_user_id").notNull().default(1), reporter: text("reporter").notNull(), status: text("status").notNull().default("OPEN"), createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`) }, (table) => [index("feedback_doc_status_idx").on(table.documentId, table.status)]);
 export const rateLimits = sqliteTable("rate_limits", { subject: text("subject").notNull(), bucket: text("bucket").notNull(), count: integer("count").notNull().default(0), resetAt: integer("reset_at").notNull() }, (table) => [primaryKey({ columns: [table.subject, table.bucket] })]);
+
+export const documentChunks = sqliteTable("document_chunks", {
+  id: integer("id").primaryKey({ autoIncrement: true }), documentId: integer("document_id").notNull().references(() => documents.id), deptId: integer("dept_id").notNull().references(() => departments.id), documentVersion: integer("document_version").notNull(), chunkIndex: integer("chunk_index").notNull(), content: text("content").notNull(), embedding: text("embedding"), embeddingModel: text("embedding_model"), isActive: integer("is_active", { mode: "boolean" }).notNull().default(true), createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("document_chunks_doc_ver_idx").on(table.documentId, table.documentVersion, table.chunkIndex), index("document_chunks_dept_active_idx").on(table.deptId, table.isActive)]);
+
+export const aiQueryLogs = sqliteTable("ai_query_logs", {
+  id: integer("id").primaryKey({ autoIncrement: true }), userId: integer("user_id").notNull().references(() => users.id), deptId: integer("dept_id").notNull().references(() => departments.id), question: text("question").notNull(), answer: text("answer").notNull(), mode: text("mode").notNull(), sourceDocumentIds: text("source_document_ids").notNull().default("[]"), requestId: text("request_id").notNull(), createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [index("ai_query_logs_user_time_idx").on(table.userId, table.createTime), index("ai_query_logs_dept_time_idx").on(table.deptId, table.createTime)]);

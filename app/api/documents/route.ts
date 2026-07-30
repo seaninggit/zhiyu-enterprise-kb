@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, requiredText, safeText } from "../../../lib/api";
 import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../lib/authz";
+import { indexPublishedDocument } from "../../../lib/rag";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
 
@@ -86,6 +87,10 @@ export async function PATCH(request: Request) {
       db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, creatorId, ctx.userId, payload.action.toUpperCase(), safeText(payload.comment, 1000)),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.id, deptId, payload.action.toUpperCase(), ctx.userId, ctx.displayName, `状态更新为 ${target}`, rid),
     ]);
+    if (target === "ARCHIVED_ACTIVE") await indexPublishedDocument(payload.id).catch(async error => {
+      await db.prepare("UPDATE documents SET ai_index_status='FAILED' WHERE id=?").bind(payload.id).run();
+      console.error(JSON.stringify({ level: "error", requestId: rid, action: "AI_INDEX", documentId: payload.id, message: error instanceof Error ? error.message : "索引失败" }));
+    });
     return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(payload.id).first() }, rid);
   } catch (error) { return fail(error, rid); }
 }

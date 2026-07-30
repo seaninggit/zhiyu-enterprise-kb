@@ -10,6 +10,14 @@
 
 各环境必须使用独立资源，不在代码中保存账号、密码、Token、IP 或资源 ID。
 
+## AI环境变量
+
+- `OPENAI_API_KEY`：生产密钥，必须以Secret方式配置。
+- `OPENAI_CHAT_MODEL`：默认 `gpt-5.6-terra`，用于基于检索证据生成回答。
+- `OPENAI_EMBEDDING_MODEL`：默认 `text-embedding-3-small`，用于生成检索向量。
+
+未配置密钥时系统进入“安全检索模式”：仍执行登录校验、部门权限过滤、关键词检索、引用和AI审计，但不会调用模型生成内容。配置密钥后自动启用向量检索与RAG生成。
+
 ## 发布
 
 1. 安装依赖并执行 `npm test`。
@@ -28,4 +36,3 @@
 ## 自托管说明
 
 若必须使用 Docker Compose，需要把 Workers API 迁移为常驻 Node 服务，并用 PostgreSQL、MinIO 和企业身份提供商替换 D1、R2 和 Sites 登录。这属于独立架构版本，不能把当前边缘运行包直接包装成容器。
-

@@ -39,3 +39,20 @@ test("knowledge API implements lifecycle operations", async () => {
   assert.match(schema, /documentVisibility/);
   assert.match(schema, /userDepartments/);
 });
+
+test("AI knowledge endpoint is permission-aware and grounded", async () => {
+  const [route, rag, schema] = await Promise.all([
+    readFile(new URL("../app/api/ai/ask/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/rag.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(route, /requireApiUser/);
+  assert.match(route, /ARCHIVED_ACTIVE/);
+  assert.match(route, /d\.dept_id IN/);
+  assert.match(route, /ai_query_logs/);
+  assert.match(rag, /v1\/embeddings/);
+  assert.match(rag, /v1\/responses/);
+  assert.match(rag, /没有足够依据/);
+  assert.match(schema, /documentChunks/);
+  assert.match(schema, /aiQueryLogs/);
+});

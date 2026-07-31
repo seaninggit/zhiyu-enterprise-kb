@@ -7,9 +7,10 @@ type DocumentStatus = "draft" | "review" | "published" | "rejected" | "archived"
 type KnowledgeDocument = {
   id: number; title: string; summary: string; content: string; category: string; tags: string;
   status: DocumentStatus; securityLevel: string; owner: string; uploader: string;
-  sourceName?: string | null; mimeType?: string | null; size?: number; version: number;
-  reviewDueAt?: string | null; createdAt: string; updatedAt: string;
+  sourceName?: string | null; sourceKey?: string | null; mimeType?: string | null; size?: number; version: number;
+  reviewDueAt?: string | null; createdAt: string; updatedAt: string; versions?: DocumentVersion[];
 };
+type DocumentVersion = { id: number; version: number; changeNote: string; operator: string; createdAt: string };
 type AuditLog = { id: number; documentId?: number | null; action: string; actor: string; detail: string; createdAt: string };
 type UploadDepartment = { id: number; code: string; name: string; parent_id?: number | null; approver: string };
 type UploadMember = { id: number; dept_id: number; display_name: string };
@@ -36,7 +37,7 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
   return {
     id: Number(row.id), title: String(row.title ?? ""), summary: String(row.summary ?? ""), content: String(row.content ?? ""), category: String(row.category ?? "未分类"),
     tags: String(row.tags ?? ""), status, securityLevel: String(row.securityLevel ?? row.security_level ?? "INTERNAL"), owner: String(row.owner ?? ""), uploader: String(row.uploader ?? row.creator_name ?? ""),
-    sourceName: row.sourceName as string ?? row.source_name as string ?? null, mimeType: row.mimeType as string ?? row.mime_type as string ?? null, size: Number(row.size ?? 0), version: Number(row.version ?? 1),
+    sourceName: row.sourceName as string ?? row.source_name as string ?? null, sourceKey: row.sourceKey as string ?? row.source_key as string ?? null, mimeType: row.mimeType as string ?? row.mime_type as string ?? null, size: Number(row.size ?? 0), version: Number(row.version ?? 1),
     reviewDueAt: row.reviewDueAt as string ?? row.review_due_at as string ?? null, createdAt: String(row.createdAt ?? row.create_time ?? ""), updatedAt: String(row.updatedAt ?? row.update_time ?? ""),
   };
 }
@@ -73,7 +74,7 @@ export default function Home() {
   }, []);
   useEffect(() => {
     const id = Number(new URLSearchParams(window.location.search).get("document")); if (!id) return;
-    fetch(`/api/documents/${id}`, { cache: "no-store" }).then(response => response.json().then(payload => ({ response, payload }))).then(({ response, payload }) => { if (response.ok) setSelected(normalizeDocument(payload.data.document)); }).catch(() => undefined);
+    openDocument(id).catch(() => undefined);
   }, []);
 
   const published = documents.filter((item) => item.status === "published");
@@ -84,6 +85,16 @@ export default function Home() {
   const visible = view === "favorites" ? filtered.filter((item) => favorites.includes(item.id)) : filtered;
 
   function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2300); }
+  async function openDocument(documentOrId: KnowledgeDocument | number) {
+    const id = typeof documentOrId === "number" ? documentOrId : documentOrId.id;
+    const response = await fetch(`/api/documents/${id}`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error?.message ?? "资料加载失败");
+    const detail = normalizeDocument(payload.data.document);
+    if (typeof documentOrId !== "number") detail.tags = documentOrId.tags;
+    detail.versions = (payload.data.versions ?? []).map((row: Record<string, unknown>) => ({ id: Number(row.id), version: Number(row.version), changeNote: String(row.change_note ?? ""), operator: String(row.operator ?? ""), createdAt: String(row.create_time ?? "") }));
+    setSelected(detail);
+  }
   function toggleFavorite(id: number) { setFavorites((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
   async function audit(documentId: number, action: string, detail: string) {
     setLogs((current) => [{ id: Date.now(), documentId, action, actor: "李然", detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
@@ -104,6 +115,13 @@ export default function Home() {
       const file = data.get("file");
       let stored: Record<string, unknown> = {};
       if (file instanceof File && file.size > 0) {
+        const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+        const textLike = file.type.startsWith("text/") || ["txt", "md", "csv", "json", "xml", "yaml", "yml", "log"].includes(extension);
+        if (textLike && !String(data.get("content") ?? "").trim()) {
+          const extracted = await file.text();
+          data.set("content", extracted.slice(0, 50000));
+          if (!String(data.get("summary") ?? "").trim()) data.set("summary", extracted.replace(/\s+/g, " ").trim().slice(0, 180));
+        }
         const uploadResponse = await fetch("/api/uploads", { method: "PUT", headers: { "content-type": file.type || "application/octet-stream", "x-file-name": encodeURIComponent(file.name), "x-dept-id": String(data.get("deptId") || currentUser.primaryDeptId) }, body: file });
         const uploadPayload = await uploadResponse.json().catch(() => ({ error: { message: "原文件存储失败" } }));
         if (!uploadResponse.ok) throw new Error(uploadPayload.error?.message ?? "原文件存储失败");
@@ -159,9 +177,9 @@ export default function Home() {
         <button className="primary-action" onClick={() => setUploadOpen(true)}>＋ 上传资料</button>
       </header>
 
-      {view === "admin" ? <AdminView documents={documents} role={currentUser.role} onUpload={() => setUploadOpen(true)} onSelect={setSelected} onStatus={updateStatus} />
+      {view === "admin" ? <AdminView documents={documents} role={currentUser.role} onUpload={() => setUploadOpen(true)} onSelect={(doc) => openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败"))} onStatus={updateStatus} />
       : view === "audit" ? <AuditView logs={logs} documents={documents} />
-      : <LibraryView documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { setSelected(doc); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
+      : <LibraryView documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败")); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
     </div>
 
     {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onShare={() => engageDocument(selected, "SHARE")} onSubscribe={() => engageDocument(selected, "SUBSCRIBE")} onContact={() => engageDocument(selected, "CONTACT_OWNER")} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: { message: "原文件加载失败" } })); throw new Error(payload.error?.message ?? "原文件加载失败"); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
@@ -169,7 +187,7 @@ export default function Home() {
     {uploadOpen && <UploadModal loading={loading} currentUser={currentUser} options={uploadOptions} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
     {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try { await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) }); } catch { /* demo fallback */ } audit(selected.id, "FEEDBACK", content); setFeedbackOpen(false); notify("反馈已提交给知识负责人"); }} />}
     <button className="ai-fab" onClick={() => setAiOpen(true)}><span>✦</span><span><b>问问小知</b><small>回答会标注知识来源</small></span></button>
-    {aiOpen && <AiPanel onClose={() => setAiOpen(false)} onOpen={async (documentId) => { try { const response = await fetch(`/api/documents/${documentId}`, { cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "资料加载失败"); setSelected(normalizeDocument(payload.data.document)); setAiOpen(false); } catch (error) { notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
+    {aiOpen && <AiPanel onClose={() => setAiOpen(false)} onOpen={async (documentId) => { try { await openDocument(documentId); setAiOpen(false); } catch (error) { notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
     {toast && <div className="toast" role="status">✓ {toast}</div>}
   </div>;
 }
@@ -192,7 +210,18 @@ function AdminView({ documents, role, onUpload, onSelect, onStatus }: { document
 
 function AuditView({ logs, documents }: { logs: AuditLog[]; documents: KnowledgeDocument[] }) { const action: Record<string, string> = { VIEW: "查看", DOWNLOAD: "下载", EXPORT: "导出", FEEDBACK: "提交反馈", UPDATE: "更新", UPLOAD: "上传", APPROVE: "审批通过", REJECT: "驳回", SUBMIT_REVIEW: "提交复核" }; return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">AUDIT TRAIL</span><h1>审计日志</h1><p>追踪资料从上传到消费的全部关键操作。</p></div><button className="outline-action" onClick={() => downloadBlob("知识库审计日志.csv", `时间,操作者,操作,详情\n${logs.map(l => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`, "text/csv;charset=utf-8")}>导出 CSV</button></section><section className="audit-card">{logs.map(log => <div className="audit-item" key={log.id}><span className="audit-icon">{log.action === "DOWNLOAD" ? "↓" : log.action === "VIEW" ? "◉" : "✓"}</span><div><b>{log.actor} · {action[log.action] ?? log.action}</b><p>{log.detail || documents.find(d => d.id === log.documentId)?.title}</p></div><time>{log.createdAt}</time></div>)}</section></main>; }
 
-function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload, onShare, onSubscribe, onContact }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void; onShare: () => void; onSubscribe: () => void; onContact: () => void }) { return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button onClick={onClose}>×</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary}</p></header><div className="drawer-actions"><button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onShare}>⎘ 内部链接</button><button onClick={onSubscribe}>◇ 订阅更新</button><button onClick={onContact}>@ 联系负责人</button><button onClick={onDownload}>↓ 下载原件</button><button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div><section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>上传人</span><b>{doc.uploader}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div><div><span>下次复核</span><b>{doc.reviewDueAt || "未设置"}</b></div></section><article className="doc-content"><h3>文档正文</h3>{doc.content.split("\n").map((p, i) => <p key={i}>{p}</p>)}</article><section className="version-list"><h3>版本记录</h3><div><span>V{doc.version}.0</span><p><b>当前版本</b><small>{doc.uploader} 更新 · {doc.updatedAt.slice(0, 10)}</small></p></div><div><span>V{Math.max(1, doc.version - 1)}.0</span><p><b>历史版本</b><small>完成内容复核与格式修订</small></p></div></section></aside></div>; }
+function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload, onShare, onSubscribe, onContact }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void; onShare: () => void; onSubscribe: () => void; onContact: () => void }) {
+  const [previewUrl, setPreviewUrl] = useState("");
+  const isPdf = Boolean(doc.sourceKey && doc.mimeType?.includes("pdf"));
+  useEffect(() => {
+    if (!isPdf) return;
+    let url = ""; let cancelled = false;
+    fetch(`/api/documents/${doc.id}?download=1`).then(response => response.ok ? response.blob() : Promise.reject()).then(blob => { if (!cancelled) { url = URL.createObjectURL(blob); setPreviewUrl(url); } }).catch(() => undefined);
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+  }, [doc.id, isPdf]);
+  const versions = doc.versions ?? [];
+  return <div className="drawer-backdrop" onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button onClick={onClose}>×</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary || "暂无摘要"}</p></header><div className="drawer-actions"><button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onShare}>⎘ 内部链接</button><button onClick={onSubscribe}>◇ 订阅更新</button><button onClick={onContact}>@ 联系负责人</button>{doc.sourceKey && <button onClick={onDownload}>↓ 下载原件</button>}<button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div><section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>上传人</span><b>{doc.uploader}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div><div><span>下次复核</span><b>{doc.reviewDueAt || "未设置"}</b></div></section><article className="doc-content"><h3>{previewUrl ? "原件预览" : "文档正文"}</h3>{previewUrl ? <iframe className="pdf-preview" title={`${doc.title} PDF预览`} src={previewUrl} /> : doc.content.trim() ? doc.content.split("\n").filter(Boolean).map((p, i) => <p key={i}>{p}</p>) : <div className="content-empty"><b>附件已安全保存</b><p>{doc.sourceName ? `当前文件为 ${doc.sourceName}，正文尚未解析为可检索文本。` : "当前资料尚未填写正文。"}</p>{doc.sourceKey && <button onClick={onDownload}>下载原件查看</button>}</div>}</article><section className="version-list"><h3>版本记录</h3>{versions.length ? versions.map((item, index) => <div key={item.id}><span>V{item.version}.0</span><p><b>{index === 0 ? "当前版本" : "历史版本"}</b><small>{item.operator} · {item.changeNote || (item.version === 1 ? "首次上传" : "内容更新")} · {item.createdAt.slice(0, 10)}</small></p></div>) : <div><span>V{doc.version}.0</span><p><b>当前版本</b><small>{doc.uploader} · {doc.version === 1 ? "首次上传" : "内容更新"} · {doc.updatedAt.slice(0, 10)}</small></p></div>}</section></aside></div>;
+}
 
 function UploadModal({ loading, currentUser, options, onSubmit, onClose }: { loading: boolean; currentUser: { displayName: string; role: string; primaryDeptId: number }; options: UploadOptions; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
   const [fileName, setFileName] = useState("");

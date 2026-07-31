@@ -22,6 +22,9 @@ export async function GET(request: Request) {
       FROM documents d JOIN users u ON u.id=d.create_user_id JOIN departments dep ON dep.id=d.dept_id
       WHERE ${where} ORDER BY d.update_time DESC, d.id DESC LIMIT 500`).bind(...binds).all();
     const logs = ctx.role === "SUPER_ADMIN" ? await db.prepare("SELECT * FROM audit_logs ORDER BY create_time DESC LIMIT 50").all() : await db.prepare(`SELECT * FROM audit_logs WHERE dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
+    const governanceTasks = ctx.role === "EMPLOYEE" ? { results: [] } : ctx.role === "SUPER_ADMIN"
+      ? await db.prepare("SELECT t.*,d.title AS document_title,u.display_name AS reporter FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id WHERE t.status='OPEN' ORDER BY t.create_time DESC LIMIT 50").all()
+      : await db.prepare(`SELECT t.*,d.title AS document_title,u.display_name AS reporter FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id WHERE t.status='OPEN' AND t.dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY t.create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
     const departmentWhere = ctx.role === "SUPER_ADMIN" ? "d.is_active=1" : `d.is_active=1 AND d.id IN (${placeholders(ctx.deptIds)})`;
     const departments = await db.prepare(`SELECT d.id,d.code,d.name,d.parent_id,
       COALESCE((SELECT u.display_name FROM users u WHERE u.id=d.manager_user_id),
@@ -30,7 +33,7 @@ export async function GET(request: Request) {
     const members = await db.prepare(`SELECT ud.dept_id,u.id,u.display_name FROM user_departments ud JOIN users u ON u.id=ud.user_id
       WHERE u.status='ACTIVE' AND ud.dept_id IN (${placeholders(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)}) ORDER BY u.display_name`)
       .bind(...(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)).all();
-    return ok({ documents: result.results, logs: logs.results, currentUser: ctx, uploadOptions: { departments: departments.results, members: members.results } }, rid);
+    return ok({ documents: result.results, logs: logs.results, governanceTasks: governanceTasks.results, currentUser: ctx, uploadOptions: { departments: departments.results, members: members.results } }, rid);
   } catch (error) { return fail(error, rid); }
 }
 

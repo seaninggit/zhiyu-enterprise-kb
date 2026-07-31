@@ -14,14 +14,21 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "engagement", 60, 60);
-    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL"; documentId?: number; queryLogId?: number; helpful?: boolean; reason?: string };
+    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL"; documentId?: number; queryLogId?: number; messageId?: number; helpful?: boolean; reason?: string; detail?: string };
     if (!payload.action) throw new ApiError(400, "VALIDATION_ERROR", "操作类型不能为空"); const db = getD1();
     if (payload.action === "AI_HELPFUL") {
       if (!payload.queryLogId) throw new ApiError(400, "VALIDATION_ERROR", "问答记录不能为空");
       const query = await db.prepare("SELECT id FROM ai_query_logs WHERE id=? AND user_id=?").bind(payload.queryLogId, ctx.userId).first();
       if (!query) throw new ApiError(404, "QUERY_NOT_FOUND", "问答记录不存在");
-      await db.prepare("INSERT INTO ai_answer_feedback(query_log_id,user_id,helpful,reason) VALUES(?,?,?,?) ON CONFLICT(query_log_id,user_id) DO UPDATE SET helpful=excluded.helpful,reason=excluded.reason,create_time=CURRENT_TIMESTAMP").bind(payload.queryLogId, ctx.userId, payload.helpful ? 1 : 0, safeText(payload.reason, 500)).run();
-      return ok({ recorded: true }, rid, 201);
+      const reason = safeText(payload.reason, 100); const detail = safeText(payload.detail, 1000);
+      if (!payload.helpful && !reason) throw new ApiError(400, "FEEDBACK_REASON_REQUIRED", "请选择没有解决的原因");
+      const message = payload.messageId ? await db.prepare("SELECT id,source_payload FROM ai_messages WHERE id=? AND user_id=? AND query_log_id=?").bind(payload.messageId, ctx.userId, payload.queryLogId).first<Record<string, unknown>>() : null;
+      let sourceDocumentId: number | null = null; try { sourceDocumentId = Number(JSON.parse(String(message?.source_payload ?? "[]"))[0]?.documentId) || null; } catch { /* malformed source payload */ }
+      await db.batch([
+        db.prepare("INSERT INTO ai_answer_feedback(query_log_id,user_id,helpful,reason) VALUES(?,?,?,?) ON CONFLICT(query_log_id,user_id) DO UPDATE SET helpful=excluded.helpful,reason=excluded.reason,create_time=CURRENT_TIMESTAMP").bind(payload.queryLogId, ctx.userId, payload.helpful ? 1 : 0, [reason, detail].filter(Boolean).join("：")),
+        ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,source_message_id,reporter_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',?,?,?,?,?,?)").bind(ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId, reason, detail)] : []),
+      ]);
+      return ok({ recorded: true, governanceTaskCreated: !payload.helpful }, rid, 201);
     }
     if (!payload.documentId) throw new ApiError(400, "VALIDATION_ERROR", "文档不能为空"); const doc = await readableDocument(payload.documentId, ctx);
     if (payload.action === "SUBSCRIBE") {

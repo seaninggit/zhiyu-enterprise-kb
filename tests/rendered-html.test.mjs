@@ -86,3 +86,22 @@ test("enterprise demo corpus covers five departments and lifecycle states", asyn
   for (const status of ["ARCHIVED_ACTIVE", "PENDING_DEPT_REVIEW", "DRAFT", "EXPIRED_VOID"]) assert.match(seed, new RegExp(status));
   assert.match(seed, /document_chunks/);
 });
+
+test("AI workbench persists conversations and closes feedback loop", async () => {
+  const [ask, conversations, engagement, schema, page] = await Promise.all([
+    readFile(new URL("../app/api/ai/ask/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/ai/conversations/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/engagement/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(ask, /conversationId/);
+  assert.match(ask, /ai_messages/);
+  assert.match(conversations, /export async function DELETE/);
+  assert.match(engagement, /knowledge_governance_tasks/);
+  assert.match(schema, /aiConversations/);
+  assert.match(schema, /knowledgeGovernanceTasks/);
+  assert.match(page, /历史会话/);
+  assert.match(page, /答案不准确/);
+  assert.match(page, /提交改进/);
+});

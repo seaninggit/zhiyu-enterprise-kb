@@ -36,6 +36,13 @@
       "when": 1785463200000,
       "tag": "0004_enterprise_demo_corpus",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1785551400000,
+      "tag": "0005_ai_conversation_workbench",
+      "breakpoints": true
     }
   ]
 }

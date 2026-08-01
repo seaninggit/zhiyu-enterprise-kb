@@ -109,7 +109,10 @@ test("AI workbench persists conversations and closes feedback loop", async () =>
   assert.match(styles, /\.ai-workspace \{ min-width:0; min-height:0; overflow:hidden/);
   assert.match(styles, /\.ai-conversation \{[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain/);
   assert.match(styles, /Airier enterprise palette/);
-  assert.match(styles, /\.sidebar \{ background:linear-gradient\(180deg,#376b82/);
+  assert.match(styles, /background:linear-gradient\(180deg,#f2f8fc/);
+  assert.match(styles, /--sidebar-width:clamp\(196px,15\.5vw,224px\)/);
+  assert.match(styles, /\.sidebar-collapsed \{ --sidebar-width:76px/);
+  assert.match(page, /收起功能栏/);
 });
 
 test("enterprise identity lifecycle requires explicit authorization", async () => {

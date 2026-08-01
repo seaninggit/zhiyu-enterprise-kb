@@ -68,6 +68,7 @@ export default function Home() {
   const [currentUser, setCurrentUser] = useState<CurrentUser>({ email: "", displayName: "正在识别账号", role: "EMPLOYEE", primaryDeptId: 1 });
   const [authError, setAuthError] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
   const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null;
 
@@ -179,9 +180,11 @@ export default function Home() {
   }
 
   if (authError) return <main className="access-state"><span className="brand-mark">Z</span><small>ENTERPRISE ACCESS</small><h1>账号暂不可访问</h1><p>{authError}</p><div><b>企业账号处理流程</b><span>身份已由统一登录识别</span><span>请联系知识库超级管理员分配部门与角色</span><span>配置完成后刷新页面即可进入</span></div><a href="/signout-with-chatgpt?return_to=/">切换登录账号</a></main>;
-  return <div className="enterprise-app">
+  function toggleSidebar() { setSidebarCollapsed(value => !value); setAccountMenuOpen(false); }
+  return <div className={`enterprise-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar">
       <button className="brand side-brand" onClick={() => setView("library")}><span className="brand-mark">Z</span><span>知域<small>企业知识中台</small></span></button>
+      <button className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开功能栏" : "收起功能栏"} title={sidebarCollapsed ? "展开功能栏" : "收起功能栏"} onClick={toggleSidebar}>{sidebarCollapsed ? "›" : "‹"}</button>
       <nav className="side-nav" aria-label="功能导航">
         <span>知识服务</span>
         <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><i>⌂</i>知识广场</button>

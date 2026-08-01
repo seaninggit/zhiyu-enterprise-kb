@@ -7,35 +7,32 @@ import { ApiError } from "./api";
 export type RoleCode = "SUPER_ADMIN" | "DEPT_ADMIN" | "EMPLOYEE";
 export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number };
 
-async function ensureBaseData(email: string, displayName: string) {
+async function ensureIdentityRecord(email: string, displayName: string) {
   const db = getDb();
   const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (found.length) return;
   const d1 = getD1();
-  const count = await d1.prepare("SELECT COUNT(*) AS total FROM users WHERE status='ACTIVE'").first<{ total: number }>();
-  const isFirst = Number(count?.total ?? 0) === 0;
   await d1.batch([
     d1.prepare("INSERT OR IGNORE INTO departments(id, code, name, is_active) VALUES(1, 'GENERAL', '综合管理部', 1)"),
     d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(1, 'SUPER_ADMIN', '超级管理员', '全局知识治理')"),
     d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(2, 'DEPT_ADMIN', '部门管理员', '本部门知识治理')"),
     d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(3, 'EMPLOYEE', '普通员工', '知识生产与使用')"),
-    d1.prepare("INSERT INTO users(email, display_name, status) VALUES(?, ?, 'ACTIVE')").bind(email, displayName),
-  ]);
-  const user = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  if (!user.length) throw new ApiError(500, "USER_BOOTSTRAP_FAILED", "用户初始化失败");
-  await d1.batch([
-    d1.prepare("INSERT OR IGNORE INTO user_departments(user_id, dept_id, is_primary, is_dept_admin) VALUES(?, 1, 1, ?)").bind(user[0].id, isFirst ? 1 : 0),
-    d1.prepare("INSERT OR IGNORE INTO user_roles(user_id, role_id) VALUES(?, ?)").bind(user[0].id, isFirst ? 1 : 3),
+    d1.prepare("INSERT INTO users(email, display_name, status, identity_provider) VALUES(?, ?, 'PENDING', 'CHATGPT')").bind(email, displayName),
   ]);
 }
 
 export async function requireApiUser(): Promise<AuthContext> {
   const identity = await getChatGPTUser();
   if (!identity) throw new ApiError(401, "UNAUTHENTICATED", "请先登录");
-  await ensureBaseData(identity.email, identity.displayName);
+  await ensureIdentityRecord(identity.email, identity.displayName);
   const db = getDb();
+  const [account] = await db.select().from(users).where(eq(users.email, identity.email)).limit(1);
+  if (!account) throw new ApiError(500, "USER_BOOTSTRAP_FAILED", "身份记录初始化失败");
+  if (account.status === "PENDING") throw new ApiError(403, "ACCOUNT_PENDING", "账号已识别，等待企业管理员分配部门与角色");
+  if (account.status !== "ACTIVE") throw new ApiError(403, "ACCOUNT_DISABLED", "账号已停用或离职，无法访问企业知识库");
+  await getD1().prepare("UPDATE users SET display_name=?,last_login_time=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(identity.displayName, account.id).run();
   const [user] = await db.select().from(users).where(and(eq(users.email, identity.email), eq(users.status, "ACTIVE"))).limit(1);
-  if (!user) throw new ApiError(403, "ACCOUNT_DISABLED", "账号不存在或已停用");
+  if (!user) throw new ApiError(403, "ACCOUNT_DISABLED", "账号不可用");
   const [roleRows, deptRows] = await Promise.all([
     db.select({ code: roles.code }).from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id)).where(eq(userRoles.userId, user.id)),
     db.select({ deptId: userDepartments.deptId, isPrimary: userDepartments.isPrimary, isDeptAdmin: userDepartments.isDeptAdmin }).from(userDepartments).where(eq(userDepartments.userId, user.id)),

@@ -17,9 +17,13 @@ export const users = sqliteTable("users", {
   email: text("email").notNull(),
   displayName: text("display_name").notNull(),
   status: text("status").notNull().default("ACTIVE"),
+  identityProvider: text("identity_provider").notNull().default("CHATGPT"),
+  lastLoginTime: text("last_login_time"),
+  activatedBy: integer("activated_by"),
+  disabledTime: text("disabled_time"),
   createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`),
   updateTime: text("update_time").notNull().default(sql`CURRENT_TIMESTAMP`),
-}, (table) => [uniqueIndex("users_email_uidx").on(table.email), index("users_status_idx").on(table.status)]);
+}, (table) => [uniqueIndex("users_email_uidx").on(table.email), index("users_status_idx").on(table.status), index("users_last_login_idx").on(table.lastLoginTime)]);
 
 export const roles = sqliteTable("roles", {
   id: integer("id").primaryKey({ autoIncrement: true }),

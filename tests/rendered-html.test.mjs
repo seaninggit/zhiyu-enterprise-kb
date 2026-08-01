@@ -109,3 +109,25 @@ test("AI workbench persists conversations and closes feedback loop", async () =>
   assert.match(styles, /\.ai-workspace \{ min-width:0; min-height:0; overflow:hidden/);
   assert.match(styles, /\.ai-conversation \{[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain/);
 });
+
+test("enterprise identity lifecycle requires explicit authorization", async () => {
+  const [authz, admin, schema, migration, page] = await Promise.all([
+    readFile(new URL("../lib/authz.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/admin/users/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../drizzle/0006_enterprise_identity_lifecycle.sql", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(authz, /'PENDING'/);
+  assert.match(authz, /ACCOUNT_PENDING/);
+  assert.match(authz, /ACCOUNT_DISABLED/);
+  assert.doesNotMatch(authz, /isFirst/);
+  assert.match(admin, /requireSuper/);
+  assert.match(admin, /OFFBOARDED/);
+  assert.match(admin, /不能在当前会话中修改自己的权限或状态/);
+  assert.match(schema, /identityProvider/);
+  assert.match(migration, /last_login_time/);
+  assert.match(page, /账号与权限/);
+  assert.match(page, /离职权限已回收/);
+  assert.doesNotMatch(page, /下午好，李然/);
+});

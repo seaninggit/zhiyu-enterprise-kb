@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
-type View = "library" | "admin" | "favorites" | "audit";
+type View = "library" | "admin" | "favorites" | "audit" | "accounts";
 type DocumentStatus = "draft" | "review" | "published" | "rejected" | "archived";
 type KnowledgeDocument = {
   id: number; title: string; summary: string; content: string; category: string; tags: string;
@@ -16,6 +16,8 @@ type GovernanceTask = { id: number; reason: string; detail: string; documentTitl
 type UploadDepartment = { id: number; code: string; name: string; parent_id?: number | null; approver: string };
 type UploadMember = { id: number; dept_id: number; display_name: string };
 type UploadOptions = { departments: UploadDepartment[]; members: UploadMember[] };
+type CurrentUser = { userId?: number; email: string; displayName: string; role: string; primaryDeptId: number };
+type EnterpriseAccount = { id:number; email:string; display_name:string; status:string; identity_provider:string; last_login_time?:string|null; role:string; departments:string; primary_dept_id:number };
 
 const fallbackDocuments: KnowledgeDocument[] = [
   { id: 1, title: "新员工入职指南", summary: "从账号开通、办公环境到团队融入，一份完整的新员工上手手册。", content: "欢迎加入知域。本指南覆盖入职第一周需要完成的账号开通、设备领取、安全培训、导师沟通和团队融入事项。\n\n第一天：完成工牌、邮箱、即时通讯与代码仓库账号开通。\n第一周：完成信息安全培训，与直属主管确认试用期目标。", category: "组织人事", tags: "入职,新员工", status: "published", securityLevel: "内部公开", owner: "People 团队", uploader: "林晓", sourceName: "新员工入职指南.pdf", mimeType: "application/pdf", size: 2457600, version: 3, reviewDueAt: "2027-01-15", createdAt: "2026-03-18", updatedAt: "2026-07-28" },
@@ -63,7 +65,9 @@ export default function Home() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
-  const [currentUser, setCurrentUser] = useState({ displayName: "李然", role: "EMPLOYEE", primaryDeptId: 1 });
+  const [currentUser, setCurrentUser] = useState<CurrentUser>({ email: "", displayName: "正在识别账号", role: "EMPLOYEE", primaryDeptId: 1 });
+  const [authError, setAuthError] = useState("");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
   const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null;
 
@@ -81,13 +85,13 @@ export default function Home() {
   }, [hasOpenOverlay]);
 
   useEffect(() => {
-    fetch("/api/documents", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {
+    fetch("/api/documents", { cache: "no-store" }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "账号加载失败"); return payload; }).then((data) => {
       if (data.data?.documents?.length) setDocuments(data.data.documents.map(normalizeDocument));
       if (data.data?.logs?.length) setLogs(data.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
       if (data.data?.governanceTasks) setGovernanceTasks(data.data.governanceTasks.map((task: Record<string, unknown>) => ({ id: Number(task.id), reason: String(task.reason), detail: String(task.detail ?? ""), documentTitle: String(task.document_title ?? "未关联具体文档"), reporter: String(task.reporter), createdAt: String(task.create_time) })));
       if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
       if (data.data?.uploadOptions?.departments?.length) setUploadOptions(data.data.uploadOptions);
-    }).catch(() => undefined);
+    }).catch(async (error) => { setAuthError(error instanceof Error ? error.message : "账号加载失败"); });
   }, []);
   useEffect(() => {
     const id = Number(new URLSearchParams(window.location.search).get("document")); if (!id) return;
@@ -115,7 +119,7 @@ export default function Home() {
   }
   function toggleFavorite(id: number) { setFavorites((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]); }
   async function audit(documentId: number, action: string, detail: string) {
-    setLogs((current) => [{ id: Date.now(), documentId, action, actor: "李然", detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
+    setLogs((current) => [{ id: Date.now(), documentId, action, actor: currentUser.displayName, detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
   }
   async function updateStatus(id: number, action: "submit" | "approve" | "reject" | "archive") {
     const next: DocumentStatus = action === "submit" ? "review" : action === "approve" ? "published" : action === "reject" ? "draft" : "archived";
@@ -174,6 +178,7 @@ export default function Home() {
     } catch (error) { notify(error instanceof Error ? error.message : "操作失败"); }
   }
 
+  if (authError) return <main className="access-state"><span className="brand-mark">Z</span><small>ENTERPRISE ACCESS</small><h1>账号暂不可访问</h1><p>{authError}</p><div><b>企业账号处理流程</b><span>身份已由统一登录识别</span><span>请联系知识库超级管理员分配部门与角色</span><span>配置完成后刷新页面即可进入</span></div><a href="/signout-with-chatgpt?return_to=/">切换登录账号</a></main>;
   return <div className="enterprise-app">
     <aside className="sidebar">
       <button className="brand side-brand" onClick={() => setView("library")}><span className="brand-mark">Z</span><span>知域<small>企业知识中台</small></span></button>
@@ -184,8 +189,10 @@ export default function Home() {
         <span>知识治理</span>
         <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><i>▦</i>维护工作台</button>
         <button className={view === "audit" ? "active" : ""} onClick={() => setView("audit")}><i>≡</i>审计日志</button>
+        {currentUser.role === "SUPER_ADMIN" && <button className={view === "accounts" ? "active" : ""} onClick={() => setView("accounts")}><i>♙</i>账号与权限</button>}
       </nav>
-      <div className="user-card"><span>{currentUser.displayName.slice(0, 1)}</span><div><b>{currentUser.displayName}</b><small>{currentUser.role === "SUPER_ADMIN" ? "超级管理员" : currentUser.role === "DEPT_ADMIN" ? "部门管理员" : "普通员工"}</small></div><i>•••</i></div>
+      <button className="user-card" onClick={() => setAccountMenuOpen(value => !value)}><span>{currentUser.displayName.slice(0, 1)}</span><div><b>{currentUser.displayName}</b><small>{currentUser.role === "SUPER_ADMIN" ? "超级管理员" : currentUser.role === "DEPT_ADMIN" ? "部门管理员" : "普通员工"}</small></div><i>•••</i></button>
+      {accountMenuOpen && <div className="account-menu"><b>{currentUser.email}</b><span>身份来源：企业统一登录</span>{currentUser.role === "SUPER_ADMIN" && <button onClick={() => { setView("accounts"); setAccountMenuOpen(false); }}>账号与权限</button>}<a href="/signout-with-chatgpt?return_to=/">退出登录</a></div>}
     </aside>
 
     <div className="app-main">
@@ -196,8 +203,9 @@ export default function Home() {
       </header>
 
       {view === "admin" ? <AdminView documents={documents} governanceTasks={governanceTasks} role={currentUser.role} onUpload={() => setUploadOpen(true)} onSelect={(doc) => openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败"))} onStatus={updateStatus} />
+      : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? <AccountAdminView notify={notify} />
       : view === "audit" ? <AuditView logs={logs} documents={documents} />
-      : <LibraryView documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败")); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
+      : <LibraryView currentUser={currentUser} documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败")); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
     </div>
 
     {selected && <DocumentDrawer document={selected} favorite={favorites.includes(selected.id)} onClose={() => setSelected(null)} onFavorite={() => toggleFavorite(selected.id)} onFeedback={() => setFeedbackOpen(true)} onShare={() => engageDocument(selected, "SHARE")} onSubscribe={() => engageDocument(selected, "SUBSCRIBE")} onContact={() => engageDocument(selected, "CONTACT_OWNER")} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: { message: "原文件加载失败" } })); throw new Error(payload.error?.message ?? "原文件加载失败"); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
@@ -210,9 +218,9 @@ export default function Home() {
   </div>;
 }
 
-function LibraryView({ documents, allCount, query, category, setCategory, setQuery, favorites, toggleFavorite, onSelect, favoriteMode }: { documents: KnowledgeDocument[]; allCount: number; query: string; category: string; setCategory: (v: string) => void; setQuery: (v: string) => void; favorites: number[]; toggleFavorite: (id: number) => void; onSelect: (doc: KnowledgeDocument) => void; favoriteMode: boolean }) {
+function LibraryView({ currentUser, documents, allCount, query, category, setCategory, setQuery, favorites, toggleFavorite, onSelect, favoriteMode }: { currentUser:CurrentUser; documents: KnowledgeDocument[]; allCount: number; query: string; category: string; setCategory: (v: string) => void; setQuery: (v: string) => void; favorites: number[]; toggleFavorite: (id: number) => void; onSelect: (doc: KnowledgeDocument) => void; favoriteMode: boolean }) {
   return <main className="workspace">
-    <section className="welcome"><div><span className="page-kicker">KNOWLEDGE HUB</span><h1>{favoriteMode ? "我的收藏" : "下午好，李然"}</h1><p>{favoriteMode ? "集中查看你持续关注的知识资产。" : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}</p></div><div className="governance-chip"><span>知识健康度</span><b>92<small>%</small></b><i>较上月 +3.2%</i></div></section>
+    <section className="welcome"><div><span className="page-kicker">KNOWLEDGE HUB</span><h1>{favoriteMode ? "我的收藏" : `你好，${currentUser.displayName}`}</h1><p>{favoriteMode ? "集中查看你持续关注的知识资产。" : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}</p></div><div className="governance-chip"><span>知识健康度</span><b>92<small>%</small></b><i>较上月 +3.2%</i></div></section>
     {!favoriteMode && <section className="hero-search"><span>⌕</span><div><small>在企业知识中寻找答案</small><input aria-label="知识检索" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="例如：差旅报销需要哪些材料？" /></div><button>搜索</button></section>}
     <section className="library-section"><div className="section-title"><div><span className="page-kicker">CURATED KNOWLEDGE</span><h2>{favoriteMode ? "已收藏知识" : "知识目录"}</h2></div><div className="filter-tabs" role="tablist">{categories.map((item) => <button role="tab" aria-selected={category === item} className={category === item ? "active" : ""} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div></div>
       {documents.length ? <div className="doc-grid">{documents.map((doc) => <article className="doc-card" key={doc.id}><div className="doc-card-head"><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><button aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`} onClick={() => toggleFavorite(doc.id)}>{favorites.includes(doc.id) ? "★" : "☆"}</button></div><button className="doc-main" onClick={() => onSelect(doc)}><span className="file-tile">{doc.mimeType?.includes("pdf") ? "PDF" : doc.mimeType?.includes("word") ? "DOC" : "DOC"}</span><h3>{doc.title}</h3><p>{doc.summary}</p></button><div className="tag-row">{doc.tags.split(",").filter(Boolean).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="doc-foot"><span className="mini-avatar">{doc.owner.slice(0, 1)}</span><div><b>{doc.owner}</b><small>{doc.uploader} 上传 · V{doc.version}.0</small></div><span>{doc.category}</span></div></article>)}</div>
@@ -226,7 +234,17 @@ function AdminView({ documents, governanceTasks, role, onUpload, onSelect, onSta
   return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">GOVERNANCE CONSOLE</span><h1>知识维护工作台</h1><p>管理资料入库、审核发布、AI反馈、版本与生命周期。</p></div><button className="primary-action" onClick={onUpload}>＋ 上传新资料</button></section><div className="metric-grid">{cards.map(card => <div key={card.label}><span>{card.label}</span><b>{card.value}</b><small>{card.hint}</small></div>)}</div>{governanceTasks.length > 0 && <section className="governance-tasks"><div className="table-title"><div><h2>AI 问答待治理</h2><p>用户“没解决”的问答已关联部门与引用知识</p></div><span>{governanceTasks.length} 项待处理</span></div>{governanceTasks.map(task => <div className="governance-task" key={task.id}><span>AI</span><div><b>{task.reason} · {task.documentTitle}</b><p>{task.detail || "用户未补充具体说明"}</p><small>{task.reporter} 提交 · {task.createdAt}</small></div><i>待处理</i></div>)}</section>}<section className="table-card"><div className="table-title"><div><h2>资料与审批记录</h2><p>草稿提交部门审核，审批通过后自动进入知识目录</p></div><button>筛选 ▾</button></div><div className="data-table"><div className="data-row table-head"><span>资料名称</span><span>分类 / 密级</span><span>上传人与负责人</span><span>版本 / 复核日</span><span>状态</span><span>操作</span></div>{documents.map(doc => <div className="data-row" key={doc.id}><button className="table-document" onClick={() => onSelect(doc)}><span>{doc.mimeType?.includes("pdf") ? "P" : "W"}</span><div><b>{doc.title}</b><small>{doc.sourceName ?? "在线文档"} · {fmtSize(doc.size)}</small></div></button><span><b>{doc.category}</b><small>{doc.securityLevel}</small></span><span><b>{doc.uploader}</b><small>负责人：{doc.owner}</small></span><span><b>V{doc.version}.0</b><small>{doc.reviewDueAt || "未设置"}</small></span><span><i className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</i></span><span className="row-actions">{doc.status === "draft" ? <button onClick={() => onStatus(doc.id, "submit")}>提交审核</button> : doc.status === "review" && canApprove ? <><button onClick={() => onStatus(doc.id, "approve")}>审批通过</button><button onClick={() => onStatus(doc.id, "reject")}>驳回</button></> : doc.status === "published" && canApprove ? <><button onClick={() => onStatus(doc.id, "archive")}>作废</button><button onClick={() => onSelect(doc)}>查看</button></> : <button onClick={() => onSelect(doc)}>查看</button>}</span></div>)}</div></section></main>;
 }
 
-function AuditView({ logs, documents }: { logs: AuditLog[]; documents: KnowledgeDocument[] }) { const action: Record<string, string> = { VIEW: "查看", DOWNLOAD: "下载", EXPORT: "导出", FEEDBACK: "提交反馈", UPDATE: "更新", UPLOAD: "上传", APPROVE: "审批通过", REJECT: "驳回", SUBMIT_REVIEW: "提交复核" }; return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">AUDIT TRAIL</span><h1>审计日志</h1><p>追踪资料从上传到消费的全部关键操作。</p></div><button className="outline-action" onClick={() => downloadBlob("知识库审计日志.csv", `时间,操作者,操作,详情\n${logs.map(l => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`, "text/csv;charset=utf-8")}>导出 CSV</button></section><section className="audit-card">{logs.map(log => <div className="audit-item" key={log.id}><span className="audit-icon">{log.action === "DOWNLOAD" ? "↓" : log.action === "VIEW" ? "◉" : "✓"}</span><div><b>{log.actor} · {action[log.action] ?? log.action}</b><p>{log.detail || documents.find(d => d.id === log.documentId)?.title}</p></div><time>{log.createdAt}</time></div>)}</section></main>; }
+function AuditView({ logs, documents }: { logs: AuditLog[]; documents: KnowledgeDocument[] }) { const action: Record<string, string> = { VIEW: "查看", DOWNLOAD: "下载", EXPORT: "导出", FEEDBACK: "提交反馈", UPDATE: "更新", UPLOAD: "上传", APPROVE: "审批通过", REJECT: "驳回", SUBMIT_REVIEW: "提交复核", ACCOUNT_CREATE:"开通账号", ACCOUNT_UPDATE:"变更账号权限" }; return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">AUDIT TRAIL</span><h1>审计日志</h1><p>追踪资料、账号与权限的全部关键操作。</p></div><button className="outline-action" onClick={() => downloadBlob("知识库审计日志.csv", `时间,操作者,操作,详情\n${logs.map(l => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`, "text/csv;charset=utf-8")}>导出 CSV</button></section><section className="audit-card">{logs.map(log => <div className="audit-item" key={log.id}><span className="audit-icon">{log.action === "DOWNLOAD" ? "↓" : log.action === "VIEW" ? "◉" : "✓"}</span><div><b>{log.actor} · {action[log.action] ?? log.action}</b><p>{log.detail || documents.find(d => d.id === log.documentId)?.title}</p></div><time>{log.createdAt}</time></div>)}</section></main>; }
+
+function AccountAdminView({ notify }: { notify:(message:string)=>void }) {
+  const [accounts,setAccounts]=useState<EnterpriseAccount[]>([]); const [departments,setDepartments]=useState<UploadDepartment[]>([]); const [loading,setLoading]=useState(true); const [showCreate,setShowCreate]=useState(false);
+  async function load() { setLoading(true); try { const response=await fetch("/api/admin/users",{cache:"no-store"}); const payload=await response.json(); if(!response.ok) throw new Error(payload.error?.message ?? "账号加载失败"); setAccounts(payload.data.users); setDepartments(payload.data.departments); } catch(error) { notify(error instanceof Error ? error.message : "账号加载失败"); } finally { setLoading(false); } }
+  useEffect(()=>{ const timer=window.setTimeout(()=>load(),0); return ()=>window.clearTimeout(timer); },[]); // eslint-disable-line react-hooks/exhaustive-deps
+  async function createAccount(event:FormEvent<HTMLFormElement>) { event.preventDefault(); const form=new FormData(event.currentTarget); const response=await fetch("/api/admin/users",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(Object.fromEntries(form))}); const payload=await response.json(); if(!response.ok) return notify(payload.error?.message ?? "账号开通失败"); setShowCreate(false); notify("账号已预开通，员工使用对应企业邮箱登录即可"); await load(); }
+  async function saveAccount(account:EnterpriseAccount,event:FormEvent<HTMLFormElement>) { event.preventDefault(); const values=Object.fromEntries(new FormData(event.currentTarget)); const response=await fetch("/api/admin/users",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id:account.id,...values})}); const payload=await response.json(); if(!response.ok) return notify(payload.error?.message ?? "账号更新失败"); notify(values.status === "OFFBOARDED" ? "离职权限已回收，后续请求立即失效" : values.status === "DISABLED" ? "账号已停用" : "账号权限已更新"); await load(); }
+  const statusLabelMap:Record<string,string>={ACTIVE:"使用中",PENDING:"待配置",DISABLED:"已停用",OFFBOARDED:"已离职"}; const roleLabel:Record<string,string>={SUPER_ADMIN:"超级管理员",DEPT_ADMIN:"部门管理员",EMPLOYEE:"普通员工",UNASSIGNED:"待分配"};
+  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">IDENTITY & ACCESS</span><h1>账号与权限</h1><p>统一管理员工准入、部门角色、停用及离职权限回收。</p></div><button className="primary-action" onClick={()=>setShowCreate(value=>!value)}>＋ 预开通账号</button></section><div className="identity-metrics"><div><span>使用中</span><b>{accounts.filter(a=>a.status==="ACTIVE").length}</b></div><div><span>待配置</span><b>{accounts.filter(a=>a.status==="PENDING").length}</b></div><div><span>停用 / 离职</span><b>{accounts.filter(a=>["DISABLED","OFFBOARDED"].includes(a.status)).length}</b></div><p>登录只负责确认“是谁”，部门和角色必须由企业管理员显式授权。</p></div>{showCreate&&<form className="account-create" onSubmit={createAccount}><label>企业邮箱<input name="email" type="email" required placeholder="name@company.com"/></label><label>员工姓名<input name="displayName" required/></label><label>主部门<select name="deptId" required>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label><label>角色<select name="role"><option value="EMPLOYEE">普通员工</option><option value="DEPT_ADMIN">部门管理员</option><option value="SUPER_ADMIN">超级管理员</option></select></label><button className="primary-action">确认开通</button></form>}<section className="account-card"><header><div><h2>企业账号目录</h2><p>首次访问但尚未授权的员工会进入“待配置”队列</p></div><span>{accounts.length} 个账号</span></header>{loading?<div className="account-loading">正在同步企业账号...</div>:accounts.map(account=><form className="account-row" key={account.id} onSubmit={event=>saveAccount(account,event)}><span className="account-avatar">{account.display_name.slice(0,1)}</span><label>员工<input name="displayName" defaultValue={account.display_name}/><small>{account.email}</small></label><label>主部门<select name="deptId" defaultValue={account.primary_dept_id||departments[0]?.id}>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><small>{account.departments}</small></label><label>角色<select name="role" defaultValue={account.role==="UNASSIGNED"?"EMPLOYEE":account.role}><option value="EMPLOYEE">普通员工</option><option value="DEPT_ADMIN">部门管理员</option><option value="SUPER_ADMIN">超级管理员</option></select><small>{roleLabel[account.role]}</small></label><label>账号状态<select name="status" defaultValue={account.status==="PENDING"?"ACTIVE":account.status}><option value="ACTIVE">使用中</option><option value="DISABLED">停用</option><option value="OFFBOARDED">离职回收</option></select><small>{statusLabelMap[account.status]}</small></label><label>最近登录<span>{account.last_login_time?.slice(0,16).replace("T"," ")||"尚未登录"}</span><small>{account.identity_provider}</small></label><button>保存</button></form>)}</section></main>;
+}
 
 function DocumentDrawer({ document: doc, favorite, onClose, onFavorite, onFeedback, onExport, onDownload, onShare, onSubscribe, onContact }: { document: KnowledgeDocument; favorite: boolean; onClose: () => void; onFavorite: () => void; onFeedback: () => void; onExport: () => void; onDownload: () => void; onShare: () => void; onSubscribe: () => void; onContact: () => void }) {
   const [previewUrl, setPreviewUrl] = useState("");

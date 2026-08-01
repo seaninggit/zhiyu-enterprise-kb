@@ -65,8 +65,9 @@ export default function Home() {
   const [aiGuideVisible, setAiGuideVisible] = useState(true);
   const [aiUnread, setAiUnread] = useState(false);
   const [aiSessionUpdated, setAiSessionUpdated] = useState(false);
+  const [workflowDialog,setWorkflowDialog]=useState<{id:number;action:"approve"|"reject"|"archive"}|null>(null);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
-  const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null;
+  const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null || workflowDialog!==null;
 
   useEffect(() => {
     if (!hasOpenOverlay) return;
@@ -126,14 +127,15 @@ export default function Home() {
     await fetch("/api/engagement",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,documentId,detail})}).catch(()=>undefined);
     setLogs((current) => [{ id: Date.now(), documentId, action, actor: currentUser.displayName, detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
   }
-  async function updateStatus(id: number, action: "submit" | "approve" | "reject" | "archive") {
+  async function updateStatus(id: number, action: "submit" | "approve" | "reject" | "archive",providedComment="") {
     const next: DocumentStatus = action === "submit" ? "review" : action === "approve" ? "published" : action === "reject" ? "draft" : "archived";
     try {
-      let comment="";if(action==="reject"||action==="archive"){comment=window.prompt(action==="reject"?"请输入驳回原因（将通知上传人）":"请输入作废原因（将写入审批与审计记录）")?.trim()??"";if(!comment)return;}if(action==="approve"&&!window.confirm("确认审批通过并发布？发布后将进入全员检索与 AI 索引。"))return;
+      const comment=providedComment.trim();if(action!=="submit"&&!providedComment){setWorkflowDialog({id,action});return;}
       const response = await fetch("/api/documents", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action,comment }) });
       const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
       setDocuments((current) => current.map((item) => item.id === id ? { ...item, status: next, updatedAt: new Date().toISOString() } : item));
       const refreshed=await fetch("/api/documents",{cache:"no-store"}).then(r=>r.json());if(refreshed.data?.metrics)setMetrics(refreshed.data.metrics);if(refreshed.data?.notifications)setNotifications(refreshed.data.notifications); notify(action === "submit" ? "已提交部门管理员审核" : action === "approve" ? "审批通过，已进入知识目录并启动 AI 索引" : action === "reject" ? "已驳回至草稿，原因已通知上传人" : "已作废并退出检索范围");
+      setWorkflowDialog(null);
     } catch (error) { notify(error instanceof Error ? error.message : "操作失败"); }
   }
   async function submitUpload(event: FormEvent<HTMLFormElement>) {
@@ -226,6 +228,7 @@ export default function Home() {
 
     {uploadOpen && <UploadModal loading={loading} currentUser={currentUser} options={uploadOptions} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
     {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try {const response=await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) });const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"反馈提交失败");setFeedbackOpen(false);notify("反馈已提交给知识负责人");}catch(error){notify(error instanceof Error?error.message:"反馈提交失败");} }} />}
+    {workflowDialog&&<div className="modal-backdrop" onMouseDown={()=>setWorkflowDialog(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={e=>{e.preventDefault();const comment=String(new FormData(e.currentTarget).get("comment")||"");updateStatus(workflowDialog.id,workflowDialog.action,comment);}}><button type="button" onClick={()=>setWorkflowDialog(null)}>×</button><span>{workflowDialog.action==="approve"?"发布确认":workflowDialog.action==="reject"?"审批驳回":"文档作废"}</span><h2>{workflowDialog.action==="approve"?"确认发布到知识目录？":workflowDialog.action==="reject"?"请填写驳回原因":"请填写作废原因"}</h2><p>{workflowDialog.action==="approve"?"发布后将进入有权限用户的搜索与 AI 索引，并通知订阅者。":"原因会通知上传人并永久写入审批与审计记录。"}</p><textarea name="comment" required={workflowDialog.action!=="approve"} defaultValue={workflowDialog.action==="approve"?"内容与权限已核验，同意发布":""} placeholder="请输入处理意见" rows={4}/><footer><button type="button" onClick={()=>setWorkflowDialog(null)}>取消</button><button className="primary-action">确认执行</button></footer></form></div>}
     <div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>{aiGuideVisible && <div className="ai-guide" role="status"><button aria-label="关闭智能助手提示" onClick={() => setAiGuideVisible(false)}>×</button><b>有制度或流程问题？</b><span>可以问我报销、入职、研发规范等企业知识</span></div>}<button className="ai-fab" onClick={openAi} aria-label={aiUnread ? "问问小知，有新的回答" : "打开问问小知"}><span className="ai-spark">✦</span><span><b>{aiUnread ? "回答已生成" : "问问小知"}</b><small>{aiUnread ? "点击继续查看" : "回答会标注知识来源"}</small></span>{aiUnread && <i className="ai-unread" aria-label="1条未读回答">1</i>}<em className="ai-quick">搜制度 · 查流程 · 找负责人</em></button></div>
     {aiOpen && <AiPanel onClose={closeAi} onActivity={() => setAiSessionUpdated(true)} onGovernanceCreated={() => refreshGovernanceTasks().catch(() => undefined)} onOpen={async (documentId) => { try { await openDocument(documentId); setAiOpen(false); } catch (error) { notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
     {toast && <div className="toast" role="status">✓ {toast}</div>}

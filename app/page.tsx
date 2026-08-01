@@ -65,6 +65,20 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState({ displayName: "李然", role: "EMPLOYEE", primaryDeptId: 1 });
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
+  const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null;
+
+  useEffect(() => {
+    if (!hasOpenOverlay) return;
+    const previousOverflow = document.body.style.overflow;
+    const previousPaddingRight = document.body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    document.body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.body.style.paddingRight = previousPaddingRight;
+    };
+  }, [hasOpenOverlay]);
 
   useEffect(() => {
     fetch("/api/documents", { cache: "no-store" }).then((response) => response.ok ? response.json() : Promise.reject()).then((data) => {

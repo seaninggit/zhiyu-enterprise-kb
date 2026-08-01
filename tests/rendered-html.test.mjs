@@ -88,12 +88,13 @@ test("enterprise demo corpus covers five departments and lifecycle states", asyn
 });
 
 test("AI workbench persists conversations and closes feedback loop", async () => {
-  const [ask, conversations, engagement, schema, page] = await Promise.all([
+  const [ask, conversations, engagement, schema, page, styles] = await Promise.all([
     readFile(new URL("../app/api/ai/ask/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/ai/conversations/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/engagement/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(ask, /conversationId/);
   assert.match(ask, /ai_messages/);
@@ -104,4 +105,7 @@ test("AI workbench persists conversations and closes feedback loop", async () =>
   assert.match(page, /历史会话/);
   assert.match(page, /答案不准确/);
   assert.match(page, /提交改进/);
+  assert.match(page, /document\.body\.style\.overflow = "hidden"/);
+  assert.match(styles, /\.ai-workspace \{ min-width:0; min-height:0; overflow:hidden/);
+  assert.match(styles, /\.ai-conversation \{[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain/);
 });

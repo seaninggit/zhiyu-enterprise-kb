@@ -83,6 +83,13 @@ export const documents = sqliteTable("documents", {
   publishedContent: text("published_content"),
   verificationStatus: text("verification_status").notNull().default("UNVERIFIED"),
   verifiedAt: text("verified_at"),
+  ownerUserId: integer("owner_user_id").references(() => users.id),
+  retentionUntil: text("retention_until"),
+  legalHold: integer("legal_hold", { mode: "boolean" }).notNull().default(false),
+  checksum: text("checksum"),
+  scanStatus: text("scan_status").notNull().default("PENDING"),
+  dlpFindings: text("dlp_findings").notNull().default("[]"),
+  watermarkEnabled: integer("watermark_enabled", { mode: "boolean" }).notNull().default(false),
 }, (table) => [
   index("documents_dept_status_idx").on(table.deptId, table.status, table.isDeleted),
   index("documents_creator_idx").on(table.createUserId),

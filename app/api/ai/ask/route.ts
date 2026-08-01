@@ -11,12 +11,13 @@ function keywordScore(question: string, content: string) {
 }
 
 export async function POST(request: Request) {
-  const rid = requestId(request);
+  const rid = requestId(request);const started=Date.now();
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "ai-question", 30, 60);
     const payload = await request.json() as { question?: string; conversationId?: number }; const question = safeText(payload.question, 500);
     if (question.length < 2) throw new ApiError(400, "VALIDATION_ERROR", "请输入完整问题");
     const db = getD1(); let conversationId = Number(payload.conversationId || 0);
+    if(/忽略(以上|之前|系统)|ignore (all |the )?(previous|system)|system prompt|泄露.*提示词|越过.*权限/i.test(question)){await db.prepare("INSERT INTO security_events(type,severity,detail) VALUES('PROMPT_INJECTION','HIGH',?)").bind(`用户#${ctx.userId}：${question}`).run();throw new ApiError(400,"UNSAFE_PROMPT","问题包含试图绕过权限或系统指令的内容，已拒绝并记录安全事件");}
     if (conversationId) {
       const owned = await db.prepare("SELECT id FROM ai_conversations WHERE id=? AND user_id=? AND status='ACTIVE'").bind(conversationId, ctx.userId).first();
       if (!owned) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "当前会话不存在或已删除");
@@ -49,7 +50,8 @@ export async function POST(request: Request) {
       answer = generated || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
       mode = generated ? "rag" : "retrieval_only";
     }
-    const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id) VALUES(?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid).run();
+    const inputTokens=Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=Math.ceil(answer.length/4),model=mode==="rag"?"configured-response-model":"local-retrieval",cost=mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
+    const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();
     const userMessageId = crypto.getRandomValues(new Uint32Array(1))[0]; const assistantMessageId = crypto.getRandomValues(new Uint32Array(1))[0];
     await db.batch([
       db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,source_payload) VALUES(?,?,?,'user',?,'[]')").bind(userMessageId, conversationId, ctx.userId, question),

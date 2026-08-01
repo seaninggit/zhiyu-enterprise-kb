@@ -63,16 +63,17 @@ export async function POST(request: Request) {
       if (!bucket) throw new ApiError(503, "STORAGE_UNAVAILABLE", "文件存储服务暂不可用");
       await bucket.put(sourceKey, file.stream(), { httpMetadata: { contentType: mimeType } });
     }
-    const db = getD1(); const id = crypto.getRandomValues(new Uint32Array(1))[0];
+    const db = getD1(); const id = crypto.getRandomValues(new Uint32Array(1))[0];const ownerUser=await db.prepare("SELECT u.id FROM users u JOIN user_departments ud ON ud.user_id=u.id WHERE u.status='ACTIVE' AND ud.dept_id=? AND u.display_name=? LIMIT 1").bind(deptId,owner).first<{id:number}>();
     await db.batch([
-      db.prepare(`INSERT INTO documents(id,dept_id,space_id,folder_id,create_user_id,update_user_id,title,summary,content,category,status,share_scope,security_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,is_deleted)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, title, safeText(value("summary"), 1000), safeText(value("content"), 50000), category, status, shareScope, safeText(value("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null),
+      db.prepare(`INSERT INTO documents(id,dept_id,space_id,folder_id,create_user_id,update_user_id,owner_user_id,title,summary,content,category,status,share_scope,security_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,retention_until,is_deleted)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,date('now','+1095 day'),0)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, ownerUser?.id||ctx.userId, title, safeText(value("summary"), 1000), safeText(value("content"), 50000), category, status, shareScope, safeText(value("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null),
       db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,1,?,?,?,?,?)").bind(id, title, safeText(value("content"), 50000), "上传并创建知识", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'CREATE',?,?,?,?)").bind(id, deptId, ctx.userId, ctx.displayName, sourceName ? `上传文件 ${sourceName}` : "创建在线文档", rid),
       db.prepare("INSERT INTO ingestion_jobs(document_id,document_version,status,stage) VALUES(?,1,'QUEUED','EXTRACT')").bind(id),
     ]);
     const tagNames = safeText(value("tags"), 500).split(",").map(t => t.trim()).filter(Boolean).slice(0, 20);
     for (const name of tagNames) { await db.prepare("INSERT OR IGNORE INTO tags(name,dept_id) VALUES(?,?)").bind(name, deptId).run(); await db.prepare("INSERT OR IGNORE INTO document_tags(document_id,tag_id) SELECT ?,id FROM tags WHERE name=? AND dept_id=?").bind(id, name, deptId).run(); }
+    if(sourceKey||safeText(value("content"),50000)){const {processDocument}=await import("../../../lib/ingestion");await processDocument(id).catch(()=>undefined);}
     const document = await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first();
     return ok({ document }, rid, 201);
   } catch (error) {
@@ -90,18 +91,20 @@ export async function PATCH(request: Request) {
     const db = getD1(); const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(payload.id).first<Record<string, unknown>>();
     if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在"); const deptId = Number(doc.dept_id); const creatorId = Number(doc.create_user_id);
     const manager = canManageDepartment(ctx, deptId); if (payload.action === "submit" ? !(manager || creatorId === ctx.userId) : !manager) throw new ApiError(403, "FORBIDDEN", "无权执行该状态操作");
+    const comment=safeText(payload.comment,1000);if(["reject","archive","void"].includes(payload.action)&&comment.length<2)throw new ApiError(400,"COMMENT_REQUIRED","驳回或作废必须填写原因");
     const target = resolveDocumentTransition(String(doc.status) as WorkflowStatus,payload.action as WorkflowAction);
     await db.batch([
       db.prepare("UPDATE documents SET status=?,published_version=CASE WHEN ?='ARCHIVED_ACTIVE' THEN version ELSE published_version END,published_title=CASE WHEN ?='ARCHIVED_ACTIVE' THEN title ELSE published_title END,published_content=CASE WHEN ?='ARCHIVED_ACTIVE' THEN content ELSE published_content END,verification_status=CASE WHEN ?='ARCHIVED_ACTIVE' THEN 'VERIFIED' ELSE verification_status END,verified_at=CASE WHEN ?='ARCHIVED_ACTIVE' THEN CURRENT_TIMESTAMP ELSE verified_at END,update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(target,target,target,target,target,target,ctx.userId,payload.id),
-      db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, creatorId, ctx.userId, payload.action.toUpperCase(), safeText(payload.comment, 1000)),
+      db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, creatorId, ctx.userId, payload.action.toUpperCase(), comment),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.id, deptId, payload.action.toUpperCase(), ctx.userId, ctx.displayName, `状态更新为 ${target}`, rid),
-      db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,?,?,?,?)").bind(creatorId,payload.action.toUpperCase(),payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新",String(doc.title),payload.id),
+      db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,?,?,?,?)").bind(creatorId,payload.action.toUpperCase(),payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新",comment||String(doc.title),payload.id),
     ]);
     if (target === "ARCHIVED_ACTIVE") { const { processDocument }=await import("../../../lib/ingestion"); await processDocument(payload.id).catch(async error => {
       await db.prepare("UPDATE documents SET ai_index_status='FAILED' WHERE id=?").bind(payload.id).run();
       console.error(JSON.stringify({ level: "error", requestId: rid, action: "AI_INDEX", documentId: payload.id, message: error instanceof Error ? error.message : "索引失败" }));
     });
       await db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) SELECT user_id,'SUBSCRIPTION_UPDATE','订阅资料已发布',?,? FROM knowledge_subscriptions WHERE document_id=? AND is_active=1 AND user_id<>?").bind(String(doc.title),payload.id,payload.id,ctx.userId).run();
+      const {dispatchWebhook}=await import("../../../lib/webhooks");await dispatchWebhook("DOCUMENT_PUBLISHED",{documentId:payload.id,deptId,title:doc.title,version:doc.version}).catch(()=>undefined);
     }
     return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(payload.id).first() }, rid);
   } catch (error) { return fail(error, rid); }

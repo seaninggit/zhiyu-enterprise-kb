@@ -23,9 +23,10 @@ export async function POST(request: Request) {
     } else {
       const created = await db.prepare("INSERT INTO ai_conversations(user_id,title) VALUES(?,?)").bind(ctx.userId, question.slice(0, 32)).run(); conversationId = Number(created.meta.last_row_id);
     }
-    let scope = "d.status='ARCHIVED_ACTIVE' AND d.is_deleted=0"; const binds: unknown[] = [];
-    if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT')`; binds.push(...ctx.deptIds); }
-    const loadChunks = () => db.prepare(`SELECT c.id,c.content,c.embedding,c.chunk_index,d.id AS document_id,d.title,d.version,d.update_time,dep.name AS department_name
+    let scope = "(d.status='ARCHIVED_ACTIVE' OR d.published_version IS NOT NULL) AND d.is_deleted=0"; const binds: unknown[] = [];
+    if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT' OR EXISTS(SELECT 1 FROM document_acl a WHERE a.document_id=d.id AND a.permission='VIEW' AND (a.expires_at IS NULL OR a.expires_at>CURRENT_TIMESTAMP) AND ((a.subject_type='USER' AND a.subject_id=?) OR (a.subject_type='DEPT' AND a.subject_id IN (${placeholders(ctx.deptIds)})))))`; binds.push(...ctx.deptIds,ctx.userId,...ctx.deptIds); }
+    const settings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>();const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(10,Number(config["rag.top_k"]||5)));
+    const loadChunks = () => db.prepare(`SELECT c.id,c.content,c.embedding,c.chunk_index,d.id AS document_id,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.title ELSE COALESCE(d.published_title,d.title) END title,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.version ELSE COALESCE(d.published_version,d.version) END version,d.update_time,dep.name AS department_name
       FROM document_chunks c JOIN documents d ON d.id=c.document_id JOIN departments dep ON dep.id=d.dept_id
       WHERE c.is_active=1 AND ${scope} ORDER BY d.update_time DESC LIMIT 800`).bind(...binds).all<Record<string, unknown>>();
     let result = await loadChunks();
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
       result = await loadChunks();
     }
     const queryEmbedding = (await embedTexts([question]))[0];
-    const ranked = result.results.map(row => { let vector = 0; try { if (queryEmbedding && row.embedding) vector = cosine(queryEmbedding, JSON.parse(String(row.embedding))); } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content)); return { ...row, score: queryEmbedding ? vector * .72 + keyword * .28 : keyword }; }).sort((a, b) => b.score - a.score).slice(0, 5);
+    const ranked = result.results.map(row => { let vector = 0; try { if (queryEmbedding && row.embedding) vector = cosine(queryEmbedding, JSON.parse(String(row.embedding))); } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content)); return { ...row, score: queryEmbedding ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score).slice(0, topK);
     const relevant = ranked.filter(item => item.score >= (queryEmbedding ? .18 : .08));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
     let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";
@@ -55,6 +56,6 @@ export async function POST(request: Request) {
       db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,mode,source_payload,query_log_id) VALUES(?,?,?,'assistant',?,?,?,?)").bind(assistantMessageId, conversationId, ctx.userId, answer, mode, JSON.stringify(sources), log.meta.last_row_id),
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
-    return ok({ answer, sources, mode, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId }, rid);
+    return ok({ answer, sources, mode, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

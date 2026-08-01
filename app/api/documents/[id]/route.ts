@@ -7,7 +7,9 @@ async function authorizedDocument(id: number, ctx: Awaited<ReturnType<typeof req
   const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
   if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在");
   const deptId = Number(doc.dept_id); const ownDept = ctx.deptIds.includes(deptId); const creator = Number(doc.create_user_id) === ctx.userId;
-  const readable = ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ownDept) || (ownDept && (doc.status === "ARCHIVED_ACTIVE" || creator)) || (doc.share_scope === "CROSS_DEPT" && doc.status === "ARCHIVED_ACTIVE");
+  const hasPublished=Number(doc.published_version||0)>0;
+  const acl=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='VIEW' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
+  const readable = ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ownDept) || (ownDept && (doc.status === "ARCHIVED_ACTIVE" || hasPublished || creator)) || (doc.share_scope === "CROSS_DEPT" && (doc.status === "ARCHIVED_ACTIVE" || hasPublished)) || Boolean(acl);
   if (!readable) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权访问该文档"); return doc;
 }
 
@@ -22,7 +24,9 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       return new Response(object.body, { headers: { "content-type": String(doc.mime_type || "application/octet-stream"), "content-length": String(object.size), "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(doc.source_name || "document"))}`, "cache-control": "private, no-store" } });
     }
     const versions = await db.prepare("SELECT * FROM document_versions WHERE document_id=? ORDER BY version DESC").bind(id).all();
-    return ok({ document: doc, versions: versions.results }, rid);
+    const manager=canManageDepartment(ctx,Number(doc.dept_id)); const creator=Number(doc.create_user_id)===ctx.userId; const visibleDoc=!manager&&!creator&&doc.status!=="ARCHIVED_ACTIVE"&&doc.published_version?{...doc,title:doc.published_title,content:doc.published_content,version:doc.published_version,status:"ARCHIVED_ACTIVE"}:doc;
+    const approvals=await db.prepare("SELECT a.*,u.display_name approver FROM approval_records a LEFT JOIN users u ON u.id=a.approver_user_id WHERE a.document_id=? ORDER BY a.create_time DESC").bind(id).all(); const acl=manager?await db.prepare("SELECT * FROM document_acl WHERE document_id=? ORDER BY create_time DESC").bind(id).all():{results:[]};
+    return ok({ document: visibleDoc, versions: versions.results, approvals:approvals.results, acl:acl.results }, rid);
   } catch (error) { return fail(error, rid); }
 }
 

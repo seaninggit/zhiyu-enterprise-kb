@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "engagement", 60, 60);
-    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL"; documentId?: number; queryLogId?: number; messageId?: number; helpful?: boolean; reason?: string; detail?: string };
+    const payload = await request.json() as { action?: "SHARE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL" | "FAVORITE_TOGGLE" | "NOTIFICATION_READ" | "SEARCH_CLICK"; documentId?: number; notificationId?: number; searchLogId?: number; queryLogId?: number; messageId?: number; helpful?: boolean; reason?: string; detail?: string };
     if (!payload.action) throw new ApiError(400, "VALIDATION_ERROR", "操作类型不能为空"); const db = getD1();
     if (payload.action === "AI_HELPFUL") {
       if (!payload.queryLogId) throw new ApiError(400, "VALIDATION_ERROR", "问答记录不能为空");
@@ -30,9 +30,30 @@ export async function POST(request: Request) {
       ]);
       return ok({ recorded: true, governanceTaskCreated: !payload.helpful }, rid, 201);
     }
+    if (payload.action === "NOTIFICATION_READ") {
+      await db.prepare(`UPDATE notifications SET is_read=1 WHERE user_id=?${payload.notificationId ? " AND id=?" : ""}`).bind(ctx.userId, ...(payload.notificationId ? [payload.notificationId] : [])).run();
+      return ok({ read: true }, rid);
+    }
+    if (payload.action === "SEARCH_CLICK") {
+      if (!payload.searchLogId || !payload.documentId) throw new ApiError(400, "VALIDATION_ERROR", "搜索记录和文档不能为空");
+      await readableDocument(payload.documentId, ctx);
+      await db.prepare("UPDATE search_logs SET clicked_document_id=? WHERE id=? AND user_id=?").bind(payload.documentId, payload.searchLogId, ctx.userId).run();
+      return ok({ recorded: true }, rid);
+    }
     if (!payload.documentId) throw new ApiError(400, "VALIDATION_ERROR", "文档不能为空"); const doc = await readableDocument(payload.documentId, ctx);
+    if (payload.action === "FAVORITE_TOGGLE") {
+      const existing = await db.prepare("SELECT 1 FROM user_favorites WHERE user_id=? AND document_id=?").bind(ctx.userId, payload.documentId).first();
+      if (existing) await db.prepare("DELETE FROM user_favorites WHERE user_id=? AND document_id=?").bind(ctx.userId, payload.documentId).run();
+      else await db.prepare("INSERT INTO user_favorites(user_id,document_id) VALUES(?,?)").bind(ctx.userId, payload.documentId).run();
+      return ok({ favorite: !existing }, rid);
+    }
     if (payload.action === "SUBSCRIBE") {
       await db.prepare("INSERT INTO knowledge_subscriptions(document_id,user_id,is_active) VALUES(?,?,1) ON CONFLICT(document_id,user_id) DO UPDATE SET is_active=1,update_time=CURRENT_TIMESTAMP").bind(payload.documentId, ctx.userId).run();
+    }
+    if (payload.action === "UNSUBSCRIBE") await db.prepare("UPDATE knowledge_subscriptions SET is_active=0,update_time=CURRENT_TIMESTAMP WHERE document_id=? AND user_id=?").bind(payload.documentId, ctx.userId).run();
+    if (payload.action === "CONTACT_OWNER") {
+      const owner = await db.prepare("SELECT id FROM users WHERE display_name=? AND status='ACTIVE' LIMIT 1").bind(doc.owner).first<{ id: number }>();
+      if (owner) await db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'OWNER_CONTACT','有用户咨询你负责的资料',?,?)").bind(owner.id, `${ctx.displayName} 咨询《${doc.title}》`, payload.documentId).run();
     }
     await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.documentId, doc.dept_id, payload.action, ctx.userId, ctx.displayName, payload.action === "CONTACT_OWNER" ? `联系知识负责人：${doc.owner}` : "复制内部知识链接", rid).run();
     return ok({ recorded: true }, rid, 201);

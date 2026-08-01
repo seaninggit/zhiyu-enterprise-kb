@@ -35,7 +35,7 @@ export async function indexPublishedDocument(documentId: number) {
     const object = await aiEnv().KNOWLEDGE_FILES?.get(String(doc.source_key));
     if (object && object.size <= 2_000_000) attachmentText = await object.text();
   }
-  const fullText = [`标题：${doc.title}`, `摘要：${doc.summary || ""}`, String(doc.content || ""), attachmentText].filter(Boolean).join("\n\n");
+  const fullText = [`标题：${doc.title}`, `摘要：${doc.summary || ""}`, String(doc.content || ""), String(doc.extracted_text || ""), attachmentText].filter(Boolean).join("\n\n");
   const chunks = chunkText(fullText);
   const embeddings = await embedTexts(chunks);
   const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=?").bind(documentId)];

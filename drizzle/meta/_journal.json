@@ -50,6 +50,13 @@
       "when": 1785555600000,
       "tag": "0006_enterprise_identity_lifecycle",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1785567600000,
+      "tag": "0007_enterprise_knowledge_platform",
+      "breakpoints": true
     }
   ]
 }

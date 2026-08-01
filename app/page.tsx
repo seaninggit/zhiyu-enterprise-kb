@@ -69,6 +69,9 @@ export default function Home() {
   const [authError, setAuthError] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [aiGuideVisible, setAiGuideVisible] = useState(true);
+  const [aiUnread, setAiUnread] = useState(false);
+  const [aiSessionUpdated, setAiSessionUpdated] = useState(false);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
   const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null;
 
@@ -84,6 +87,7 @@ export default function Home() {
       document.body.style.paddingRight = previousPaddingRight;
     };
   }, [hasOpenOverlay]);
+  useEffect(() => { const timer = window.setTimeout(() => setAiGuideVisible(false), 6500); return () => window.clearTimeout(timer); }, []);
 
   useEffect(() => {
     fetch("/api/documents", { cache: "no-store" }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "账号加载失败"); return payload; }).then((data) => {
@@ -181,6 +185,8 @@ export default function Home() {
 
   if (authError) return <main className="access-state"><span className="brand-mark">Z</span><small>ENTERPRISE ACCESS</small><h1>账号暂不可访问</h1><p>{authError}</p><div><b>企业账号处理流程</b><span>身份已由统一登录识别</span><span>请联系知识库超级管理员分配部门与角色</span><span>配置完成后刷新页面即可进入</span></div><a href="/signout-with-chatgpt?return_to=/">切换登录账号</a></main>;
   function toggleSidebar() { setSidebarCollapsed(value => !value); setAccountMenuOpen(false); }
+  function openAi() { setAiOpen(true); setAiUnread(false); setAiGuideVisible(false); setAiSessionUpdated(false); }
+  function closeAi() { setAiOpen(false); if (aiSessionUpdated) setAiUnread(true); }
   return <div className={`enterprise-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
     <aside className="sidebar">
       <button className="brand side-brand" onClick={() => setView("library")}><span className="brand-mark">Z</span><span>知域<small>企业知识中台</small></span></button>
@@ -215,8 +221,8 @@ export default function Home() {
 
     {uploadOpen && <UploadModal loading={loading} currentUser={currentUser} options={uploadOptions} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
     {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try { await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) }); } catch { /* demo fallback */ } audit(selected.id, "FEEDBACK", content); setFeedbackOpen(false); notify("反馈已提交给知识负责人"); }} />}
-    <button className="ai-fab" onClick={() => setAiOpen(true)}><span>✦</span><span><b>问问小知</b><small>回答会标注知识来源</small></span></button>
-    {aiOpen && <AiPanel onClose={() => setAiOpen(false)} onGovernanceCreated={() => refreshGovernanceTasks().catch(() => undefined)} onOpen={async (documentId) => { try { await openDocument(documentId); setAiOpen(false); } catch (error) { notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
+    <div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>{aiGuideVisible && <div className="ai-guide" role="status"><button aria-label="关闭智能助手提示" onClick={() => setAiGuideVisible(false)}>×</button><b>有制度或流程问题？</b><span>可以问我报销、入职、研发规范等企业知识</span></div>}<button className="ai-fab" onClick={openAi} aria-label={aiUnread ? "问问小知，有新的回答" : "打开问问小知"}><span className="ai-spark">✦</span><span><b>{aiUnread ? "回答已生成" : "问问小知"}</b><small>{aiUnread ? "点击继续查看" : "回答会标注知识来源"}</small></span>{aiUnread && <i className="ai-unread" aria-label="1条未读回答">1</i>}<em className="ai-quick">搜制度 · 查流程 · 找负责人</em></button></div>
+    {aiOpen && <AiPanel onClose={closeAi} onActivity={() => setAiSessionUpdated(true)} onGovernanceCreated={() => refreshGovernanceTasks().catch(() => undefined)} onOpen={async (documentId) => { try { await openDocument(documentId); setAiOpen(false); } catch (error) { notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
     {toast && <div className="toast" role="status">✓ {toast}</div>}
   </div>;
 }
@@ -292,7 +298,7 @@ function UploadModal({ loading, currentUser, options, onSubmit, onClose }: { loa
 
 function FeedbackModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (v: string) => void }) { const [value, setValue] = useState(""); return <div className="modal-backdrop" onMouseDown={onClose}><div className="feedback-modal" onMouseDown={e => e.stopPropagation()}><h2>提交纠错反馈</h2><p>反馈将自动关联当前文档与版本，并通知知识负责人。</p><textarea aria-label="反馈内容" value={value} onChange={e => setValue(e.target.value)} rows={5} placeholder="请描述错误、过期内容或补充建议..."/><div><button onClick={onClose}>取消</button><button className="primary-action" disabled={!value.trim()} onClick={() => onSubmit(value)}>提交反馈</button></div></div></div>; }
 
-function AiPanel({ onClose, onOpen, onGovernanceCreated }: { onClose: () => void; onOpen: (documentId: number) => void | Promise<void>; onGovernanceCreated: () => void }) {
+function AiPanel({ onClose, onOpen, onGovernanceCreated, onActivity }: { onClose: () => void; onOpen: (documentId: number) => void | Promise<void>; onGovernanceCreated: () => void; onActivity: () => void }) {
   type AiSource = { citation: number; documentId: number; title: string; version: number; department: string; excerpt: string; score: number };
   type Conversation = { id: number; title: string; updateTime: string; lastMessage: string };
   type Message = { id: number; role: "user" | "assistant"; content: string; mode?: string; sources: AiSource[]; queryLogId?: number; helpful?: boolean | null; reason?: string };
@@ -304,7 +310,7 @@ function AiPanel({ onClose, onOpen, onGovernanceCreated }: { onClose: () => void
   useEffect(() => { const timer = window.setTimeout(() => loadConversations(true).catch(caught => setError(caught instanceof Error ? caught.message : "历史会话加载失败")), 0); return () => window.clearTimeout(timer); }, []);
   function newConversation() { setConversationId(null); setMessages([]); setQuestion(""); setError(""); }
   async function deleteConversation(id: number) { if (!window.confirm("删除该历史会话？此操作不会删除原始知识文档。")) return; const response = await fetch(`/api/ai/conversations?id=${id}`, { method: "DELETE" }); if (!response.ok) return setError("会话删除失败"); if (conversationId === id) newConversation(); await loadConversations(false); }
-  async function ask(nextQuestion = question) { if (!nextQuestion.trim() || loading) return; const userText = nextQuestion.trim(); const optimisticId = -Date.now(); setMessages(current => [...current, { id: optimisticId, role: "user", content: userText, sources: [] }]); setQuestion(""); setLoading(true); setError(""); try { const response = await fetch("/api/ai/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: userText, conversationId }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "知识问答暂不可用"); const nextId = Number(payload.data.conversationId); setConversationId(nextId); setMessages(current => [...current.map(item => item.id === optimisticId ? { ...item, id: optimisticId - 1 } : item), { id: Number(payload.data.messageId), role: "assistant", content: payload.data.answer, sources: payload.data.sources, mode: payload.data.mode, queryLogId: Number(payload.data.queryLogId), helpful: null }]); await loadConversations(false); } catch (caught) { setMessages(current => current.filter(item => item.id !== optimisticId)); setError(caught instanceof Error ? caught.message : "知识问答暂不可用"); } finally { setLoading(false); } }
+  async function ask(nextQuestion = question) { if (!nextQuestion.trim() || loading) return; const userText = nextQuestion.trim(); const optimisticId = -Date.now(); setMessages(current => [...current, { id: optimisticId, role: "user", content: userText, sources: [] }]); setQuestion(""); setLoading(true); setError(""); try { const response = await fetch("/api/ai/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: userText, conversationId }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "知识问答暂不可用"); const nextId = Number(payload.data.conversationId); setConversationId(nextId); setMessages(current => [...current.map(item => item.id === optimisticId ? { ...item, id: optimisticId - 1 } : item), { id: Number(payload.data.messageId), role: "assistant", content: payload.data.answer, sources: payload.data.sources, mode: payload.data.mode, queryLogId: Number(payload.data.queryLogId), helpful: null }]); onActivity(); await loadConversations(false); } catch (caught) { setMessages(current => current.filter(item => item.id !== optimisticId)); setError(caught instanceof Error ? caught.message : "知识问答暂不可用"); } finally { setLoading(false); } }
   async function submitHelpful(message: Message, helpful: boolean, reason = "", detail = "") { if (!message.queryLogId) return; const response = await fetch("/api/engagement", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "AI_HELPFUL", queryLogId: message.queryLogId, messageId: message.id, helpful, reason, detail }) }); const payload = await response.json(); if (!response.ok) return setError(payload.error?.message ?? "评价提交失败"); setMessages(current => current.map(item => item.id === message.id ? { ...item, helpful, reason } : item)); setFeedbackTarget(null); setFeedbackReason(""); setFeedbackDetail(""); if (!helpful) onGovernanceCreated(); }
   const hasMessages = messages.length > 0;
   return <div className="modal-backdrop ai-backdrop" onMouseDown={onClose}><section className="ai-panel enterprise-ai" onMouseDown={e => e.stopPropagation()}><button className="close-button" aria-label="关闭智能问答" onClick={onClose}>×</button>

@@ -113,6 +113,10 @@ test("AI workbench persists conversations and closes feedback loop", async () =>
   assert.match(styles, /--sidebar-width:clamp\(196px,15\.5vw,224px\)/);
   assert.match(styles, /\.sidebar-collapsed \{ --sidebar-width:76px/);
   assert.match(page, /收起功能栏/);
+  assert.match(page, /回答已生成/);
+  assert.match(page, /搜制度 · 查流程 · 找负责人/);
+  assert.match(styles, /@media \(prefers-reduced-motion:reduce\)/);
+  assert.match(styles, /@keyframes ai-breathe/);
 });
 
 test("enterprise identity lifecycle requires explicit authorization", async () => {

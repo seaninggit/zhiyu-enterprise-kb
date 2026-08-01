@@ -108,6 +108,8 @@ test("AI workbench persists conversations and closes feedback loop", async () =>
   assert.match(page, /document\.body\.style\.overflow = "hidden"/);
   assert.match(styles, /\.ai-workspace \{ min-width:0; min-height:0; overflow:hidden/);
   assert.match(styles, /\.ai-conversation \{[^}]*overflow-y:auto;[^}]*overscroll-behavior:contain/);
+  assert.match(styles, /Airier enterprise palette/);
+  assert.match(styles, /\.sidebar \{ background:linear-gradient\(180deg,#376b82/);
 });
 
 test("enterprise identity lifecycle requires explicit authorization", async () => {

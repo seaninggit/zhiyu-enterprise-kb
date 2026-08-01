@@ -1,13 +1,13 @@
 @import "tailwindcss";
 
 :root {
-  --ink: #182321;
-  --muted: #72807d;
-  --line: #e6ece9;
-  --paper: #fbfcfb;
-  --teal: #167d70;
-  --teal-dark: #105f56;
-  --cream: #f5f3ea;
+  --ink: #243746;
+  --muted: #718493;
+  --line: #e4edf2;
+  --paper: #f7fafc;
+  --teal: #2b84a6;
+  --teal-dark: #226b88;
+  --cream: #f8f4ea;
 }
 
 * { box-sizing: border-box; }
@@ -280,3 +280,24 @@ button { cursor: pointer; }
 
 @media (max-width: 980px) { .doc-grid { grid-template-columns: repeat(2,1fr); }.metric-grid { grid-template-columns: repeat(2,1fr); }.doc-info { grid-template-columns: repeat(2,1fr); gap: 12px; }.doc-info > div { border: 0; } }
 @media (max-width: 720px) { .sidebar { width: 64px; padding: 18px 8px; }.side-brand { padding: 0; justify-content: center; }.side-brand > span:last-child, .side-nav button:not(.active)::after, .side-nav button { font-size: 0; }.side-nav > span, .user-card div, .user-card i { display: none; }.side-nav button { justify-content: center; padding: 0; }.side-nav button i { font-size: 17px; }.side-nav button em { position: absolute; right: 5px; }.user-card { padding: 12px 5px; justify-content: center; }.account-menu { left:58px; bottom:16px; }.app-main { margin-left: 64px; width: calc(100% - 64px); }.app-header { padding: 0 16px; }.app-header .primary-action { padding: 10px; font-size: 0; }.app-header .primary-action::after { content: "+"; font-size: 16px; }.global-search kbd { display: none; }.workspace { width: 90%; padding-top: 32px; }.welcome, .admin-heading { align-items: flex-start; }.governance-chip { display: none; }.doc-grid { grid-template-columns: 1fr; }.section-title { display: grid; gap: 16px; }.metric-grid,.identity-metrics { grid-template-columns: 1fr 1fr; }.identity-metrics>p { grid-column:1/-1; }.account-create { grid-template-columns:1fr; }.form-grid { grid-template-columns: 1fr; }.form-grid .wide { grid-column: auto; }.upload-modal { padding: 20px; }.drawer-backdrop, .modal-backdrop { padding: 12px; }.document-drawer { width: 100%; max-height: calc(100vh - 24px); }.document-drawer > header, .drawer-actions, .doc-info, .doc-content, .version-list { margin-left: 0; margin-right: 0; }.document-drawer > header { padding: 24px; }.drawer-actions { padding: 12px 24px; }.doc-info, .doc-content, .version-list { margin: 22px 24px; }.ai-fab { right: 14px; bottom: 14px; } }
+
+/* Airier enterprise palette: mist blue, porcelain white and a restrained warm accent. */
+body { background:#f6f9fc; color:#243746; }
+.sidebar { background:linear-gradient(180deg,#376b82 0%,#315f77 55%,#2d5870 100%); box-shadow:8px 0 30px rgba(47,91,116,.08); }
+.brand-mark { background:linear-gradient(145deg,#39a6bf,#277d9f); box-shadow:0 8px 22px rgba(43,132,166,.2); }
+.side-brand { color:#fff; }.side-brand small,.side-nav>span { color:#b9d6e1; }
+.side-nav button { color:#d8e8ee; }.side-nav button:hover { background:rgba(255,255,255,.09); color:#fff; }.side-nav button.active { background:rgba(255,255,255,.16); color:#fff; box-shadow:0 8px 22px rgba(25,61,80,.08); }.side-nav button.active::before { background:#f2ce80; }
+.side-nav button em { background:#f6d98e; color:#405e6b; }.user-card { border-top-color:rgba(255,255,255,.16); }.user-card>span { background:#f4d792; color:#35596a; }.user-card small,.user-card i { color:#bfd7e0; }.account-menu { background:#315f77; border-color:rgba(255,255,255,.18); }
+.app-main { background:linear-gradient(180deg,#fbfdff 0%,#f5f8fb 100%); }.app-header { background:rgba(255,255,255,.9); border-bottom-color:#e5edf2; box-shadow:0 5px 20px rgba(52,88,108,.035); }
+.global-search { background:#f3f7fa; border-color:#dfe9ef; }.global-search:focus-within { border-color:#71aec4; box-shadow:0 0 0 3px rgba(43,132,166,.08); }
+.primary-action,.hero-search button,.ai-fab { background:linear-gradient(135deg,#3798b5,#277a9b); box-shadow:0 8px 22px rgba(43,132,166,.18); }.outline-action { color:#2a7896; border-color:#cbdde6; }
+.page-kicker,.section-kicker,.eyebrow { color:#2b84a6; }.welcome h1,.admin-heading h1,.section-title h2 { color:#263d4c; }
+.governance-chip,.metric-grid>div,.identity-metrics>div,.identity-metrics>p,.table-card,.audit-card,.account-card,.doc-card { border-color:#e2ebf0; box-shadow:0 10px 32px rgba(46,82,102,.045); }
+.governance-chip { background:linear-gradient(145deg,#fff,#f2f8fb); }.governance-chip b,.metric-grid b,.identity-metrics b { color:#2a728e; }
+.hero-search { border-color:#dbe8ee; background:#fff; box-shadow:0 16px 44px rgba(48,89,112,.07); }.hero-search>span,.hero-search small { color:#3c8aa7; }
+.filter-tabs { background:#edf3f6; }.filter-tabs button.active { background:#fff; color:#2a7f9f; box-shadow:0 3px 12px rgba(47,93,116,.08); }
+.doc-card:hover { border-color:#a9cfdd; box-shadow:0 18px 38px rgba(44,91,116,.09); }.file-tile,.mini-avatar,.account-avatar { background:#e5f2f7; color:#287b99; }.tag-row span { background:#eef5f8; color:#547987; }
+.table-head { background:#f3f7f9; }.row-actions button { border-color:#d6e4ea; color:#2a7d9b; }.account-create { background:#f2f7fa; border-color:#d9e7ed; }
+.drawer-backdrop,.modal-backdrop { background:rgba(39,63,76,.28); }.document-drawer,.upload-modal,.feedback-modal { background:#fcfdfe; box-shadow:0 28px 80px rgba(41,69,84,.18); }.document-drawer>header { background:linear-gradient(140deg,#e8f4f8,#fbf6ec); }.doc-info { background:#f1f6f8; }.file-drop { border-color:#a8cad7; background:#f1f7fa; }.file-drop:hover,.file-drop.has-file { border-color:#4b9db9; background:#eaf5f8; }
+.ai-backdrop { background:rgba(31,52,65,.46); }.enterprise-ai { border-color:rgba(125,190,215,.38); background:#f5f9fc; box-shadow:0 32px 100px rgba(30,54,68,.3); }.ai-intro { background:radial-gradient(circle at 20% 20%,rgba(95,196,221,.25),transparent 34%),linear-gradient(155deg,#285f78 0%,#244f69 56%,#213f58 100%); }.ai-intro::before { opacity:.11; }.ai-brand small,.history-title,.conversation-list small,.ai-trust { color:#acd0dc; }.new-chat { border-color:rgba(185,226,238,.32); background:rgba(255,255,255,.09); }.conversation-list>div.active { border-color:rgba(186,226,239,.34); background:rgba(255,255,255,.1); }.ai-workspace { background:linear-gradient(180deg,#f9fcfd,#f2f7fa); }.pulse-dot { background:#49b7cf; box-shadow:0 0 0 5px rgba(73,183,207,.12),0 0 16px rgba(73,183,207,.4); }.enterprise-ai .ai-input button,.answer-meta>span,.user-message p { background:linear-gradient(135deg,#3798b5,#277a9b); }.ai-empty>span { color:#2e8dab; background:linear-gradient(145deg,#e3f3f7,#fbfdfe); border-color:#cce4ec; }
+.access-state { background:radial-gradient(circle at 50% 20%,#e4f2f7,#f8fafc 58%); }

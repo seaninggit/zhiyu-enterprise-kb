@@ -136,7 +136,9 @@ test("enterprise identity lifecycle requires explicit authorization", async () =
   assert.match(admin, /不能在当前会话中修改自己的权限或状态/);
   assert.match(schema, /identityProvider/);
   assert.match(migration, /last_login_time/);
-  assert.match(page, /账号与权限/);
+  assert.match(page, /成员与权限/);
+  assert.match(page, /批量导入/);
+  assert.match(page, /待首次登录/);
   assert.match(page, /离职权限已回收/);
   assert.doesNotMatch(page, /下午好，李然/);
 });

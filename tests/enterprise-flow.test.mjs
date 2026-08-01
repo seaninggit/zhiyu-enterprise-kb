@@ -28,3 +28,8 @@ test("UI has no fallback injection after authenticated empty responses",async()=
   assert.doesNotMatch(page,/if \(data\.data\?\.documents\?\.length\) setDocuments/);
   assert.match(page,/PlatformView/);assert.match(page,/runSearch/);assert.match(page,/FAVORITE_TOGGLE/);
 });
+
+test("member onboarding supports enterprise single, bulk and directory flows",async()=>{
+  const [admin,page,scim]=await Promise.all([readFile(new URL("../app/api/admin/users/route.ts",import.meta.url),"utf8"),readFile(new URL("../app/page.tsx",import.meta.url),"utf8"),readFile(new URL("../app/api/scim/v2/Users/route.ts",import.meta.url),"utf8")]);
+  assert.match(admin,/Array\.isArray\(payload\.members\)/);assert.match(admin,/IMPORT_VALIDATION_ERROR/);assert.match(admin,/IMPORT_DUPLICATE/);assert.match(admin,/ACCOUNT_IMPORT/);assert.match(page,/添加并授权/);assert.match(page,/待首次登录/);assert.doesNotMatch(page,/预开通/);assert.match(scim,/SCIM_BEARER_TOKEN/);
+});

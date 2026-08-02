@@ -5,7 +5,7 @@ import test from "node:test";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("external access creates isolated employee sessions with normal business capabilities", async () => {
-  const [migration, identity, auth, worker, conversations, ask, page, gateway, documentDetail] = await Promise.all([
+  const [migration, identity, auth, worker, conversations, ask, page, gateway, documentDetail, edgeGateway] = await Promise.all([
     read("drizzle/0014_public_viewer_access.sql"),
     read("app/chatgpt-auth.ts"),
     read("lib/authz.ts"),
@@ -15,6 +15,7 @@ test("external access creates isolated employee sessions with normal business ca
     read("app/page.tsx"),
     read("infrastructure/public-access/_worker.js"),
     read("app/api/documents/[id]/route.ts"),
+    read("infrastructure/public-access/worker-entry.js"),
   ]);
 
   assert.match(migration, /visitor-shared@public\.zhiyu\.invalid/);
@@ -33,4 +34,6 @@ test("external access creates isolated employee sessions with normal business ca
   assert.match(gateway, /Max-Age=2592000/);
   assert.match(gateway, /headers\.delete\("oai-authenticated-user-email"\)/);
   assert.match(documentDetail, /AI_REINDEX_AFTER_EDIT/);
+  assert.match(edgeGateway, /x-zhiyu-public-gateway/);
+  assert.match(edgeGateway, /oai-authenticated-user-email/);
 });

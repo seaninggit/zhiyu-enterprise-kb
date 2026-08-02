@@ -10,3 +10,7 @@ control every operation.
 
 The gateway stores only a random browser session cookie. Credentials, business
 data, files, and conversations remain in the primary application.
+
+`worker-entry.js` is a second public edge entry used when an embedded mobile
+browser cannot reach the managed Sites domain. It strips client network and
+internal identity headers before forwarding to the Pages gateway.

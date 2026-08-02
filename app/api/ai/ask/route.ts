@@ -5,6 +5,7 @@ import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } fr
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
+function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(compact)||compact.length<=6;}
 function platformIntent(question:string,displayName:string,role:string){
   const normalized=question.trim().replace(/[？?。！!，,\s]/g,"").toLowerCase();
   if(/^(你是谁|你叫什么|你叫什么名字|介绍一下你自己|自我介绍)$/.test(normalized))return{mode:"assistant_identity",answer:"我是问问小知，知域企业知识库的智能问答助手。我会基于你当前账号有权访问且已经生效的企业资料回答问题，并标注引用来源；也可以结合上下文继续追问、生成办理清单、打开原文和提交纠错反馈。我不会绕过部门权限，也不会把没有知识依据的内容当作公司制度。"};
@@ -54,14 +55,18 @@ export async function POST(request: Request) {
     if(direct){
       const inputTokens=Math.ceil(question.length/4),outputTokens=Math.ceil(direct.answer.length/4),model="platform-intent";
       const log=await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,'[]',?,?,?,?,?,0)").bind(ctx.userId,ctx.primaryDeptId,question,direct.answer,direct.mode,rid,Date.now()-started,inputTokens,outputTokens,model).run();
-      const userMessageId=crypto.getRandomValues(new Uint32Array(1))[0],assistantMessageId=crypto.getRandomValues(new Uint32Array(1))[0];
-      await db.batch([
-        db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,source_payload) VALUES(?,?,?,'user',?,'[]')").bind(userMessageId,conversationId,ctx.userId,question),
-        db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,mode,source_payload,query_log_id) VALUES(?,?,?,'assistant',?,?, '[]',?)").bind(assistantMessageId,conversationId,ctx.userId,direct.answer,direct.mode,log.meta.last_row_id),
+      const messageResults=await db.batch([
+        db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,source_payload,sequence_no) SELECT ?,?,'user',?,'[]',COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId,ctx.userId,question,conversationId),
+        db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,mode,source_payload,query_log_id,sequence_no) SELECT ?,?,'assistant',?,?, '[]',?,COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId,ctx.userId,direct.answer,direct.mode,log.meta.last_row_id,conversationId),
         db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0,32),conversationId,ctx.userId),
       ]);
+      const assistantMessageId=Number(messageResults[1].meta.last_row_id);
       return ok({answer:direct.answer,sources:[],mode:direct.mode,provider:"platform",model,queryLogId:log.meta.last_row_id,conversationId,messageId:assistantMessageId,trust:{permissionScope:ctx.role,citationCount:0,contextMessages:conversationId?8:0}},rid);
     }
+    const historyRows=await db.prepare("SELECT role,content,source_payload FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY sequence_no DESC,id DESC LIMIT 8").bind(conversationId,ctx.userId).all<Record<string,unknown>>();
+    const previousUserMessage=historyRows.results.find(item=>item.role==="user");
+    const contextualFollowUp=isContextualFollowUp(question)&&Boolean(previousUserMessage);const retrievalQuestion=contextualFollowUp?`${safeText(previousUserMessage?.content,500)}\n${question}`:question;
+    const previousAssistant=historyRows.results.find(item=>item.role==="assistant");const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(previousAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
     let scope = "(d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL)) AND d.is_deleted=0"; const binds: unknown[] = [];
     if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT' OR EXISTS(SELECT 1 FROM document_acl a WHERE a.document_id=d.id AND a.permission='VIEW' AND (a.expires_at IS NULL OR a.expires_at>CURRENT_TIMESTAMP) AND ((a.subject_type='USER' AND a.subject_id=?) OR (a.subject_type='DEPT' AND a.subject_id IN (${placeholders(ctx.deptIds)})))))`; binds.push(...ctx.deptIds,ctx.userId,...ctx.deptIds); }
     const settings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>();const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(10,Number(config["rag.top_k"]||5)));
@@ -76,14 +81,13 @@ export async function POST(request: Request) {
     }
     const localQueryEmbedding = isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const queryEmbedding = localQueryEmbedding || (await embedTexts([question]))[0];
     const corpus=result.results.map(row=>String(row.content).toLowerCase());
-    const scored = result.results.map(row => { let vector = 0,hasComparableVector=false; try { if (queryEmbedding && row.embedding) {const stored=JSON.parse(String(row.embedding));hasComparableVector=Array.isArray(stored)&&stored.length===queryEmbedding.length;if(hasComparableVector)vector=cosine(queryEmbedding,stored);} } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content),corpus); return { ...row,hasComparableVector, score: hasComparableVector ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score);
+    const scored = result.results.map(row => { let vector = 0,hasComparableVector=false; try { if (queryEmbedding && row.embedding) {const stored=JSON.parse(String(row.embedding));hasComparableVector=Array.isArray(stored)&&stored.length===queryEmbedding.length;if(hasComparableVector)vector=cosine(queryEmbedding,stored);} } catch { /* malformed legacy vector */ } const keyword = keywordScore(retrievalQuestion, String(row.content),corpus);let score=hasComparableVector ? vector * vectorWeight + keyword * keywordWeight : keyword;if(contextualFollowUp&&contextDocumentIds.size)score=contextDocumentIds.has(Number(row.document_id))?Math.min(1,score+.25):score*.2;return { ...row,hasComparableVector, score }; }).sort((a, b) => b.score - a.score);
     const ranked:typeof scored=[];const seenDocuments=new Set<number>();for(const item of scored){const documentId=Number(item.document_id);if(seenDocuments.has(documentId))continue;seenDocuments.add(documentId);ranked.push(item);if(ranked.length>=topK)break;}
     const relevant = ranked.filter(item => item.score >= (item.hasComparableVector ? .18 : .15));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
     let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
     if (sources.length) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
-      const historyRows = await db.prepare("SELECT role,content FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY id DESC LIMIT 8").bind(conversationId, ctx.userId).all<Record<string, unknown>>();
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
       generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
@@ -92,12 +96,12 @@ export async function POST(request: Request) {
     }
     const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();
-    const userMessageId = crypto.getRandomValues(new Uint32Array(1))[0]; const assistantMessageId = crypto.getRandomValues(new Uint32Array(1))[0];
-    await db.batch([
-      db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,source_payload) VALUES(?,?,?,'user',?,'[]')").bind(userMessageId, conversationId, ctx.userId, question),
-      db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,mode,source_payload,query_log_id) VALUES(?,?,?,'assistant',?,?,?,?)").bind(assistantMessageId, conversationId, ctx.userId, answer, mode, JSON.stringify(sources), log.meta.last_row_id),
+    const messageResults = await db.batch([
+      db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,source_payload,sequence_no) SELECT ?,?,'user',?,'[]',COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, question,conversationId),
+      db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,mode,source_payload,query_log_id,sequence_no) SELECT ?,?,'assistant',?,?,?,?,COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, answer, mode, JSON.stringify(sources), log.meta.last_row_id,conversationId),
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
+    const assistantMessageId=Number(messageResults[1].meta.last_row_id);
     return ok({ answer, sources, mode, provider:generated?.provider||"local",model, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

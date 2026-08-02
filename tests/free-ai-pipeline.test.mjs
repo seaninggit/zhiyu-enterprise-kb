@@ -32,6 +32,21 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(page, /重建本地语义索引/);
   assert.match(page, /本地语义检索 · DeepSeek RAG/);
   assert.match(page, /平台助手 · 无需知识检索/);
+  assert.match(page, /returnToAi=\{documentReturnTarget==="ai"\}/);
+  assert.match(page, /← 返回问答/);
+});
+
+test("AI conversation preserves ordered context and returns from cited documents", async()=>{
+  const [ask,conversations,migration,page]=await Promise.all([read("app/api/ai/ask/route.ts"),read("app/api/ai/conversations/route.ts"),read("drizzle/0011_ai_conversation_sequence.sql"),read("app/page.tsx")]);
+  assert.match(migration,/sequence_no/);
+  assert.match(ask,/ORDER BY sequence_no DESC,id DESC LIMIT 8/);
+  assert.match(ask,/retrievalQuestion/);
+  assert.match(ask,/contextDocumentIds\.has\(Number\(row\.document_id\)\)/);
+  assert.match(conversations,/ORDER BY m\.sequence_no ASC,m\.id ASC/);
+  assert.match(conversations,/ORDER BY m\.sequence_no DESC,m\.id DESC LIMIT 1/);
+  assert.doesNotMatch(page,/await openDocument\(documentId\); setAiOpen\(false\)/);
+  assert.match(page,/embeddingText=isContextFollowUp/);
+  assert.match(page,/message\.sources\.length>0&&<button onClick=\{\(\) => ask/);
 });
 
 test("content changes invalidate stale vectors before rebuilding", async () => {

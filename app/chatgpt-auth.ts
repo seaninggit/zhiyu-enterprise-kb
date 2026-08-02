@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { env } from "cloudflare:workers";
 
 export type ChatGPTUser = {
   displayName: string;
@@ -15,11 +16,27 @@ const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
 const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
+export const PUBLIC_VIEWER_EMAIL = "public.viewer@zhiyu.invalid";
+
+function publicViewerEnabled() {
+  return (env as unknown as { PUBLIC_VIEWER_MODE?: string }).PUBLIC_VIEWER_MODE === "true";
+}
+
+export function isPublicViewerEmail(email: string) {
+  return email.toLowerCase() === PUBLIC_VIEWER_EMAIL;
+}
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
   const email = requestHeaders.get(USER_EMAIL_HEADER);
-  if (!email) return null;
+  if (!email) {
+    if (!publicViewerEnabled()) return null;
+    return {
+      displayName: "访客",
+      email: PUBLIC_VIEWER_EMAIL,
+      fullName: "访客",
+    };
+  }
 
   const encodedFullName = requestHeaders.get(USER_FULL_NAME_HEADER);
   const fullName =

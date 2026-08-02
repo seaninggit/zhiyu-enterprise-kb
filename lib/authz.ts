@@ -1,17 +1,25 @@
 import { and, eq } from "drizzle-orm";
-import { getChatGPTUser } from "../app/chatgpt-auth";
+import { getChatGPTUser, isPublicViewerEmail } from "../app/chatgpt-auth";
 import { getDb, getD1 } from "../db";
 import { roles, userDepartments, userRoles, users } from "../db/schema";
 import { ApiError } from "./api";
 
 export type RoleCode = "SUPER_ADMIN" | "DEPT_ADMIN" | "EMPLOYEE";
-export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number };
+export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number; isPublicViewer: boolean };
 
 async function ensureIdentityRecord(email: string, displayName: string) {
   const db = getDb();
   const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (found.length) return;
   const d1 = getD1();
+  if (isPublicViewerEmail(email)) {
+    await d1.batch([
+      d1.prepare("INSERT OR IGNORE INTO users(id,email,display_name,status,identity_provider) VALUES(9900,?,?,'ACTIVE','PUBLIC_VIEWER')").bind(email, displayName),
+      d1.prepare("INSERT OR IGNORE INTO user_roles(user_id,role_id) SELECT 9900,id FROM roles WHERE code='EMPLOYEE'"),
+      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT 9900,id,CASE WHEN code='GENERAL' THEN 1 ELSE 0 END,0 FROM departments WHERE is_active=1"),
+    ]);
+    return;
+  }
   await d1.batch([
     d1.prepare("INSERT OR IGNORE INTO departments(id, code, name, is_active) VALUES(1, 'GENERAL', '综合管理部', 1)"),
     d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(1, 'SUPER_ADMIN', '超级管理员', '全局知识治理')"),
@@ -40,7 +48,7 @@ export async function requireApiUser(): Promise<AuthContext> {
   const role = (roleRows.some(r => r.code === "SUPER_ADMIN") ? "SUPER_ADMIN" : roleRows.some(r => r.code === "DEPT_ADMIN") || deptRows.some(d => d.isDeptAdmin) ? "DEPT_ADMIN" : "EMPLOYEE") as RoleCode;
   const primary = deptRows.find(d => d.isPrimary)?.deptId ?? deptRows[0]?.deptId;
   if (!primary) throw new ApiError(403, "NO_DEPARTMENT", "账号未分配部门");
-  return { userId: user.id, email: user.email, displayName: user.displayName, role, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary };
+  return { userId: user.id, email: user.email, displayName: user.displayName, role, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email) };
 }
 
 export function canManageDepartment(ctx: AuthContext, deptId: number) { return ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ctx.deptIds.includes(deptId)); }

@@ -6,6 +6,7 @@ export async function GET(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); const db = getD1(); const id = Number(new URL(request.url).searchParams.get("id") || 0);
+    if (ctx.isPublicViewer) return ok({ conversations: [], publicViewer: true }, rid);
     if (id) {
       const conversation = await db.prepare("SELECT * FROM ai_conversations WHERE id=? AND user_id=? AND status='ACTIVE'").bind(id, ctx.userId).first();
       if (!conversation) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "会话不存在或已删除");
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "ai-conversation", 30, 60); const payload = await request.json().catch(() => ({})) as { title?: string }; const title = safeText(payload.title || "新会话", 80); const db = getD1();
+    if (ctx.isPublicViewer) throw new ApiError(403, "PUBLIC_VIEWER_READ_ONLY", "公开访问不保存历史会话");
     const created = await db.prepare("INSERT INTO ai_conversations(user_id,title) VALUES(?,?)").bind(ctx.userId, title).run();
     return ok({ conversation: await db.prepare("SELECT * FROM ai_conversations WHERE id=?").bind(created.meta.last_row_id).first() }, rid, 201);
   } catch (error) { return fail(error, rid); }
@@ -30,6 +32,7 @@ export async function DELETE(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); const id = Number(new URL(request.url).searchParams.get("id") || 0); if (!id) throw new ApiError(400, "VALIDATION_ERROR", "会话不能为空");
+    if (ctx.isPublicViewer) throw new ApiError(403, "PUBLIC_VIEWER_READ_ONLY", "公开访问不保存历史会话");
     const result = await getD1().prepare("UPDATE ai_conversations SET status='DELETED',update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(id, ctx.userId).run();
     if (!result.meta.changes) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "会话不存在");
     return ok({ deleted: true }, rid);

@@ -5,6 +5,7 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  PUBLIC_VIEWER_MODE?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -28,6 +29,29 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    const publicViewer =
+      env.PUBLIC_VIEWER_MODE === "true" &&
+      !request.headers.get("oai-authenticated-user-email");
+    const publicWriteAllowed =
+      request.method === "POST" &&
+      (url.pathname === "/api/search" || url.pathname === "/api/ai/ask");
+    if (
+      publicViewer &&
+      !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
+      !publicWriteAllowed
+    ) {
+      return Response.json(
+        {
+          success: false,
+          error: {
+            code: "PUBLIC_VIEWER_READ_ONLY",
+            message: "当前为公开只读访问，请使用企业账号执行维护操作",
+          },
+        },
+        { status: 403 },
+      );
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

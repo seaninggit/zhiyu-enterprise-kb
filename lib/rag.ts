@@ -21,21 +21,26 @@ export async function indexPublishedDocument(documentId: number) {
   const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(documentId).first<Record<string, unknown>>();
   if (!doc) return { chunks: 0, embedded: false };
   let attachmentText = "";
-  if (String(doc.mime_type || "").startsWith("text/") && doc.source_key) {
+  if (String(doc.mime_type || "").startsWith("text/") && doc.source_key && String(doc.extraction_method)!=="MANUAL_EDIT") {
     const object = await aiEnv().KNOWLEDGE_FILES?.get(String(doc.source_key));
     if (object && object.size <= 2_000_000) attachmentText = await object.text();
   }
   const fullText = documentIndexText(doc, attachmentText);
   const chunks = chunkText(fullText);
-  const existing = await db.prepare("SELECT chunk_index,content,embedding,embedding_model FROM document_chunks WHERE document_id=? AND document_version=? AND is_active=1 ORDER BY chunk_index").bind(documentId, doc.version).all<{chunk_index:number;content:string;embedding:string|null;embedding_model:string|null}>();
+  const currentIsPublished=String(doc.status)==="ARCHIVED_ACTIVE";
+  const existing = await db.prepare("SELECT chunk_index,content,embedding,embedding_model FROM document_chunks WHERE document_id=? AND document_version=? ORDER BY chunk_index").bind(documentId, doc.version).all<{chunk_index:number;content:string;embedding:string|null;embedding_model:string|null}>();
   const reusable = existing.results.length === chunks.length && chunks.every((content, index) => existing.results[index]?.content === content && Boolean(existing.results[index]?.embedding));
   if (reusable) {
-    await db.prepare("UPDATE documents SET ai_index_status='INDEXED_LOCAL',ai_indexed_at=CURRENT_TIMESTAMP WHERE id=?").bind(documentId).run();
+    await db.batch([
+      ...(currentIsPublished?[db.prepare("UPDATE document_chunks SET is_active=CASE WHEN document_version=? THEN 1 ELSE 0 END WHERE document_id=?").bind(doc.version,documentId)]:[]),
+      db.prepare("UPDATE documents SET ai_index_status='INDEXED_LOCAL',ai_indexed_at=CURRENT_TIMESTAMP WHERE id=?").bind(documentId),
+    ]);
     return { chunks: chunks.length, embedded: true, model: existing.results[0]?.embedding_model || "local" };
   }
   const embeddings = await embedTexts(chunks);
-  const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=?").bind(documentId)];
-  chunks.forEach((content, index) => statements.push(db.prepare("INSERT INTO document_chunks(document_id,dept_id,document_version,chunk_index,content,embedding,embedding_model,is_active) VALUES(?,?,?,?,?,?,?,1)").bind(documentId, doc.dept_id, doc.version, index, content, embeddings[index] ? JSON.stringify(embeddings[index]) : null, embeddings[index] ? (aiEnv().OPENAI_EMBEDDING_MODEL || "text-embedding-3-small") : null)));
+  const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=? AND document_version=?").bind(documentId,doc.version)];
+  if(currentIsPublished)statements.push(db.prepare("UPDATE document_chunks SET is_active=0 WHERE document_id=?").bind(documentId));
+  chunks.forEach((content, index) => statements.push(db.prepare("INSERT INTO document_chunks(document_id,dept_id,document_version,chunk_index,content,embedding,embedding_model,is_active) VALUES(?,?,?,?,?,?,?,?)").bind(documentId, doc.dept_id, doc.version, index, content, embeddings[index] ? JSON.stringify(embeddings[index]) : null, embeddings[index] ? (aiEnv().OPENAI_EMBEDDING_MODEL || "text-embedding-3-small") : null,currentIsPublished?1:0)));
   statements.push(db.prepare("UPDATE documents SET ai_index_status=?,ai_indexed_at=CURRENT_TIMESTAMP WHERE id=?").bind(embeddings.length ? "INDEXED" : "KEYWORD_READY", documentId));
   await db.batch(statements);
   return { chunks: chunks.length, embedded: embeddings.length === chunks.length && chunks.length > 0 };

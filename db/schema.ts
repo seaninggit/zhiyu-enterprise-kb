@@ -83,6 +83,7 @@ export const documents = sqliteTable("documents", {
   ocrStatus: text("ocr_status").notNull().default("NOT_REQUIRED"),
   publishedVersion: integer("published_version"),
   publishedTitle: text("published_title"),
+  publishedSummary: text("published_summary"),
   publishedContent: text("published_content"),
   verificationStatus: text("verification_status").notNull().default("UNVERIFIED"),
   verifiedAt: text("verified_at"),

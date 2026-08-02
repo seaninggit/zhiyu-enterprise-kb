@@ -6,7 +6,7 @@ async function readableDocument(id: number, ctx: Awaited<ReturnType<typeof requi
   const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
   if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在");
   const ownDept = ctx.deptIds.includes(Number(doc.dept_id));const acl=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='VIEW' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
-  const published=doc.status === "ARCHIVED_ACTIVE"||Number(doc.published_version)>0;const allowed = ctx.role === "SUPER_ADMIN" || (published && (ownDept || doc.share_scope === "CROSS_DEPT")) || Number(doc.create_user_id) === ctx.userId||Boolean(acl);
+  const published=doc.status === "ARCHIVED_ACTIVE"||(["DRAFT","PENDING_DEPT_REVIEW"].includes(String(doc.status))&&Number(doc.published_version)>0);const allowed = ctx.role === "SUPER_ADMIN" || (published && (ownDept || doc.share_scope === "CROSS_DEPT")) || Number(doc.create_user_id) === ctx.userId||Boolean(acl);
   if (!allowed) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权操作该文档"); return doc;
 }
 

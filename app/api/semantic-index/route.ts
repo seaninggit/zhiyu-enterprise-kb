@@ -41,8 +41,9 @@ export async function POST(request: Request) {
     const chunks = canonicalChunks(doc); const vectors = Array.isArray(payload.vectors) ? payload.vectors : [];
     if (!chunks.length) throw new ApiError(422, "NO_INDEXABLE_TEXT", "资料尚无可建立索引的正文");
     if (vectors.length !== chunks.length || vectors.length > 120 || !vectors.every(vector => isValidEmbedding(vector))) throw new ApiError(400, "INVALID_VECTORS", "语义向量数量或维度不正确");
-    const db = getD1(); const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=?").bind(documentId)];
-    chunks.forEach((content, index) => statements.push(db.prepare("INSERT INTO document_chunks(document_id,dept_id,document_version,chunk_index,content,embedding,embedding_model,is_active) VALUES(?,?,?,?,?,?,?,1)").bind(documentId, doc.dept_id, version, index, content, JSON.stringify(vectors[index]), model)));
+    const db = getD1(); const currentIsPublished=String(doc.status)==="ARCHIVED_ACTIVE";const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=? AND document_version=?").bind(documentId,version)];
+    if(currentIsPublished)statements.push(db.prepare("UPDATE document_chunks SET is_active=0 WHERE document_id=?").bind(documentId));
+    chunks.forEach((content, index) => statements.push(db.prepare("INSERT INTO document_chunks(document_id,dept_id,document_version,chunk_index,content,embedding,embedding_model,is_active) VALUES(?,?,?,?,?,?,?,?)").bind(documentId, doc.dept_id, version, index, content, JSON.stringify(vectors[index]), model,currentIsPublished?1:0)));
     statements.push(db.prepare("UPDATE documents SET ai_index_status='INDEXED_LOCAL',ai_indexed_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(documentId));
     statements.push(db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(documentId, doc.dept_id, "SEMANTIC_INDEX", ctx.userId, ctx.displayName, `${chunks.length} 个切片 · ${model}`, rid));
     await db.batch(statements);

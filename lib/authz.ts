@@ -14,9 +14,9 @@ async function ensureIdentityRecord(email: string, displayName: string) {
   const d1 = getD1();
   if (isPublicViewerEmail(email)) {
     await d1.batch([
-      d1.prepare("INSERT OR IGNORE INTO users(id,email,display_name,status,identity_provider) VALUES(9900,?,?,'ACTIVE','PUBLIC_VIEWER')").bind(email, displayName),
-      d1.prepare("INSERT OR IGNORE INTO user_roles(user_id,role_id) SELECT 9900,id FROM roles WHERE code='EMPLOYEE'"),
-      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT 9900,id,CASE WHEN code='GENERAL' THEN 1 ELSE 0 END,0 FROM departments WHERE is_active=1"),
+      d1.prepare("INSERT OR IGNORE INTO users(email,display_name,status,identity_provider) VALUES(?,?,'ACTIVE','PUBLIC_ACCESS')").bind(email, displayName),
+      d1.prepare("INSERT OR IGNORE INTO user_roles(user_id,role_id) SELECT u.id,r.id FROM users u CROSS JOIN roles r WHERE u.email=? AND r.code='EMPLOYEE'").bind(email),
+      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT u.id,d.id,CASE WHEN d.code='GENERAL' THEN 1 ELSE 0 END,0 FROM users u CROSS JOIN departments d WHERE u.email=? AND d.is_active=1").bind(email),
     ]);
     return;
   }

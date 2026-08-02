@@ -831,24 +831,20 @@ export default function Home() {
           >
             <i>⌂</i>知识广场
           </button>
-          {!currentUser.isPublicViewer && (
-            <>
-              <button
-                className={view === "favorites" ? "active" : ""}
-                onClick={() => setView("favorites")}
-              >
-                <i>☆</i>我的收藏 <em>{favorites.length}</em>
-              </button>
-              <span>知识治理</span>
-              <button
-                className={view === "admin" ? "active" : ""}
-                onClick={() => setView("admin")}
-              >
-                <i>▦</i>维护工作台
-              </button>
-            </>
-          )}
-          {!currentUser.isPublicViewer && currentUser.role !== "EMPLOYEE" && (
+          <button
+            className={view === "favorites" ? "active" : ""}
+            onClick={() => setView("favorites")}
+          >
+            <i>☆</i>我的收藏 <em>{favorites.length}</em>
+          </button>
+          <span>知识治理</span>
+          <button
+            className={view === "admin" ? "active" : ""}
+            onClick={() => setView("admin")}
+          >
+            <i>▦</i>维护工作台
+          </button>
+          {currentUser.role !== "EMPLOYEE" && (
             <button
               className={view === "platform" ? "active" : ""}
               onClick={() => setView("platform")}
@@ -856,15 +852,13 @@ export default function Home() {
               <i>◫</i>治理与洞察
             </button>
           )}
-          {!currentUser.isPublicViewer && (
-            <button
-              className={view === "audit" ? "active" : ""}
-              onClick={() => setView("audit")}
-            >
-              <i>≡</i>审计日志
-            </button>
-          )}
-          {!currentUser.isPublicViewer && currentUser.role === "SUPER_ADMIN" && (
+          <button
+            className={view === "audit" ? "active" : ""}
+            onClick={() => setView("audit")}
+          >
+            <i>≡</i>审计日志
+          </button>
+          {currentUser.role === "SUPER_ADMIN" && (
             <button
               className={view === "accounts" ? "active" : ""}
               onClick={() => setView("accounts")}
@@ -882,7 +876,7 @@ export default function Home() {
             <b>{currentUser.displayName}</b>
             <small>
               {currentUser.isPublicViewer
-                ? "访客只读"
+                ? "外部普通员工"
                 : currentUser.role === "SUPER_ADMIN"
                 ? "超级管理员"
                 : currentUser.role === "DEPT_ADMIN"
@@ -895,7 +889,7 @@ export default function Home() {
         {accountMenuOpen && (
           <div className="account-menu">
             <b>{currentUser.email}</b>
-            <span>{currentUser.isPublicViewer ? "身份来源：公开只读访问" : "身份来源：企业统一登录"}</span>
+            <span>{currentUser.isPublicViewer ? "身份来源：外部访问账号" : "身份来源：企业统一登录"}</span>
             {currentUser.role === "SUPER_ADMIN" && (
               <button
                 onClick={() => {
@@ -934,12 +928,12 @@ export default function Home() {
               {searchLoading ? "检索中" : "搜索"}
             </button>
           </div>
-          {!currentUser.isPublicViewer && <button
-              className="header-icon"
-              onClick={() => setNoticeOpen((value) => !value)}
-            >
-              ♢{notifications.some((n) => !n.is_read) && <i />}
-            </button>}
+          <button
+            className="header-icon"
+            onClick={() => setNoticeOpen((value) => !value)}
+          >
+            ♢{notifications.some((n) => !n.is_read) && <i />}
+          </button>
           {noticeOpen && (
             <div className="notice-panel">
               <header>
@@ -967,12 +961,12 @@ export default function Home() {
               )}
             </div>
           )}
-          {!currentUser.isPublicViewer && <button
-              className="primary-action"
-              onClick={() => setUploadOpen(true)}
-            >
-              ＋ 上传资料
-            </button>}
+          <button
+            className="primary-action"
+            onClick={() => setUploadOpen(true)}
+          >
+            ＋ 上传资料
+          </button>
         </header>
 
         {view === "admin" ? (
@@ -1015,7 +1009,7 @@ export default function Home() {
               openSearchResult(doc).catch((error) =>
                 notify(error instanceof Error ? error.message : "资料加载失败"),
               );
-              if (!currentUser.isPublicViewer) audit(doc.id, "VIEW", `查看《${doc.title}》`);
+              audit(doc.id, "VIEW", `查看《${doc.title}》`);
             }}
             favoriteMode={view === "favorites"}
           />
@@ -1026,7 +1020,6 @@ export default function Home() {
         <DocumentDrawer
           document={selected}
           returnToAi={documentReturnTarget === "ai"}
-          readOnly={Boolean(currentUser.isPublicViewer)}
           canRestore={currentUser.role !== "EMPLOYEE"}
           favorite={favorites.includes(selected.id)}
           onClose={() => {
@@ -1289,7 +1282,6 @@ export default function Home() {
       </div>
       {aiOpen && (
         <AiPanel
-          publicViewer={Boolean(currentUser.isPublicViewer)}
           onClose={closeAi}
           onActivity={() => setAiSessionUpdated(true)}
           onGovernanceCreated={() =>
@@ -1437,14 +1429,12 @@ function LibraryView({
                   <span className={`doc-status ${doc.status}`}>
                     {statusLabel[doc.status]}
                   </span>
-                  {!currentUser.isPublicViewer && (
-                    <button
-                      aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`}
-                      onClick={() => toggleFavorite(doc.id)}
-                    >
-                      {favorites.includes(doc.id) ? "★" : "☆"}
-                    </button>
-                  )}
+                  <button
+                    aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`}
+                    onClick={() => toggleFavorite(doc.id)}
+                  >
+                    {favorites.includes(doc.id) ? "★" : "☆"}
+                  </button>
                 </div>
                 <button className="doc-main" onClick={() => onSelect(doc)}>
                   <span className="file-tile">
@@ -2692,7 +2682,6 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
 function DocumentDrawer({
   document: doc,
   returnToAi = false,
-  readOnly = false,
   canRestore,
   favorite,
   onClose,
@@ -2709,7 +2698,6 @@ function DocumentDrawer({
 }: {
   document: KnowledgeDocument;
   returnToAi?: boolean;
-  readOnly?: boolean;
   canRestore: boolean;
   favorite: boolean;
   onClose: () => void;
@@ -2803,17 +2791,17 @@ function DocumentDrawer({
               ✎ {editing ? "取消编辑" : "编辑资料"}
             </button>
           )}
-          {!readOnly && <button onClick={onFavorite}>
-              {favorite ? "★ 已收藏" : "☆ 收藏"}
-            </button>}
+          <button onClick={onFavorite}>
+            {favorite ? "★ 已收藏" : "☆ 收藏"}
+          </button>
           <button onClick={onShare}>⎘ 内部链接</button>
-          {!readOnly && <button onClick={onSubscribe}>
-              ◇ {doc.subscribed ? "取消订阅" : "订阅更新"}
-            </button>}
+          <button onClick={onSubscribe}>
+            ◇ {doc.subscribed ? "取消订阅" : "订阅更新"}
+          </button>
           <button onClick={onContact}>@ 联系负责人</button>
           {doc.sourceKey && <button onClick={onDownload}>↓ 下载原件</button>}
           <button onClick={onExport}>⇧ 导出摘要</button>
-          {!readOnly && <button onClick={onFeedback}>! 纠错反馈</button>}
+          <button onClick={onFeedback}>! 纠错反馈</button>
         </div>
         {editing && (
           <form className="document-edit" onSubmit={saveEdit}>
@@ -3199,13 +3187,11 @@ function FeedbackModal({
 }
 
 function AiPanel({
-  publicViewer,
   onClose,
   onOpen,
   onGovernanceCreated,
   onActivity,
 }: {
-  publicViewer: boolean;
   onClose: () => void;
   onOpen: (documentId: number) => void | Promise<void>;
   onGovernanceCreated: () => void;
@@ -3329,7 +3315,6 @@ function AiPanel({
   }
   // Initial server-backed session restore runs once when the workbench opens.
   useEffect(() => {
-    if (publicViewer) return;
     const timer = window.setTimeout(
       () =>
         loadConversations(true).catch((caught) =>
@@ -3340,7 +3325,7 @@ function AiPanel({
       0,
     );
     return () => window.clearTimeout(timer);
-  }, [publicViewer]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   function newConversation() {
     keepAtBottomRef.current = true;
     setConversationId(null);
@@ -3411,7 +3396,7 @@ function AiPanel({
         },
       ]);
       onActivity();
-      if (!publicViewer) await loadConversations(false);
+      await loadConversations(false);
     } catch (caught) {
       setMessages((current) =>
         current.filter((item) => item.id !== optimisticId),
@@ -3478,11 +3463,11 @@ function AiPanel({
             ＋ 新建会话
           </button>
           <div className="history-title">
-            <span>{publicViewer ? "公开访问" : "历史会话"}</span>
-            <small>{publicViewer ? "只读" : conversations.length}</small>
+            <span>历史会话</span>
+            <small>{conversations.length}</small>
           </div>
           <div className="conversation-list">
-            {!publicViewer && conversations.map((item) => (
+            {conversations.map((item) => (
               <div
                 className={conversationId === item.id ? "active" : ""}
                 key={item.id}
@@ -3499,12 +3484,12 @@ function AiPanel({
                 </button>
               </div>
             ))}
-            {(publicViewer || !conversations.length) && (
-              <p>{publicViewer ? "为保护访问者隐私，公开访问不会保存或展示历史会话。" : "暂无历史会话，开始第一次企业知识问答吧。"}</p>
+            {!conversations.length && (
+              <p>暂无历史会话，开始第一次企业知识问答吧。</p>
             )}
           </div>
           <div className="ai-trust">
-            <span>●</span> {publicViewer ? "当前会话仅保留在本页面" : "会话已按账号安全保存"}
+            <span>●</span> 会话已按账号安全保存
           </div>
         </aside>
         <main className="ai-workspace">
@@ -3514,9 +3499,7 @@ function AiPanel({
               <div>
                 <b>知识问答工作台</b>
                 <small>
-                  {publicViewer
-                    ? "公开只读 · 不保存历史"
-                    : conversationId
+                  {conversationId
                     ? "上下文已连接 · 自动保存"
                     : "新会话 · 首次提问后保存"}
                 </small>
@@ -3526,9 +3509,7 @@ function AiPanel({
               <span>✓ 账号权限上下文已生效</span>
               <span>{messages.flatMap((m) => m.sources).length} 条引用</span>
               <span>
-                {publicViewer
-                  ? "访客权限上下文已生效"
-                  : conversationId
+                {conversationId
                   ? `${messages.length} 条上下文已恢复`
                   : "等待建立会话"}
               </span>
@@ -3598,7 +3579,7 @@ function AiPanel({
                           <small>{source.excerpt}</small>
                         </button>
                       ))}
-                      {!publicViewer && message.queryLogId &&
+                      {message.queryLogId &&
                         !message.mode?.startsWith("assistant_") && (
                           <div className="ai-followups">
                             {message.sources.length > 0 && (

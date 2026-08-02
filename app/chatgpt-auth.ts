@@ -16,14 +16,15 @@ const PERCENT_ENCODED_UTF8 = "percent-encoded-utf-8";
 const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
-export const PUBLIC_VIEWER_EMAIL = "public.viewer@zhiyu.invalid";
+const PUBLIC_SESSION_COOKIE = "zhiyu_public_session";
+const PUBLIC_ACCESS_DOMAIN = "public.zhiyu.invalid";
 
 function publicViewerEnabled() {
   return (env as unknown as { PUBLIC_VIEWER_MODE?: string }).PUBLIC_VIEWER_MODE !== "false";
 }
 
 export function isPublicViewerEmail(email: string) {
-  return email.toLowerCase() === PUBLIC_VIEWER_EMAIL;
+  return email.toLowerCase().endsWith(`@${PUBLIC_ACCESS_DOMAIN}`);
 }
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
@@ -31,10 +32,13 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!email) {
     if (!publicViewerEnabled()) return null;
+    const cookie = requestHeaders.get("cookie") ?? "";
+    const session = cookie.match(new RegExp(`(?:^|;\\s*)${PUBLIC_SESSION_COOKIE}=([a-f0-9]{32})`, "i"))?.[1]?.toLowerCase();
+    const suffix = session ?? "shared";
     return {
-      displayName: "访客",
-      email: PUBLIC_VIEWER_EMAIL,
-      fullName: "访客",
+      displayName: session ? `外部用户 ${session.slice(0, 4).toUpperCase()}` : "外部用户",
+      email: `visitor-${suffix}@${PUBLIC_ACCESS_DOMAIN}`,
+      fullName: null,
     };
   }
 

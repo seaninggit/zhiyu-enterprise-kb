@@ -30,4 +30,5 @@ test("external access creates isolated employee sessions with normal business ca
   assert.match(page, /＋ 上传资料/);
   assert.match(gateway, /crypto\.randomUUID/);
   assert.match(gateway, /Max-Age=2592000/);
+  assert.match(gateway, /headers\.delete\("oai-authenticated-user-email"\)/);
 });

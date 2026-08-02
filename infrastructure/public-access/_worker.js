@@ -23,6 +23,9 @@ const gateway = {
     headers.set("x-forwarded-proto", "https");
     headers.delete("cf-connecting-ip");
     headers.delete("cf-ipcountry");
+    headers.delete("oai-authenticated-user-email");
+    headers.delete("oai-authenticated-user-full-name");
+    headers.delete("oai-authenticated-user-full-name-encoding");
 
     const upstream = await fetch(new Request(targetUrl, {
       method: request.method,

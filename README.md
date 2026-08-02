@@ -1,8 +1,6 @@
-# vinext-starter
+# 知域 · 企业知识中台
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+面向企业内部知识生产、部门审核、权限隔离、搜索与 RAG 问答的全栈知识库。运行于 Cloudflare Workers/Sites，D1 保存业务与向量数据，R2 保存原始附件；DeepSeek 负责基于授权证据生成答案，本地中文 Embedding 与浏览器 OCR 不产生额外服务费用。
 
 ## Prerequisites
 
@@ -18,14 +16,14 @@ npm run build
 
 This starter does not use `wrangler.jsonc`.
 
-## Included Shape
+## 核心链路
 
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
+- 上传并保留原件，解析 TXT/Markdown/PDF/DOCX/XLSX/PPTX/图片。
+- 图片与扫描 PDF 在浏览器执行中英文 OCR。
+- 本地中文向量模型生成语义索引，D1 按文档版本保存切片和向量。
+- 草稿 → 部门审核 → 发布生效 → 作废的真实流程，发布后才进入用户检索。
+- DeepSeek RAG 回答附带引用来源、版本、部门和权限校验。
+- 超级管理员、部门管理员、员工三级角色与后端行级隔离。
 
 ## Workspace Auth Headers
 

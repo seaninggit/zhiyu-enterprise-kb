@@ -2,6 +2,7 @@ import { getD1 } from "../../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
 import { enforceRateLimit, requireApiUser } from "../../../../lib/authz";
 import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } from "../../../../lib/rag";
+import { isValidEmbedding } from "../../../../lib/text-chunks";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
 function keywordScore(question: string, content: string) {
@@ -14,7 +15,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);const started=Date.now();
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "ai-question", 30, 60);
-    const payload = await request.json() as { question?: string; conversationId?: number }; const question = safeText(payload.question, 500);
+    const payload = await request.json() as { question?: string; conversationId?: number; queryEmbedding?: unknown }; const question = safeText(payload.question, 500);
     if (question.length < 2) throw new ApiError(400, "VALIDATION_ERROR", "请输入完整问题");
     const db = getD1(); let conversationId = Number(payload.conversationId || 0);
     if(/忽略(以上|之前|系统)|ignore (all |the )?(previous|system)|system prompt|泄露.*提示词|越过.*权限/i.test(question)){await db.prepare("INSERT INTO security_events(type,severity,detail) VALUES('PROMPT_INJECTION','HIGH',?)").bind(`用户#${ctx.userId}：${question}`).run();throw new ApiError(400,"UNSAFE_PROMPT","问题包含试图绕过权限或系统指令的内容，已拒绝并记录安全事件");}
@@ -36,7 +37,7 @@ export async function POST(request: Request) {
       for (const candidate of candidates.results) await indexPublishedDocument(Number(candidate.id)).catch(() => undefined);
       result = await loadChunks();
     }
-    const queryEmbedding = (await embedTexts([question]))[0];
+    const localQueryEmbedding = isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const queryEmbedding = localQueryEmbedding || (await embedTexts([question]))[0];
     const ranked = result.results.map(row => { let vector = 0; try { if (queryEmbedding && row.embedding) vector = cosine(queryEmbedding, JSON.parse(String(row.embedding))); } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content)); return { ...row, score: queryEmbedding ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score).slice(0, topK);
     const relevant = ranked.filter(item => item.score >= (queryEmbedding ? .18 : .08));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
@@ -48,7 +49,7 @@ export async function POST(request: Request) {
       generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
       answer = generated?.text || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
-      mode = generated ? "rag" : "retrieval_only";
+      mode = generated ? (localQueryEmbedding ? "rag_local_vector" : "rag") : (localQueryEmbedding ? "retrieval_local_vector" : "retrieval_only");
     }
     const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();

@@ -37,9 +37,10 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
     const ctx = await requireApiUser(); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const deptId = Number(doc.dept_id);
     const aclEdit=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='EDIT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
     if (!(canManageDepartment(ctx, deptId) || Number(doc.create_user_id) === ctx.userId || aclEdit)) throw new ApiError(403, "EDIT_FORBIDDEN", "无权编辑该资料");
-    const payload = await request.json() as { title?: string; content?: string; summary?: string }; const title = safeText(payload.title || doc.title, 200); const content = safeText(payload.content || doc.content, 50000); const nextVersion = Number(doc.version) + 1; const db = getD1();
+    const payload = await request.json() as { title?: string; content?: string; summary?: string }; const title = safeText(payload.title || doc.title, 200); const content = safeText(payload.content || doc.content, 500000); const nextVersion = Number(doc.version) + 1; const db = getD1();
     await db.batch([
-      db.prepare("UPDATE documents SET title=?,summary=?,content=?,version=?,status='DRAFT',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(title, safeText(payload.summary || doc.summary, 1000), content, nextVersion, ctx.userId, id),
+      db.prepare("UPDATE documents SET title=?,summary=?,content=?,version=?,status='DRAFT',parse_status='COMPLETED',ai_index_status='PENDING',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(title, safeText(payload.summary || doc.summary, 1000), content, nextVersion, ctx.userId, id),
+      db.prepare("DELETE FROM document_chunks WHERE document_id=?").bind(id),
       db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,?,?,?,?,?,?)").bind(id, nextVersion, title, content, "内容更新，重新进入草稿", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, deptId, "UPDATE", ctx.userId, ctx.displayName, `更新至 V${nextVersion}`, rid),
     ]);

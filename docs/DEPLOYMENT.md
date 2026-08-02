@@ -10,13 +10,18 @@
 
 各环境必须使用独立资源，不在代码中保存账号、密码、Token、IP 或资源 ID。
 
-## AI环境变量
+## AI 与本地检索配置
 
-- `OPENAI_API_KEY`：生产密钥，必须以Secret方式配置。
-- `OPENAI_CHAT_MODEL`：默认 `gpt-5.6-terra`，用于基于检索证据生成回答。
-- `OPENAI_EMBEDDING_MODEL`：默认 `text-embedding-3-small`，用于生成检索向量。
+- `AI_PROVIDER=deepseek`
+- `AI_BASE_URL=https://api.deepseek.com`
+- `AI_CHAT_MODEL=deepseek-v4-flash`
+- `DEEPSEEK_API_KEY`：只以 Secret 保存，用于对检索到的企业证据生成回答。
 
-未配置密钥时系统进入“安全检索模式”：仍执行登录校验、部门权限过滤、关键词检索、引用和AI审计，但不会调用模型生成内容。配置密钥后自动启用向量检索与RAG生成。
+免费检索链路不依赖额外云密钥：浏览器使用 `Xenova/paraphrase-multilingual-MiniLM-L12-v2` 生成 384 维中文语义向量，D1 保存切片、向量和版本；图片及扫描 PDF 使用 Tesseract.js 在浏览器本地执行中英文 OCR。原始文件写入 R2，OCR 图片和待检索正文不会发送给第三方 OCR 服务。
+
+首次使用语义检索时浏览器需要联网下载本地模型，之后由浏览器缓存复用。未配置 DeepSeek 密钥时，权限过滤、关键词/向量检索、引用和审计仍可用，仅不调用大模型组织回答。
+
+`OPENAI_API_KEY`、`OPENAI_CHAT_MODEL`、`OPENAI_EMBEDDING_MODEL` 仅为兼容旧部署的可选回退，不是当前免费组合的必需项。
 
 ## 发布
 
@@ -25,6 +30,7 @@
 3. 保存代码版本并由 Sites 发布。
 4. 发布平台自动应用 D1 迁移并绑定 R2。
 5. 使用三类测试账号分别验证列表、详情、下载、编辑和审批权限。
+6. 至少用文本、DOCX、文本 PDF、扫描 PDF、图片各上传一份，检查解析状态、语义索引状态、发布后检索和引用跳转。
 
 ## 备份和恢复
 

@@ -1,23 +1,12 @@
 import { env } from "cloudflare:workers";
 import { getD1 } from "../db";
 import { generateChat } from "./ai-provider";
+import { chunkText, documentIndexText } from "./text-chunks";
 
 type AiEnv = { OPENAI_API_KEY?: string; OPENAI_CHAT_MODEL?: string; OPENAI_EMBEDDING_MODEL?: string; KNOWLEDGE_FILES?: R2Bucket };
 type EmbeddingResponse = { data?: Array<{ embedding: number[] }> };
 
 function aiEnv() { return env as unknown as AiEnv; }
-function chunkText(text: string, size = 900, overlap = 120) {
-  const clean = text.replace(/\r/g, "").replace(/\n{3,}/g, "\n\n").trim();
-  if (!clean) return [];
-  const chunks: string[] = [];
-  for (let start = 0; start < clean.length; start += size - overlap) {
-    const end = Math.min(clean.length, start + size);
-    chunks.push(clean.slice(start, end));
-    if (end === clean.length) break;
-  }
-  return chunks.slice(0, 120);
-}
-
 export async function embedTexts(inputs: string[]) {
   const cfg = aiEnv();
   if (!cfg.OPENAI_API_KEY || !inputs.length) return [];
@@ -29,15 +18,21 @@ export async function embedTexts(inputs: string[]) {
 
 export async function indexPublishedDocument(documentId: number) {
   const db = getD1();
-  const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND status='ARCHIVED_ACTIVE' AND is_deleted=0").bind(documentId).first<Record<string, unknown>>();
+  const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(documentId).first<Record<string, unknown>>();
   if (!doc) return { chunks: 0, embedded: false };
   let attachmentText = "";
   if (String(doc.mime_type || "").startsWith("text/") && doc.source_key) {
     const object = await aiEnv().KNOWLEDGE_FILES?.get(String(doc.source_key));
     if (object && object.size <= 2_000_000) attachmentText = await object.text();
   }
-  const fullText = [`标题：${doc.title}`, `摘要：${doc.summary || ""}`, String(doc.content || ""), String(doc.extracted_text || ""), attachmentText].filter(Boolean).join("\n\n");
+  const fullText = documentIndexText(doc, attachmentText);
   const chunks = chunkText(fullText);
+  const existing = await db.prepare("SELECT chunk_index,content,embedding,embedding_model FROM document_chunks WHERE document_id=? AND document_version=? AND is_active=1 ORDER BY chunk_index").bind(documentId, doc.version).all<{chunk_index:number;content:string;embedding:string|null;embedding_model:string|null}>();
+  const reusable = existing.results.length === chunks.length && chunks.every((content, index) => existing.results[index]?.content === content && Boolean(existing.results[index]?.embedding));
+  if (reusable) {
+    await db.prepare("UPDATE documents SET ai_index_status='INDEXED_LOCAL',ai_indexed_at=CURRENT_TIMESTAMP WHERE id=?").bind(documentId).run();
+    return { chunks: chunks.length, embedded: true, model: existing.results[0]?.embedding_model || "local" };
+  }
   const embeddings = await embedTexts(chunks);
   const statements = [db.prepare("DELETE FROM document_chunks WHERE document_id=?").bind(documentId)];
   chunks.forEach((content, index) => statements.push(db.prepare("INSERT INTO document_chunks(document_id,dept_id,document_version,chunk_index,content,embedding,embedding_model,is_active) VALUES(?,?,?,?,?,?,?,1)").bind(documentId, doc.dept_id, doc.version, index, content, embeddings[index] ? JSON.stringify(embeddings[index]) : null, embeddings[index] ? (aiEnv().OPENAI_EMBEDDING_MODEL || "text-embedding-3-small") : null)));

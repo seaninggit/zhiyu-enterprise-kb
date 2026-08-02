@@ -40,17 +40,17 @@ export async function POST(request: Request) {
     const ranked = result.results.map(row => { let vector = 0; try { if (queryEmbedding && row.embedding) vector = cosine(queryEmbedding, JSON.parse(String(row.embedding))); } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content)); return { ...row, score: queryEmbedding ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score).slice(0, topK);
     const relevant = ranked.filter(item => item.score >= (queryEmbedding ? .18 : .08));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
-    let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";
+    let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
     if (sources.length) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
       const historyRows = await db.prepare("SELECT role,content FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY id DESC LIMIT 8").bind(conversationId, ctx.userId).all<Record<string, unknown>>();
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
-      const generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
+      generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
-      answer = generated || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
+      answer = generated?.text || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
       mode = generated ? "rag" : "retrieval_only";
     }
-    const inputTokens=Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=Math.ceil(answer.length/4),model=mode==="rag"?"configured-response-model":"local-retrieval",cost=mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
+    const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();
     const userMessageId = crypto.getRandomValues(new Uint32Array(1))[0]; const assistantMessageId = crypto.getRandomValues(new Uint32Array(1))[0];
     await db.batch([
@@ -58,6 +58,6 @@ export async function POST(request: Request) {
       db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,mode,source_payload,query_log_id) VALUES(?,?,?,'assistant',?,?,?,?)").bind(assistantMessageId, conversationId, ctx.userId, answer, mode, JSON.stringify(sources), log.meta.last_row_id),
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
-    return ok({ answer, sources, mode, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
+    return ok({ answer, sources, mode, provider:generated?.provider||"local",model, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

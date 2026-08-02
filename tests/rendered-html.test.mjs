@@ -44,9 +44,10 @@ test("knowledge API implements lifecycle operations", async () => {
 });
 
 test("AI knowledge endpoint is permission-aware and grounded", async () => {
-  const [route, rag, schema] = await Promise.all([
+  const [route, rag, provider, schema] = await Promise.all([
     readFile(new URL("../app/api/ai/ask/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/rag.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/ai-provider.ts", import.meta.url), "utf8"),
     readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
   ]);
   assert.match(route, /requireApiUser/);
@@ -54,7 +55,8 @@ test("AI knowledge endpoint is permission-aware and grounded", async () => {
   assert.match(route, /d\.dept_id IN/);
   assert.match(route, /ai_query_logs/);
   assert.match(rag, /v1\/embeddings/);
-  assert.match(rag, /v1\/responses/);
+  assert.match(provider, /chat\/completions/);
+  assert.match(provider, /deepseek-v4-flash/);
   assert.match(rag, /没有足够依据/);
   assert.match(schema, /documentChunks/);
   assert.match(schema, /aiQueryLogs/);

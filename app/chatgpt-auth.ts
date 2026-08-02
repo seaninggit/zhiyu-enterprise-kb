@@ -19,7 +19,7 @@ const CALLBACK_PATH = "/callback";
 export const PUBLIC_VIEWER_EMAIL = "public.viewer@zhiyu.invalid";
 
 function publicViewerEnabled() {
-  return (env as unknown as { PUBLIC_VIEWER_MODE?: string }).PUBLIC_VIEWER_MODE === "true";
+  return (env as unknown as { PUBLIC_VIEWER_MODE?: string }).PUBLIC_VIEWER_MODE !== "false";
 }
 
 export function isPublicViewerEmail(email: string) {

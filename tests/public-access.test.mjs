@@ -19,6 +19,7 @@ test("public viewer is read-only, department-scoped and has private ephemeral AI
   assert.match(migration, /FROM `departments` WHERE `is_active`=1/);
   assert.match(auth, /isPublicViewer:/);
   assert.match(worker, /PUBLIC_VIEWER_READ_ONLY/);
+  assert.match(worker, /PUBLIC_VIEWER_MODE !== "false"/);
   assert.match(worker, /url\.pathname === "\/api\/search" \|\| url\.pathname === "\/api\/ai\/ask"/);
   assert.match(conversations, /公开访问不保存历史会话/);
   assert.match(ask, /persistConversation = !ctx\.isPublicViewer/);

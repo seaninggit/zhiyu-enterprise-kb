@@ -31,7 +31,7 @@ const worker = {
     const url = new URL(request.url);
 
     const publicViewer =
-      env.PUBLIC_VIEWER_MODE === "true" &&
+      env.PUBLIC_VIEWER_MODE !== "false" &&
       !request.headers.get("oai-authenticated-user-email");
     const publicWriteAllowed =
       request.method === "POST" &&

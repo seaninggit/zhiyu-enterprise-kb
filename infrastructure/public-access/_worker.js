@@ -1,6 +1,6 @@
 const ORIGIN = "https://zhiyu-enterprise-kb.yangshanpm.chatgpt.site";
 
-export default {
+const gateway = {
   async fetch(request) {
     const incomingUrl = new URL(request.url);
     const targetUrl = new URL(`${incomingUrl.pathname}${incomingUrl.search}`, ORIGIN);
@@ -31,3 +31,5 @@ export default {
     });
   },
 };
+
+export default gateway;

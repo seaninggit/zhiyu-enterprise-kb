@@ -7,7 +7,7 @@
 [![Cloudflare](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A522.13-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 
-[在线访问](https://zhiyu-kb.pages.dev) · [权限说明](docs/PERMISSIONS.md) · [发布流程](docs/PUBLISHING-FLOW.md) · [部署指南](docs/DEPLOYMENT.md) · [接口契约](docs/API-CONTRACTS.md)
+[在线访问](https://zhiyu-knowledge-hub-public.yangshan-ai-flow.workers.dev) · [权限说明](docs/PERMISSIONS.md) · [发布流程](docs/PUBLISHING-FLOW.md) · [部署指南](docs/DEPLOYMENT.md) · [接口契约](docs/API-CONTRACTS.md)
 
 公开地址会为每个浏览器创建独立的外部普通员工账号，可上传和维护本人资料、提交部门审核、收藏知识并保存独立的 AI 会话历史；审批、删除他人资料、权限配置和全局治理仍按企业角色权限控制。
 

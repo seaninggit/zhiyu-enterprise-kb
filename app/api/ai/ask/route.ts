@@ -5,10 +5,26 @@ import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } fr
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
-function keywordScore(question: string, content: string) {
-  const terms = Array.from(new Set(question.toLowerCase().split(/[\s，。！？、,.!?：:；;]+/).flatMap(term => term.length > 2 ? [term, ...Array.from({ length: term.length - 1 }, (_, i) => term.slice(i, i + 2))] : [term]).filter(Boolean)));
-  const lower = content.toLowerCase();
-  return terms.reduce((score, term) => score + (lower.includes(term) ? Math.min(1, term.length / 4) : 0), 0) / Math.max(1, terms.length);
+const QUESTION_TERMS = new Set(["哪些", "什么", "怎么", "如何", "需要", "是否", "可以", "相关", "信息", "内容", "要求", "流程"]);
+const LOW_SIGNAL_TERMS = new Set(["材料", "资料", "申请", "制度", "管理", "审批", "规范", "办法", "指南", "规则"]);
+function queryTerms(question: string) {
+  const normalized = question.toLowerCase().replace(/[\s，。！？、,.!?：:；;]+/g, " ");
+  const terms = normalized.match(/[a-z0-9_-]{2,}|[\u3400-\u9fff]+/g)?.flatMap(part => {
+    if (!/[\u3400-\u9fff]/.test(part) || part.length <= 2) return [part];
+    return Array.from({ length: part.length - 1 }, (_, index) => part.slice(index, index + 2));
+  }) || [];
+  return Array.from(new Set(terms.filter(term => !QUESTION_TERMS.has(term))));
+}
+function keywordScore(question: string, content: string, corpus: string[]) {
+  const terms = queryTerms(question); const lower = content.toLowerCase();
+  let hasStrongMatch=false;const score = terms.reduce((total, term) => {
+    if (!lower.includes(term)) return total;
+    if(!LOW_SIGNAL_TERMS.has(term))hasStrongMatch=true;
+    const documentFrequency = corpus.reduce((count, item) => count + (item.includes(term) ? 1 : 0), 0);
+    const inverseFrequency = Math.log((corpus.length + 1) / (documentFrequency + 1)) + 1;
+    return total + inverseFrequency * (LOW_SIGNAL_TERMS.has(term) ? .15 : 1);
+  }, 0);
+  return hasStrongMatch ? Math.min(1, score / 4) : Math.min(.14, score / 4);
 }
 
 export async function POST(request: Request) {
@@ -32,14 +48,16 @@ export async function POST(request: Request) {
       FROM document_chunks c JOIN documents d ON d.id=c.document_id JOIN departments dep ON dep.id=d.dept_id
       WHERE c.is_active=1 AND ${scope} ORDER BY d.update_time DESC LIMIT 800`).bind(...binds).all<Record<string, unknown>>();
     let result = await loadChunks();
-    if (!result.results.length) {
-      const candidates = await db.prepare(`SELECT d.id FROM documents d WHERE ${scope} ORDER BY d.update_time DESC LIMIT 30`).bind(...binds).all<{ id: number }>();
+    const candidates = await db.prepare(`SELECT d.id FROM documents d WHERE ${scope} AND NOT EXISTS(SELECT 1 FROM document_chunks c WHERE c.document_id=d.id AND c.is_active=1) ORDER BY d.update_time DESC LIMIT 30`).bind(...binds).all<{ id: number }>();
+    if (candidates.results.length) {
       for (const candidate of candidates.results) await indexPublishedDocument(Number(candidate.id)).catch(() => undefined);
       result = await loadChunks();
     }
     const localQueryEmbedding = isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const queryEmbedding = localQueryEmbedding || (await embedTexts([question]))[0];
-    const ranked = result.results.map(row => { let vector = 0; try { if (queryEmbedding && row.embedding) vector = cosine(queryEmbedding, JSON.parse(String(row.embedding))); } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content)); return { ...row, score: queryEmbedding ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score).slice(0, topK);
-    const relevant = ranked.filter(item => item.score >= (queryEmbedding ? .18 : .08));
+    const corpus=result.results.map(row=>String(row.content).toLowerCase());
+    const scored = result.results.map(row => { let vector = 0,hasComparableVector=false; try { if (queryEmbedding && row.embedding) {const stored=JSON.parse(String(row.embedding));hasComparableVector=Array.isArray(stored)&&stored.length===queryEmbedding.length;if(hasComparableVector)vector=cosine(queryEmbedding,stored);} } catch { /* malformed legacy vector */ } const keyword = keywordScore(question, String(row.content),corpus); return { ...row,hasComparableVector, score: hasComparableVector ? vector * vectorWeight + keyword * keywordWeight : keyword }; }).sort((a, b) => b.score - a.score);
+    const ranked:typeof scored=[];const seenDocuments=new Set<number>();for(const item of scored){const documentId=Number(item.document_id);if(seenDocuments.has(documentId))continue;seenDocuments.add(documentId);ranked.push(item);if(ranked.length>=topK)break;}
+    const relevant = ranked.filter(item => item.score >= (item.hasComparableVector ? .18 : .15));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
     let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
     if (sources.length) {
@@ -49,7 +67,7 @@ export async function POST(request: Request) {
       generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
       answer = generated?.text || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
-      mode = generated ? (localQueryEmbedding ? "rag_local_vector" : "rag") : (localQueryEmbedding ? "retrieval_local_vector" : "retrieval_only");
+      const usedComparableVector=relevant.some(item=>item.hasComparableVector);mode = generated ? (usedComparableVector ? "rag_local_vector" : "rag_keyword_fallback") : (usedComparableVector ? "retrieval_local_vector" : "retrieval_keyword_fallback");
     }
     const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();

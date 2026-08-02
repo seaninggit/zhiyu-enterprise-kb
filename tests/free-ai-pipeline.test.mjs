@@ -19,6 +19,11 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(search, /row\.relevance > \(vector \? \.08 : 0\)/);
   assert.match(search, /a\.subject_id IN \(\$\{placeholders\(ctx\.deptIds\)\}\)\)\)\)\)/);
   assert.match(ask, /rag_local_vector/);
+  assert.match(ask, /hasComparableVector \? vector \* vectorWeight \+ keyword \* keywordWeight : keyword/);
+  assert.match(ask, /item\.hasComparableVector \? \.18 : \.15/);
+  assert.match(ask, /rag_keyword_fallback/);
+  assert.match(ask, /LOW_SIGNAL_TERMS/);
+  assert.match(ask, /NOT EXISTS\(SELECT 1 FROM document_chunks/);
   assert.match(migration, /extraction_method/);
   assert.match(migration, /ocr_status/);
   assert.match(page, /重建本地语义索引/);

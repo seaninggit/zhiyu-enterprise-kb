@@ -24,10 +24,14 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(ask, /rag_keyword_fallback/);
   assert.match(ask, /LOW_SIGNAL_TERMS/);
   assert.match(ask, /NOT EXISTS\(SELECT 1 FROM document_chunks/);
+  assert.match(ask, /assistant_identity/);
+  assert.match(ask, /assistant_capabilities/);
+  assert.match(ask, /assistant_account/);
   assert.match(migration, /extraction_method/);
   assert.match(migration, /ocr_status/);
   assert.match(page, /重建本地语义索引/);
   assert.match(page, /本地语义检索 · DeepSeek RAG/);
+  assert.match(page, /平台助手 · 无需知识检索/);
 });
 
 test("content changes invalidate stale vectors before rebuilding", async () => {

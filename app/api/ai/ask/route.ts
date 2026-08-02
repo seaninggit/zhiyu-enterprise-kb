@@ -5,6 +5,15 @@ import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } fr
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
+function platformIntent(question:string,displayName:string,role:string){
+  const normalized=question.trim().replace(/[？?。！!，,\s]/g,"").toLowerCase();
+  if(/^(你是谁|你叫什么|你叫什么名字|介绍一下你自己|自我介绍)$/.test(normalized))return{mode:"assistant_identity",answer:"我是问问小知，知域企业知识库的智能问答助手。我会基于你当前账号有权访问且已经生效的企业资料回答问题，并标注引用来源；也可以结合上下文继续追问、生成办理清单、打开原文和提交纠错反馈。我不会绕过部门权限，也不会把没有知识依据的内容当作公司制度。"};
+  if(/^(你能做什么|你会什么|你能干什么|怎么使用你|怎么用你|帮助|help)$/.test(normalized))return{mode:"assistant_capabilities",answer:"你可以直接问我企业制度、业务流程、岗位规范和办事材料。我会先按你的账号权限检索已生效资料，再给出带引用的答案。你还可以继续追问、生成办理清单、打开引用原文、收藏或订阅资料；如果答案不准确，可点“没解决”进入知识治理待办。"};
+  if(/^(我是谁|我的账号是什么|我的身份是什么)$/.test(normalized)){const roleName=role==="SUPER_ADMIN"?"超级管理员":role==="DEPT_ADMIN"?"部门管理员":"普通员工";return{mode:"assistant_account",answer:`你当前登录为 ${displayName}，系统角色是${roleName}。知识检索、文档查看和维护操作都会按照你的部门与角色权限执行。`};}
+  if(/^(你好|您好|嗨|哈喽|hello|hi|在吗|早上好|下午好|晚上好)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
+  if(/^(谢谢|感谢|明白了|知道了|好的|好)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。如果还需要核对制度原文、继续追问或生成办理清单，直接告诉我即可。"};
+  return null;
+}
 const QUESTION_TERMS = new Set(["哪些", "什么", "怎么", "如何", "需要", "是否", "可以", "相关", "信息", "内容", "要求", "流程"]);
 const LOW_SIGNAL_TERMS = new Set(["材料", "资料", "申请", "制度", "管理", "审批", "规范", "办法", "指南", "规则"]);
 function queryTerms(question: string) {
@@ -40,6 +49,18 @@ export async function POST(request: Request) {
       if (!owned) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "当前会话不存在或已删除");
     } else {
       const created = await db.prepare("INSERT INTO ai_conversations(user_id,title) VALUES(?,?)").bind(ctx.userId, question.slice(0, 32)).run(); conversationId = Number(created.meta.last_row_id);
+    }
+    const direct=platformIntent(question,ctx.displayName,ctx.role);
+    if(direct){
+      const inputTokens=Math.ceil(question.length/4),outputTokens=Math.ceil(direct.answer.length/4),model="platform-intent";
+      const log=await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,'[]',?,?,?,?,?,0)").bind(ctx.userId,ctx.primaryDeptId,question,direct.answer,direct.mode,rid,Date.now()-started,inputTokens,outputTokens,model).run();
+      const userMessageId=crypto.getRandomValues(new Uint32Array(1))[0],assistantMessageId=crypto.getRandomValues(new Uint32Array(1))[0];
+      await db.batch([
+        db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,source_payload) VALUES(?,?,?,'user',?,'[]')").bind(userMessageId,conversationId,ctx.userId,question),
+        db.prepare("INSERT INTO ai_messages(id,conversation_id,user_id,role,content,mode,source_payload,query_log_id) VALUES(?,?,?,'assistant',?,?, '[]',?)").bind(assistantMessageId,conversationId,ctx.userId,direct.answer,direct.mode,log.meta.last_row_id),
+        db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0,32),conversationId,ctx.userId),
+      ]);
+      return ok({answer:direct.answer,sources:[],mode:direct.mode,provider:"platform",model,queryLogId:log.meta.last_row_id,conversationId,messageId:assistantMessageId,trust:{permissionScope:ctx.role,citationCount:0,contextMessages:conversationId?8:0}},rid);
     }
     let scope = "(d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL)) AND d.is_deleted=0"; const binds: unknown[] = [];
     if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT' OR EXISTS(SELECT 1 FROM document_acl a WHERE a.document_id=d.id AND a.permission='VIEW' AND (a.expires_at IS NULL OR a.expires_at>CURRENT_TIMESTAMP) AND ((a.subject_type='USER' AND a.subject_id=?) OR (a.subject_type='DEPT' AND a.subject_id IN (${placeholders(ctx.deptIds)})))))`; binds.push(...ctx.deptIds,ctx.userId,...ctx.deptIds); }

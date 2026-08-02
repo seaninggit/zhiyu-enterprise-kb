@@ -64,6 +64,34 @@
       "when": 1785657600000,
       "tag": "0008_enterprise_governance_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1785661200000,
+      "tag": "0009_free_local_ai_pipeline",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1785664800000,
+      "tag": "0010_published_snapshot_isolation",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1785668400000,
+      "tag": "0011_ai_conversation_sequence",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1785672000000,
+      "tag": "0012_knowledge_quality_closure",
+      "breakpoints": true
     }
   ]
 }

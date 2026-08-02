@@ -24,7 +24,7 @@ test("three phases are wired to persistent routes and tables",async()=>{
 
 test("UI has no fallback injection after authenticated empty responses",async()=>{
   const page=await readFile(new URL("../app/page.tsx",import.meta.url),"utf8");
-  assert.match(page,/setDocuments\(\(data\.data\?\.documents\?\?\[\]\)\.map\(normalizeDocument\)\)/);
+  assert.match(page,/setDocuments\(\s*\(data\.data\?\.documents\s*\?\?\s*\[\]\)\.map\(normalizeDocument\),?\s*\)/);
   assert.doesNotMatch(page,/if \(data\.data\?\.documents\?\.length\) setDocuments/);
   assert.match(page,/PlatformView/);assert.match(page,/runSearch/);assert.match(page,/FAVORITE_TOGGLE/);
 });

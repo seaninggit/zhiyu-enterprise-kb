@@ -1,47 +1,257 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { buildLocalSemanticIndex, embedLocally, extractKnowledgeFile, type ExtractionProgress } from "../lib/client-knowledge";
+import {
+  buildLocalSemanticIndex,
+  embedLocally,
+  extractKnowledgeFile,
+  type ExtractionProgress,
+} from "../lib/client-knowledge";
 
-type View = "library" | "admin" | "platform" | "favorites" | "audit" | "accounts";
-type DocumentStatus = "draft" | "review" | "published" | "rejected" | "archived";
+type View =
+  | "library"
+  | "admin"
+  | "platform"
+  | "favorites"
+  | "audit"
+  | "accounts";
+type DocumentStatus =
+  | "draft"
+  | "review"
+  | "published"
+  | "rejected"
+  | "archived";
 type KnowledgeDocument = {
-  id: number; title: string; summary: string; content: string; category: string; tags: string;
-  status: DocumentStatus; securityLevel: string; owner: string; uploader: string;
-  sourceName?: string | null; sourceKey?: string | null; mimeType?: string | null; size?: number; version: number;
-  reviewDueAt?: string | null; createdAt: string; updatedAt: string; versions?: DocumentVersion[]; parseStatus?: string; verificationStatus?: string; extractionMethod?:string;extractionDetail?:string;ocrStatus?:string;aiIndexStatus?:string; spaceId?: number | null; folderId?: number | null; canEdit?:boolean;canManage?:boolean;subscribed?:boolean;
+  id: number;
+  title: string;
+  summary: string;
+  content: string;
+  category: string;
+  tags: string;
+  status: DocumentStatus;
+  securityLevel: string;
+  owner: string;
+  uploader: string;
+  sourceName?: string | null;
+  sourceKey?: string | null;
+  mimeType?: string | null;
+  size?: number;
+  version: number;
+  reviewDueAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  versions?: DocumentVersion[];
+  parseStatus?: string;
+  verificationStatus?: string;
+  extractionMethod?: string;
+  extractionDetail?: string;
+  ocrStatus?: string;
+  aiIndexStatus?: string;
+  spaceId?: number | null;
+  folderId?: number | null;
+  canEdit?: boolean;
+  canManage?: boolean;
+  subscribed?: boolean;
+  acl?: PermissionGrant[];
+  spacePermissions?: PermissionGrant[];
+  permissionPrincipals?: PermissionPrincipals | null;
 };
-type DocumentVersion = { id: number; version: number; changeNote: string; operator: string; createdAt: string };
-type AuditLog = { id: number; documentId?: number | null; action: string; actor: string; detail: string; createdAt: string };
-type GovernanceTask = { id: number; reason: string; detail: string; documentTitle: string; reporter: string; createdAt: string };
-type UploadDepartment = { id: number; code: string; name: string; parent_id?: number | null; approver: string };
+type DocumentVersion = {
+  id: number;
+  version: number;
+  changeNote: string;
+  operator: string;
+  createdAt: string;
+};
+type PermissionGrant = {
+  id?: number;
+  subject_type: "USER" | "DEPT" | "GROUP";
+  subject_id: number;
+  subject_name?: string;
+  permission: "VIEW" | "EDIT";
+  expires_at?: string | null;
+};
+type PermissionPrincipals = {
+  departments: { id: number; name: string }[];
+  users: { id: number; name: string }[];
+  groups: { id: number; name: string }[];
+};
+type AuditLog = {
+  id: number;
+  documentId?: number | null;
+  action: string;
+  actor: string;
+  detail: string;
+  createdAt: string;
+};
+type GovernanceTask = {
+  id: number;
+  reason: string;
+  detail: string;
+  documentTitle: string;
+  reporter: string;
+  createdAt: string;
+  status: string;
+  sourceDocumentId?: number | null;
+  assignee?: string;
+};
+type UploadDepartment = {
+  id: number;
+  code: string;
+  name: string;
+  parent_id?: number | null;
+  approver: string;
+};
 type UploadMember = { id: number; dept_id: number; display_name: string };
-type UploadOptions = { departments: UploadDepartment[]; members: UploadMember[] };
-type CurrentUser = { userId?: number; email: string; displayName: string; role: string; primaryDeptId: number };
-type EnterpriseAccount = { id:number; email:string; display_name:string; status:string; identity_provider:string; last_login_time?:string|null; role:string; departments:string; primary_dept_id:number };
-type Notice = { id:number; title:string; content:string; document_id?:number|null; is_read:boolean; create_time:string };
-type Metrics = { total:number; pending:number; parse_failed:number; due_soon:number; verified:number; health?:number };
+type UploadOptions = {
+  departments: UploadDepartment[];
+  members: UploadMember[];
+};
+type CurrentUser = {
+  userId?: number;
+  email: string;
+  displayName: string;
+  role: string;
+  primaryDeptId: number;
+};
+type EnterpriseAccount = {
+  id: number;
+  email: string;
+  display_name: string;
+  status: string;
+  identity_provider: string;
+  last_login_time?: string | null;
+  role: string;
+  departments: string;
+  primary_dept_id: number;
+};
+type Notice = {
+  id: number;
+  title: string;
+  content: string;
+  document_id?: number | null;
+  is_read: boolean;
+  create_time: string;
+};
+type Metrics = {
+  total: number;
+  pending: number;
+  parse_failed: number;
+  due_soon: number;
+  verified: number;
+  health?: number;
+};
+type QueryCorrection = {
+  original: string;
+  corrected: string;
+  reason: string;
+  confidence: number;
+  applied: boolean;
+  changes: { from: string; to: string }[];
+};
 
 const categories = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
-const statusLabel: Record<DocumentStatus, string> = { draft: "草稿", review: "待审核", published: "已发布", rejected: "已驳回", archived: "已归档" };
+const statusLabel: Record<DocumentStatus, string> = {
+  draft: "草稿",
+  review: "待审核",
+  published: "已发布",
+  rejected: "已驳回",
+  archived: "已归档",
+};
 
 function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
   const rawStatus = String(row.status ?? "DRAFT");
-  const status: DocumentStatus = rawStatus === "PENDING_DEPT_REVIEW" ? "review" : rawStatus === "ARCHIVED_ACTIVE" ? "published" : rawStatus === "EXPIRED_VOID" ? "archived" : "draft";
+  const status: DocumentStatus =
+    rawStatus === "PENDING_DEPT_REVIEW"
+      ? "review"
+      : rawStatus === "ARCHIVED_ACTIVE"
+        ? "published"
+        : rawStatus === "EXPIRED_VOID"
+          ? "archived"
+          : "draft";
   return {
-    id: Number(row.id), title: String(row.title ?? ""), summary: String(row.summary ?? ""), content: String(row.content ?? ""), category: String(row.category ?? "未分类"),
-    tags: String(row.tags ?? ""), status, securityLevel: String(row.securityLevel ?? row.security_level ?? "INTERNAL"), owner: String(row.owner ?? ""), uploader: String(row.uploader ?? row.creator_name ?? ""),
-    sourceName: row.sourceName as string ?? row.source_name as string ?? null, sourceKey: row.sourceKey as string ?? row.source_key as string ?? null, mimeType: row.mimeType as string ?? row.mime_type as string ?? null, size: Number(row.size ?? 0), version: Number(row.version ?? 1),
-    reviewDueAt: row.reviewDueAt as string ?? row.review_due_at as string ?? null, createdAt: String(row.createdAt ?? row.create_time ?? ""), updatedAt: String(row.updatedAt ?? row.update_time ?? ""), parseStatus:String(row.parse_status??"PENDING"), verificationStatus:String(row.verification_status??"UNVERIFIED"),extractionMethod:String(row.extraction_method??"NONE"),extractionDetail:String(row.extraction_detail??""),ocrStatus:String(row.ocr_status??"NOT_REQUIRED"),aiIndexStatus:String(row.ai_index_status??"PENDING"), spaceId:row.space_id?Number(row.space_id):null,folderId:row.folder_id?Number(row.folder_id):null,
+    id: Number(row.id),
+    title: String(row.title ?? ""),
+    summary: String(row.summary ?? ""),
+    content: String(row.content ?? ""),
+    category: String(row.category ?? "未分类"),
+    tags: String(row.tags ?? ""),
+    status,
+    securityLevel: String(
+      row.securityLevel ?? row.security_level ?? "INTERNAL",
+    ),
+    owner: String(row.owner ?? ""),
+    uploader: String(row.uploader ?? row.creator_name ?? ""),
+    sourceName:
+      (row.sourceName as string) ?? (row.source_name as string) ?? null,
+    sourceKey: (row.sourceKey as string) ?? (row.source_key as string) ?? null,
+    mimeType: (row.mimeType as string) ?? (row.mime_type as string) ?? null,
+    size: Number(row.size ?? 0),
+    version: Number(row.version ?? 1),
+    reviewDueAt:
+      (row.reviewDueAt as string) ?? (row.review_due_at as string) ?? null,
+    createdAt: String(row.createdAt ?? row.create_time ?? ""),
+    updatedAt: String(row.updatedAt ?? row.update_time ?? ""),
+    parseStatus: String(row.parse_status ?? "PENDING"),
+    verificationStatus: String(row.verification_status ?? "UNVERIFIED"),
+    extractionMethod: String(row.extraction_method ?? "NONE"),
+    extractionDetail: String(row.extraction_detail ?? ""),
+    ocrStatus: String(row.ocr_status ?? "NOT_REQUIRED"),
+    aiIndexStatus: String(row.ai_index_status ?? "PENDING"),
+    spaceId: row.space_id ? Number(row.space_id) : null,
+    folderId: row.folder_id ? Number(row.folder_id) : null,
   };
 }
 
-function fmtSize(size = 0) { return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "在线文档"; }
-function isContextFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(compact)||compact.length<=6;}
-function parseStatusLabel(status="PENDING") { return status==="COMPLETED"?"已解析可检索":status==="OCR_REQUIRED"?"等待本地 OCR":status==="OCR_FAILED"?"OCR 失败，需校正":status==="NEEDS_CONTENT"?"需补充正文":status==="FAILED"?"解析失败":"等待解析"; }
+function normalizeGovernanceTask(
+  task: Record<string, unknown>,
+): GovernanceTask {
+  return {
+    id: Number(task.id),
+    reason: String(task.reason),
+    detail: String(task.detail ?? ""),
+    documentTitle: String(task.document_title ?? "未关联具体文档"),
+    reporter: String(task.reporter),
+    createdAt: String(task.create_time),
+    status: String(task.status ?? "OPEN"),
+    sourceDocumentId: task.source_document_id
+      ? Number(task.source_document_id)
+      : null,
+    assignee: String(task.assignee ?? ""),
+  };
+}
+
+function fmtSize(size = 0) {
+  return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "在线文档";
+}
+function isContextFollowUp(question: string) {
+  const compact = question.replace(/[\s，。！？、,.!?：:；;]/g, "");
+  return (
+    /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(
+      compact,
+    ) || compact.length <= 6
+  );
+}
+function parseStatusLabel(status = "PENDING") {
+  return status === "COMPLETED"
+    ? "已解析可检索"
+    : status === "OCR_REQUIRED"
+      ? "等待本地 OCR"
+      : status === "OCR_FAILED"
+        ? "OCR 失败，需校正"
+        : status === "NEEDS_CONTENT"
+          ? "需补充正文"
+          : status === "FAILED"
+            ? "解析失败"
+            : "等待解析";
+}
 function downloadBlob(name: string, body: string, type: string) {
   const url = URL.createObjectURL(new Blob([body], { type }));
-  const link = document.createElement("a"); link.href = url; link.download = name; link.click(); URL.revokeObjectURL(url);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export default function Home() {
@@ -53,314 +263,3469 @@ export default function Home() {
   const [category, setCategory] = useState("全部");
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
   const [favorites, setFavorites] = useState<number[]>([]);
-  const [metrics,setMetrics]=useState<Metrics>({total:0,pending:0,parse_failed:0,due_soon:0,verified:0});
-  const [notifications,setNotifications]=useState<Notice[]>([]); const [noticeOpen,setNoticeOpen]=useState(false);
-  const [searchResults,setSearchResults]=useState<KnowledgeDocument[]|null>(null); const [searchLoading,setSearchLoading]=useState(false); const [searchLogId,setSearchLogId]=useState<number|null>(null);
+  const [metrics, setMetrics] = useState<Metrics>({
+    total: 0,
+    pending: 0,
+    parse_failed: 0,
+    due_soon: 0,
+    verified: 0,
+  });
+  const [notifications, setNotifications] = useState<Notice[]>([]);
+  const [noticeOpen, setNoticeOpen] = useState(false);
+  const [searchResults, setSearchResults] = useState<
+    KnowledgeDocument[] | null
+  >(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchLogId, setSearchLogId] = useState<number | null>(null);
+  const [searchCorrection, setSearchCorrection] =
+    useState<QueryCorrection | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pipelineProgress, setPipelineProgress] = useState<ExtractionProgress | null>(null);
-  const [currentUser, setCurrentUser] = useState<CurrentUser>({ email: "", displayName: "正在识别账号", role: "EMPLOYEE", primaryDeptId: 1 });
+  const [pipelineProgress, setPipelineProgress] =
+    useState<ExtractionProgress | null>(null);
+  const [currentUser, setCurrentUser] = useState<CurrentUser>({
+    email: "",
+    displayName: "正在识别账号",
+    role: "EMPLOYEE",
+    primaryDeptId: 1,
+  });
   const [authError, setAuthError] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [aiGuideVisible, setAiGuideVisible] = useState(true);
   const [aiUnread, setAiUnread] = useState(false);
   const [aiSessionUpdated, setAiSessionUpdated] = useState(false);
-  const [documentReturnTarget,setDocumentReturnTarget]=useState<"ai"|null>(null);
-  const [workflowDialog,setWorkflowDialog]=useState<{id:number;action:"approve"|"reject"|"archive"}|null>(null);
-  const [uploadOptions, setUploadOptions] = useState<UploadOptions>({ departments: [{ id: 1, code: "GENERAL", name: "综合管理部", approver: "待配置部门管理员" }], members: [] });
-  const hasOpenOverlay = aiOpen || uploadOpen || feedbackOpen || selected !== null || workflowDialog!==null;
+  const [documentReturnTarget, setDocumentReturnTarget] = useState<"ai" | null>(
+    null,
+  );
+  const [workflowDialog, setWorkflowDialog] = useState<{
+    id: number;
+    action: "approve" | "reject" | "archive";
+  } | null>(null);
+  const [governanceDialog, setGovernanceDialog] =
+    useState<GovernanceTask | null>(null);
+  const [uploadOptions, setUploadOptions] = useState<UploadOptions>({
+    departments: [
+      {
+        id: 1,
+        code: "GENERAL",
+        name: "综合管理部",
+        approver: "待配置部门管理员",
+      },
+    ],
+    members: [],
+  });
+  const hasOpenOverlay =
+    aiOpen ||
+    uploadOpen ||
+    feedbackOpen ||
+    selected !== null ||
+    workflowDialog !== null ||
+    governanceDialog !== null;
 
   useEffect(() => {
     if (!hasOpenOverlay) return;
     const previousOverflow = document.body.style.overflow;
     const previousPaddingRight = document.body.style.paddingRight;
-    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    const scrollbarWidth =
+      window.innerWidth - document.documentElement.clientWidth;
     document.body.style.overflow = "hidden";
-    if (scrollbarWidth > 0) document.body.style.paddingRight = `${scrollbarWidth}px`;
+    if (scrollbarWidth > 0)
+      document.body.style.paddingRight = `${scrollbarWidth}px`;
     return () => {
       document.body.style.overflow = previousOverflow;
       document.body.style.paddingRight = previousPaddingRight;
     };
   }, [hasOpenOverlay]);
-  useEffect(() => { const timer = window.setTimeout(() => setAiGuideVisible(false), 6500); return () => window.clearTimeout(timer); }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(() => setAiGuideVisible(false), 6500);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
-    fetch("/api/documents", { cache: "no-store" }).then(async (response) => { const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "账号加载失败"); return payload; }).then((data) => {
-      setDocuments((data.data?.documents??[]).map(normalizeDocument));
-      setLogs((data.data?.logs??[]).map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
-      if (data.data?.governanceTasks) setGovernanceTasks(data.data.governanceTasks.map((task: Record<string, unknown>) => ({ id: Number(task.id), reason: String(task.reason), detail: String(task.detail ?? ""), documentTitle: String(task.document_title ?? "未关联具体文档"), reporter: String(task.reporter), createdAt: String(task.create_time) })));
-      if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
-      if (data.data?.uploadOptions?.departments?.length) setUploadOptions(data.data.uploadOptions);
-      setFavorites(data.data?.favorites??[]); setNotifications(data.data?.notifications??[]); if(data.data?.metrics)setMetrics(data.data.metrics);
-    }).catch(async (error) => { setAuthError(error instanceof Error ? error.message : "账号加载失败"); });
+    fetch("/api/documents", { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok)
+          throw new Error(payload.error?.message ?? "账号加载失败");
+        return payload;
+      })
+      .then((data) => {
+        setDocuments((data.data?.documents ?? []).map(normalizeDocument));
+        setLogs(
+          (data.data?.logs ?? []).map((log: Record<string, unknown>) => ({
+            id: Number(log.id),
+            documentId: Number(log.document_id ?? 0),
+            action: String(log.action),
+            actor: String(log.actor),
+            detail: String(log.detail),
+            createdAt: String(log.create_time ?? ""),
+          })),
+        );
+        if (data.data?.governanceTasks)
+          setGovernanceTasks(
+            data.data.governanceTasks.map(normalizeGovernanceTask),
+          );
+        if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
+        if (data.data?.uploadOptions?.departments?.length)
+          setUploadOptions(data.data.uploadOptions);
+        setFavorites(data.data?.favorites ?? []);
+        setNotifications(data.data?.notifications ?? []);
+        if (data.data?.metrics) setMetrics(data.data.metrics);
+      })
+      .catch(async (error) => {
+        setAuthError(error instanceof Error ? error.message : "账号加载失败");
+      });
   }, []);
   useEffect(() => {
-    const id = Number(new URLSearchParams(window.location.search).get("document")); if (!id) return;
+    const id = Number(
+      new URLSearchParams(window.location.search).get("document"),
+    );
+    if (!id) return;
     openDocument(id).catch(() => undefined);
   }, []);
 
   const published = documents.filter((item) => item.status === "published");
-  const searchBase=searchResults??published; const filtered = useMemo(() => searchBase.filter((item) => {
-    const text = `${item.title}${item.summary}${item.content}${item.tags}${item.owner}${item.uploader}`.toLowerCase();
-    return (category === "全部" || item.category === category) && (!query.trim() || text.includes(query.trim().toLowerCase()));
-  }), [searchBase, category, query]);
-  const visible = view === "favorites" ? filtered.filter((item) => favorites.includes(item.id)) : filtered;
+  const searchBase = searchResults ?? published;
+  const filtered = useMemo(
+    () =>
+      searchBase.filter((item) => {
+        const text =
+          `${item.title}${item.summary}${item.content}${item.tags}${item.owner}${item.uploader}`.toLowerCase();
+        return (
+          (category === "全部" || item.category === category) &&
+          (searchResults !== null ||
+            !query.trim() ||
+            text.includes(query.trim().toLowerCase()))
+        );
+      }),
+    [searchBase, category, query, searchResults],
+  );
+  const visible =
+    view === "favorites"
+      ? filtered.filter((item) => favorites.includes(item.id))
+      : filtered;
 
-  function notify(message: string) { setToast(message); window.setTimeout(() => setToast(""), 2300); }
-  async function refreshGovernanceTasks() { const response = await fetch("/api/documents", { cache: "no-store" }); const payload = await response.json(); if (response.ok && payload.data?.governanceTasks) setGovernanceTasks(payload.data.governanceTasks.map((task: Record<string, unknown>) => ({ id: Number(task.id), reason: String(task.reason), detail: String(task.detail ?? ""), documentTitle: String(task.document_title ?? "未关联具体文档"), reporter: String(task.reporter), createdAt: String(task.create_time) }))); }
-  async function resolveGovernance(id:number){const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"RESOLVE_GOVERNANCE",taskId:id})});const payload=await response.json();if(!response.ok)return notify(payload.error?.message??"治理任务处理失败");setGovernanceTasks(current=>current.filter(task=>task.id!==id));notify("治理任务已解决并留存处理记录");}
+  function notify(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 2300);
+  }
+  async function refreshGovernanceTasks() {
+    const response = await fetch("/api/documents", { cache: "no-store" });
+    const payload = await response.json();
+    if (response.ok && payload.data?.governanceTasks)
+      setGovernanceTasks(
+        payload.data.governanceTasks.map(normalizeGovernanceTask),
+      );
+  }
+  async function resolveGovernance(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!governanceDialog) return;
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const response = await fetch("/api/platform", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "RESOLVE_GOVERNANCE",
+        taskId: governanceDialog.id,
+        resolution: values.resolution,
+        targetDocumentId: Number(values.targetDocumentId) || undefined,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok)
+      return notify(payload.error?.message ?? "治理任务处理失败");
+    setGovernanceTasks((current) =>
+      current.filter((task) => task.id !== governanceDialog.id),
+    );
+    setGovernanceDialog(null);
+    notify("治理任务已闭环，处理结果已通知反馈人并留存审计");
+  }
   async function openDocument(documentOrId: KnowledgeDocument | number) {
-    const id = typeof documentOrId === "number" ? documentOrId : documentOrId.id;
+    const id =
+      typeof documentOrId === "number" ? documentOrId : documentOrId.id;
     const response = await fetch(`/api/documents/${id}`, { cache: "no-store" });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error?.message ?? "资料加载失败");
     const detail = normalizeDocument(payload.data.document);
     if (typeof documentOrId !== "number") detail.tags = documentOrId.tags;
-    detail.versions = (payload.data.versions ?? []).map((row: Record<string, unknown>) => ({ id: Number(row.id), version: Number(row.version), changeNote: String(row.change_note ?? ""), operator: String(row.operator ?? ""), createdAt: String(row.create_time ?? "") }));
-    detail.canEdit=Boolean(payload.data.capabilities?.canEdit);detail.canManage=Boolean(payload.data.capabilities?.canManage);detail.subscribed=Boolean(payload.data.subscribed);
+    detail.versions = (payload.data.versions ?? []).map(
+      (row: Record<string, unknown>) => ({
+        id: Number(row.id),
+        version: Number(row.version),
+        changeNote: String(row.change_note ?? ""),
+        operator: String(row.operator ?? ""),
+        createdAt: String(row.create_time ?? ""),
+      }),
+    );
+    detail.canEdit = Boolean(payload.data.capabilities?.canEdit);
+    detail.canManage = Boolean(payload.data.capabilities?.canManage);
+    detail.subscribed = Boolean(payload.data.subscribed);
+    detail.acl = (payload.data.acl ?? []) as PermissionGrant[];
+    detail.spacePermissions = (payload.data.spacePermissions ??
+      []) as PermissionGrant[];
+    detail.permissionPrincipals = payload.data.permissionPrincipals ?? null;
     setSelected(detail);
   }
-  async function toggleFavorite(id: number) { const response=await fetch("/api/engagement",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"FAVORITE_TOGGLE",documentId:id})});const payload=await response.json();if(!response.ok)return notify(payload.error?.message??"收藏失败");setFavorites(current=>payload.data.favorite?[...new Set([...current,id])]:current.filter(item=>item!==id)); }
-  async function runSearch(){if(!query.trim()){setSearchResults(null);return;}setSearchLoading(true);try{const queryEmbedding=(await embedLocally([query]).catch(()=>[]))[0];const response=await fetch("/api/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({query,queryEmbedding,filters:{category:category==="全部"?undefined:category}})});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"检索失败");setSearchResults((payload.data.results??[]).map(normalizeDocument));setSearchLogId(Number(payload.data.searchLogId)||null);setView("library");if(!payload.data.results?.length)notify("未找到可靠结果，已记录为知识缺口");}catch(error){notify(error instanceof Error?error.message:"检索失败");}finally{setSearchLoading(false);}}
-  async function openSearchResult(doc:KnowledgeDocument){if(searchLogId)fetch("/api/engagement",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SEARCH_CLICK",searchLogId,documentId:doc.id})}).catch(()=>undefined);await openDocument(doc);}
-  async function markNoticesRead(id?:number){await fetch("/api/engagement",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"NOTIFICATION_READ",notificationId:id})});setNotifications(current=>current.map(n=>!id||n.id===id?{...n,is_read:true}:n));}
-  async function audit(documentId: number, action: string, detail: string) {
-    await fetch("/api/engagement",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action,documentId,detail})}).catch(()=>undefined);
-    setLogs((current) => [{ id: Date.now(), documentId, action, actor: currentUser.displayName, detail, createdAt: new Date().toLocaleString("zh-CN") }, ...current]);
+  async function toggleFavorite(id: number) {
+    const response = await fetch("/api/engagement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "FAVORITE_TOGGLE", documentId: id }),
+    });
+    const payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "收藏失败");
+    setFavorites((current) =>
+      payload.data.favorite
+        ? [...new Set([...current, id])]
+        : current.filter((item) => item !== id),
+    );
   }
-  async function updateStatus(id: number, action: "submit" | "approve" | "reject" | "archive",providedComment="") {
-    const next: DocumentStatus = action === "submit" ? "review" : action === "approve" ? "published" : action === "reject" ? "draft" : "archived";
+  async function runSearch(useOriginal = false) {
+    if (!query.trim()) {
+      setSearchResults(null);
+      setSearchCorrection(null);
+      return;
+    }
+    setSearchLoading(true);
     try {
-      const comment=providedComment.trim();if(action!=="submit"&&!providedComment){setWorkflowDialog({id,action});return;}
-      const response = await fetch("/api/documents", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, action,comment }) });
-      const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
-      setDocuments((current) => current.map((item) => item.id === id ? { ...item, status: next, updatedAt: new Date().toISOString() } : item));
-      const refreshed=await fetch("/api/documents",{cache:"no-store"}).then(r=>r.json());if(refreshed.data?.metrics)setMetrics(refreshed.data.metrics);if(refreshed.data?.notifications)setNotifications(refreshed.data.notifications); notify(action === "submit" ? "已提交部门管理员审核" : action === "approve" ? "审批通过，已进入知识目录并启动 AI 索引" : action === "reject" ? "已驳回至草稿，原因已通知上传人" : "已作废并退出检索范围");
+      const queryEmbedding = (await embedLocally([query]).catch(() => []))[0];
+      const response = await fetch("/api/search", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          query,
+          queryEmbedding,
+          useOriginal,
+          filters: { category: category === "全部" ? undefined : category },
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? "检索失败");
+      setSearchResults((payload.data.results ?? []).map(normalizeDocument));
+      setSearchCorrection(payload.data.correction ?? null);
+      setSearchLogId(Number(payload.data.searchLogId) || null);
+      setView("library");
+      if (!payload.data.results?.length)
+        notify("未找到可靠结果，已记录为知识缺口");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "检索失败");
+    } finally {
+      setSearchLoading(false);
+    }
+  }
+  async function openSearchResult(doc: KnowledgeDocument) {
+    if (searchLogId)
+      fetch("/api/engagement", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "SEARCH_CLICK",
+          searchLogId,
+          documentId: doc.id,
+        }),
+      }).catch(() => undefined);
+    await openDocument(doc);
+  }
+  async function markNoticesRead(id?: number) {
+    await fetch("/api/engagement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action: "NOTIFICATION_READ", notificationId: id }),
+    });
+    setNotifications((current) =>
+      current.map((n) => (!id || n.id === id ? { ...n, is_read: true } : n)),
+    );
+  }
+  async function audit(documentId: number, action: string, detail: string) {
+    await fetch("/api/engagement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, documentId, detail }),
+    }).catch(() => undefined);
+    setLogs((current) => [
+      {
+        id: Date.now(),
+        documentId,
+        action,
+        actor: currentUser.displayName,
+        detail,
+        createdAt: new Date().toLocaleString("zh-CN"),
+      },
+      ...current,
+    ]);
+  }
+  async function updateStatus(
+    id: number,
+    action: "submit" | "approve" | "reject" | "archive",
+    providedComment = "",
+  ) {
+    const next: DocumentStatus =
+      action === "submit"
+        ? "review"
+        : action === "approve"
+          ? "published"
+          : action === "reject"
+            ? "draft"
+            : "archived";
+    try {
+      const comment = providedComment.trim();
+      if (action !== "submit" && !providedComment) {
+        setWorkflowDialog({ id, action });
+        return;
+      }
+      const response = await fetch("/api/documents", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, action, comment }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
+      setDocuments((current) =>
+        current.map((item) =>
+          item.id === id
+            ? { ...item, status: next, updatedAt: new Date().toISOString() }
+            : item,
+        ),
+      );
+      const refreshed = await fetch("/api/documents", {
+        cache: "no-store",
+      }).then((r) => r.json());
+      if (refreshed.data?.metrics) setMetrics(refreshed.data.metrics);
+      if (refreshed.data?.notifications)
+        setNotifications(refreshed.data.notifications);
+      notify(
+        action === "submit"
+          ? "已提交部门管理员审核"
+          : action === "approve"
+            ? "审批通过，已进入知识目录并启动 AI 索引"
+            : action === "reject"
+              ? "已驳回至草稿，原因已通知上传人"
+              : "已作废并退出检索范围",
+      );
       setWorkflowDialog(null);
-    } catch (error) { notify(error instanceof Error ? error.message : "操作失败"); }
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "操作失败");
+    }
   }
   async function submitUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setLoading(true); setPipelineProgress({stage:"READ",percent:1,message:"正在准备资料"});
-    const form = event.currentTarget; const data = new FormData(form);
+    event.preventDefault();
+    setLoading(true);
+    setPipelineProgress({ stage: "READ", percent: 1, message: "正在准备资料" });
+    const form = event.currentTarget;
+    const data = new FormData(form);
     try {
       const file = data.get("file");
       let stored: Record<string, unknown> = {};
       if (file instanceof File && file.size > 0) {
-        const extraction = await extractKnowledgeFile(file, setPipelineProgress);
-        if (!String(data.get("content") ?? "").trim() && extraction.text.trim()) data.set("content", extraction.text.slice(0, 500000));
-        if (!String(data.get("summary") ?? "").trim() && extraction.text.trim()) data.set("summary", extraction.text.replace(/\s+/g, " ").trim().slice(0, 180));
-        data.set("extractionMethod", extraction.method); data.set("extractionDetail", extraction.detail); data.set("ocrStatus", extraction.ocrStatus);
-        setPipelineProgress({stage:"READ",percent:100,message:"原文解析完成，正在安全存储"});
-        const uploadResponse = await fetch("/api/uploads", { method: "PUT", headers: { "content-type": file.type || "application/octet-stream", "x-file-name": encodeURIComponent(file.name), "x-dept-id": String(data.get("deptId") || currentUser.primaryDeptId) }, body: file });
-        const uploadPayload = await uploadResponse.json().catch(() => ({ error: { message: "原文件存储失败" } }));
-        if (!uploadResponse.ok) throw new Error(uploadPayload.error?.message ?? "原文件存储失败");
+        const extraction = await extractKnowledgeFile(
+          file,
+          setPipelineProgress,
+        );
+        if (!String(data.get("content") ?? "").trim() && extraction.text.trim())
+          data.set("content", extraction.text.slice(0, 500000));
+        if (!String(data.get("summary") ?? "").trim() && extraction.text.trim())
+          data.set(
+            "summary",
+            extraction.text.replace(/\s+/g, " ").trim().slice(0, 180),
+          );
+        data.set("extractionMethod", extraction.method);
+        data.set("extractionDetail", extraction.detail);
+        data.set("ocrStatus", extraction.ocrStatus);
+        setPipelineProgress({
+          stage: "READ",
+          percent: 100,
+          message: "原文解析完成，正在安全存储",
+        });
+        const uploadResponse = await fetch("/api/uploads", {
+          method: "PUT",
+          headers: {
+            "content-type": file.type || "application/octet-stream",
+            "x-file-name": encodeURIComponent(file.name),
+            "x-dept-id": String(
+              data.get("deptId") || currentUser.primaryDeptId,
+            ),
+          },
+          body: file,
+        });
+        const uploadPayload = await uploadResponse
+          .json()
+          .catch(() => ({ error: { message: "原文件存储失败" } }));
+        if (!uploadResponse.ok)
+          throw new Error(uploadPayload.error?.message ?? "原文件存储失败");
         stored = uploadPayload.data;
       }
-      const metadata = Object.fromEntries(Array.from(data.entries()).filter(([key]) => key !== "file"));
-      const response = await fetch("/api/documents", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...metadata, ...stored }) });
+      const metadata = Object.fromEntries(
+        Array.from(data.entries()).filter(([key]) => key !== "file"),
+      );
+      const response = await fetch("/api/documents", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...metadata, ...stored }),
+      });
       if (!response.ok) {
-        const payload = await response.json().catch(() => ({ error: "上传失败，请稍后重试" }));
+        const payload = await response
+          .json()
+          .catch(() => ({ error: "上传失败，请稍后重试" }));
         throw new Error(payload.error?.message ?? "上传失败，请稍后重试");
       }
       const result = await response.json();
       const created = normalizeDocument(result.data.document);
-      let semanticIndexed=false;try{const semantic=await buildLocalSemanticIndex(created.id,setPipelineProgress);semanticIndexed=semantic.indexed;}catch{/* 保留关键词索引，治理中心可重建 */}
-      setDocuments((current) => [created, ...current.filter(item => item.id !== created.id)]);
-      setView("admin"); setLoading(false); setPipelineProgress(null); setUploadOpen(false); form.reset();
-      const refreshed = await fetch("/api/documents", { cache: "no-store" }).then(item => item.ok ? item.json() : null).catch(() => null);
-      if (refreshed?.data?.documents) setDocuments(refreshed.data.documents.map(normalizeDocument));
-      if (refreshed?.data?.logs) setLogs(refreshed.data.logs.map((log: Record<string, unknown>) => ({ id: Number(log.id), documentId: Number(log.document_id ?? 0), action: String(log.action), actor: String(log.actor), detail: String(log.detail), createdAt: String(log.create_time ?? "") })));
-      notify(created.status === "review" ? `附件已安全保存，资料已进入审核；${semanticIndexed?"语义索引已生成":"当前使用关键词索引"}` : `附件已安全保存为草稿；${semanticIndexed?"语义索引已生成":"当前使用关键词索引"}`);
+      let semanticIndexed = false;
+      try {
+        const semantic = await buildLocalSemanticIndex(
+          created.id,
+          setPipelineProgress,
+        );
+        semanticIndexed = semantic.indexed;
+      } catch {
+        /* 保留关键词索引，治理中心可重建 */
+      }
+      setDocuments((current) => [
+        created,
+        ...current.filter((item) => item.id !== created.id),
+      ]);
+      setView("admin");
+      setLoading(false);
+      setPipelineProgress(null);
+      setUploadOpen(false);
+      form.reset();
+      const refreshed = await fetch("/api/documents", { cache: "no-store" })
+        .then((item) => (item.ok ? item.json() : null))
+        .catch(() => null);
+      if (refreshed?.data?.documents)
+        setDocuments(refreshed.data.documents.map(normalizeDocument));
+      if (refreshed?.data?.logs)
+        setLogs(
+          refreshed.data.logs.map((log: Record<string, unknown>) => ({
+            id: Number(log.id),
+            documentId: Number(log.document_id ?? 0),
+            action: String(log.action),
+            actor: String(log.actor),
+            detail: String(log.detail),
+            createdAt: String(log.create_time ?? ""),
+          })),
+        );
+      notify(
+        result.data.readinessWarning
+          ? `资料已保存为草稿：${result.data.readinessWarning}`
+          : created.status === "review"
+            ? `附件已安全保存，资料已进入审核；${semanticIndexed ? "语义索引已生成" : "当前使用关键词索引"}`
+            : `附件已安全保存为草稿；${semanticIndexed ? "语义索引已生成" : "当前使用关键词索引"}`,
+      );
     } catch (error) {
-      setLoading(false); setPipelineProgress(null);
+      setLoading(false);
+      setPipelineProgress(null);
       notify(error instanceof Error ? error.message : "上传失败，请稍后重试");
       return;
     }
   }
-  async function engageDocument(document: KnowledgeDocument, action: "SHARE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "CONTACT_OWNER") {
+  async function engageDocument(
+    document: KnowledgeDocument,
+    action: "SHARE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "CONTACT_OWNER",
+  ) {
     try {
-      if (action === "SHARE") await navigator.clipboard.writeText(`${window.location.origin}/?document=${document.id}`);
-      const response = await fetch("/api/engagement", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, documentId: document.id }) });
-      const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
-      if(action==="SUBSCRIBE"||action==="UNSUBSCRIBE")setSelected(current=>current?{...current,subscribed:action==="SUBSCRIBE"}:current);
-      notify(action === "SHARE" ? "内部链接已复制，访问时仍会校验权限" : action === "SUBSCRIBE" ? "已订阅，资料更新时将收到提醒" : action==="UNSUBSCRIBE"?"已取消订阅":`已向负责人 ${document.owner} 发起联系`);
-    } catch (error) { notify(error instanceof Error ? error.message : "操作失败"); }
+      if (action === "SHARE")
+        await navigator.clipboard.writeText(
+          `${window.location.origin}/?document=${document.id}`,
+        );
+      const response = await fetch("/api/engagement", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, documentId: document.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? "操作失败");
+      if (action === "SUBSCRIBE" || action === "UNSUBSCRIBE")
+        setSelected((current) =>
+          current
+            ? { ...current, subscribed: action === "SUBSCRIBE" }
+            : current,
+        );
+      notify(
+        action === "SHARE"
+          ? "内部链接已复制，访问时仍会校验权限"
+          : action === "SUBSCRIBE"
+            ? "已订阅，资料更新时将收到提醒"
+            : action === "UNSUBSCRIBE"
+              ? "已取消订阅"
+              : `已向负责人 ${document.owner} 发起联系`,
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "操作失败");
+    }
   }
 
-  if (authError) return <main className="access-state"><span className="brand-mark">Z</span><small>ENTERPRISE ACCESS</small><h1>账号暂不可访问</h1><p>{authError}</p><div><b>企业账号处理流程</b><span>身份已由统一登录识别</span><span>请联系知识库超级管理员分配部门与角色</span><span>配置完成后刷新页面即可进入</span></div><a href="/signout-with-chatgpt?return_to=/">切换登录账号</a></main>;
-  function toggleSidebar() { setSidebarCollapsed(value => !value); setAccountMenuOpen(false); }
-  function openAi() { setAiOpen(true); setAiUnread(false); setAiGuideVisible(false); setAiSessionUpdated(false); }
-  function closeAi() { setAiOpen(false); if (aiSessionUpdated) setAiUnread(true); }
-  return <div className={`enterprise-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-    <aside className="sidebar">
-      <button className="brand side-brand" onClick={() => setView("library")}><span className="brand-mark">Z</span><span>知域<small>企业知识中台</small></span></button>
-      <button className="sidebar-toggle" aria-label={sidebarCollapsed ? "展开功能栏" : "收起功能栏"} title={sidebarCollapsed ? "展开功能栏" : "收起功能栏"} onClick={toggleSidebar}>{sidebarCollapsed ? "›" : "‹"}</button>
-      <nav className="side-nav" aria-label="功能导航">
-        <span>知识服务</span>
-        <button className={view === "library" ? "active" : ""} onClick={() => setView("library")}><i>⌂</i>知识广场</button>
-        <button className={view === "favorites" ? "active" : ""} onClick={() => setView("favorites")}><i>☆</i>我的收藏 <em>{favorites.length}</em></button>
-        <span>知识治理</span>
-        <button className={view === "admin" ? "active" : ""} onClick={() => setView("admin")}><i>▦</i>维护工作台</button>
-        {currentUser.role !== "EMPLOYEE" && <button className={view === "platform" ? "active" : ""} onClick={() => setView("platform")}><i>◫</i>治理与洞察</button>}
-        <button className={view === "audit" ? "active" : ""} onClick={() => setView("audit")}><i>≡</i>审计日志</button>
-        {currentUser.role === "SUPER_ADMIN" && <button className={view === "accounts" ? "active" : ""} onClick={() => setView("accounts")}><i>♙</i>成员与权限</button>}
-      </nav>
-      <button className="user-card" onClick={() => setAccountMenuOpen(value => !value)}><span>{currentUser.displayName.slice(0, 1)}</span><div><b>{currentUser.displayName}</b><small>{currentUser.role === "SUPER_ADMIN" ? "超级管理员" : currentUser.role === "DEPT_ADMIN" ? "部门管理员" : "普通员工"}</small></div><i>•••</i></button>
-      {accountMenuOpen && <div className="account-menu"><b>{currentUser.email}</b><span>身份来源：企业统一登录</span>{currentUser.role === "SUPER_ADMIN" && <button onClick={() => { setView("accounts"); setAccountMenuOpen(false); }}>成员与权限</button>}<a href="/signout-with-chatgpt?return_to=/">退出登录</a></div>}
-    </aside>
+  if (authError)
+    return (
+      <main className="access-state">
+        <span className="brand-mark">Z</span>
+        <small>ENTERPRISE ACCESS</small>
+        <h1>账号暂不可访问</h1>
+        <p>{authError}</p>
+        <div>
+          <b>企业账号处理流程</b>
+          <span>身份已由统一登录识别</span>
+          <span>请联系知识库超级管理员分配部门与角色</span>
+          <span>配置完成后刷新页面即可进入</span>
+        </div>
+        <a href="/signout-with-chatgpt?return_to=/">切换登录账号</a>
+      </main>
+    );
+  function toggleSidebar() {
+    setSidebarCollapsed((value) => !value);
+    setAccountMenuOpen(false);
+  }
+  function openAi() {
+    setAiOpen(true);
+    setAiUnread(false);
+    setAiGuideVisible(false);
+    setAiSessionUpdated(false);
+  }
+  function closeAi() {
+    setAiOpen(false);
+    if (aiSessionUpdated) setAiUnread(true);
+  }
+  return (
+    <div
+      className={`enterprise-app${sidebarCollapsed ? " sidebar-collapsed" : ""}`}
+    >
+      <aside className="sidebar">
+        <button className="brand side-brand" onClick={() => setView("library")}>
+          <span className="brand-mark">Z</span>
+          <span>
+            知域<small>企业知识中台</small>
+          </span>
+        </button>
+        <button
+          className="sidebar-toggle"
+          aria-label={sidebarCollapsed ? "展开功能栏" : "收起功能栏"}
+          title={sidebarCollapsed ? "展开功能栏" : "收起功能栏"}
+          onClick={toggleSidebar}
+        >
+          {sidebarCollapsed ? "›" : "‹"}
+        </button>
+        <nav className="side-nav" aria-label="功能导航">
+          <span>知识服务</span>
+          <button
+            className={view === "library" ? "active" : ""}
+            onClick={() => setView("library")}
+          >
+            <i>⌂</i>知识广场
+          </button>
+          <button
+            className={view === "favorites" ? "active" : ""}
+            onClick={() => setView("favorites")}
+          >
+            <i>☆</i>我的收藏 <em>{favorites.length}</em>
+          </button>
+          <span>知识治理</span>
+          <button
+            className={view === "admin" ? "active" : ""}
+            onClick={() => setView("admin")}
+          >
+            <i>▦</i>维护工作台
+          </button>
+          {currentUser.role !== "EMPLOYEE" && (
+            <button
+              className={view === "platform" ? "active" : ""}
+              onClick={() => setView("platform")}
+            >
+              <i>◫</i>治理与洞察
+            </button>
+          )}
+          <button
+            className={view === "audit" ? "active" : ""}
+            onClick={() => setView("audit")}
+          >
+            <i>≡</i>审计日志
+          </button>
+          {currentUser.role === "SUPER_ADMIN" && (
+            <button
+              className={view === "accounts" ? "active" : ""}
+              onClick={() => setView("accounts")}
+            >
+              <i>♙</i>成员与权限
+            </button>
+          )}
+        </nav>
+        <button
+          className="user-card"
+          onClick={() => setAccountMenuOpen((value) => !value)}
+        >
+          <span>{currentUser.displayName.slice(0, 1)}</span>
+          <div>
+            <b>{currentUser.displayName}</b>
+            <small>
+              {currentUser.role === "SUPER_ADMIN"
+                ? "超级管理员"
+                : currentUser.role === "DEPT_ADMIN"
+                  ? "部门管理员"
+                  : "普通员工"}
+            </small>
+          </div>
+          <i>•••</i>
+        </button>
+        {accountMenuOpen && (
+          <div className="account-menu">
+            <b>{currentUser.email}</b>
+            <span>身份来源：企业统一登录</span>
+            {currentUser.role === "SUPER_ADMIN" && (
+              <button
+                onClick={() => {
+                  setView("accounts");
+                  setAccountMenuOpen(false);
+                }}
+              >
+                成员与权限
+              </button>
+            )}
+            <a href="/signout-with-chatgpt?return_to=/">退出登录</a>
+          </div>
+        )}
+      </aside>
 
-    <div className="app-main">
-      <header className="app-header">
-        <div className="global-search"><span>⌕</span><input aria-label="全局搜索" value={query} onChange={(e) => {setQuery(e.target.value);if(!e.target.value)setSearchResults(null);}} onKeyDown={e=>{if(e.key==="Enter")runSearch();}} placeholder="搜索标题、正文、标签、负责人..." /><button onClick={runSearch}>{searchLoading?"检索中":"搜索"}</button></div>
-        <button className="header-icon" onClick={() => setNoticeOpen(value=>!value)}>♢{notifications.some(n=>!n.is_read)&&<i />}</button>
-        {noticeOpen&&<div className="notice-panel"><header><b>消息中心</b><button onClick={()=>markNoticesRead()}>全部已读</button></header>{notifications.length?notifications.map(n=><button className={n.is_read?"":"unread"} key={n.id} onClick={()=>{markNoticesRead(n.id);if(n.document_id)openDocument(n.document_id);setNoticeOpen(false);}}><b>{n.title}</b><span>{n.content}</span><small>{n.create_time}</small></button>):<p>暂无消息</p>}</div>}
-        <button className="primary-action" onClick={() => setUploadOpen(true)}>＋ 上传资料</button>
-      </header>
+      <div className="app-main">
+        <header className="app-header">
+          <div className="global-search">
+            <span>⌕</span>
+            <input
+              aria-label="全局搜索"
+              value={query}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                if (!e.target.value) {
+                  setSearchResults(null);
+                  setSearchCorrection(null);
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") runSearch();
+              }}
+              placeholder="搜索标题、正文、标签、负责人..."
+            />
+            <button onClick={() => runSearch()}>
+              {searchLoading ? "检索中" : "搜索"}
+            </button>
+          </div>
+          <button
+            className="header-icon"
+            onClick={() => setNoticeOpen((value) => !value)}
+          >
+            ♢{notifications.some((n) => !n.is_read) && <i />}
+          </button>
+          {noticeOpen && (
+            <div className="notice-panel">
+              <header>
+                <b>消息中心</b>
+                <button onClick={() => markNoticesRead()}>全部已读</button>
+              </header>
+              {notifications.length ? (
+                notifications.map((n) => (
+                  <button
+                    className={n.is_read ? "" : "unread"}
+                    key={n.id}
+                    onClick={() => {
+                      markNoticesRead(n.id);
+                      if (n.document_id) openDocument(n.document_id);
+                      setNoticeOpen(false);
+                    }}
+                  >
+                    <b>{n.title}</b>
+                    <span>{n.content}</span>
+                    <small>{n.create_time}</small>
+                  </button>
+                ))
+              ) : (
+                <p>暂无消息</p>
+              )}
+            </div>
+          )}
+          <button
+            className="primary-action"
+            onClick={() => setUploadOpen(true)}
+          >
+            ＋ 上传资料
+          </button>
+        </header>
 
-      {view === "admin" ? <AdminView documents={documents} metrics={metrics} governanceTasks={governanceTasks} role={currentUser.role} onUpload={() => setUploadOpen(true)} onSelect={(doc) => openDocument(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败"))} onStatus={updateStatus} onResolve={resolveGovernance} />
-      : view === "platform" ? <PlatformView role={currentUser.role} notify={notify}/>
-      : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? <AccountAdminView notify={notify} />
-      : view === "audit" ? <AuditView logs={logs} documents={documents} />
-      : <LibraryView currentUser={currentUser} metrics={metrics} documents={visible} allCount={published.length} query={query} category={category} setCategory={setCategory} setQuery={setQuery} onSearch={runSearch} searchLoading={searchLoading} favorites={favorites} toggleFavorite={toggleFavorite} onSelect={(doc) => { openSearchResult(doc).catch(error => notify(error instanceof Error ? error.message : "资料加载失败")); audit(doc.id, "VIEW", `查看《${doc.title}》`); }} favoriteMode={view === "favorites"} />}
+        {view === "admin" ? (
+          <AdminView
+            documents={documents}
+            metrics={metrics}
+            governanceTasks={governanceTasks}
+            role={currentUser.role}
+            onUpload={() => setUploadOpen(true)}
+            onSelect={(doc) =>
+              openDocument(doc).catch((error) =>
+                notify(error instanceof Error ? error.message : "资料加载失败"),
+              )
+            }
+            onStatus={updateStatus}
+            onResolve={setGovernanceDialog}
+          />
+        ) : view === "platform" ? (
+          <PlatformView role={currentUser.role} notify={notify} />
+        ) : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? (
+          <AccountAdminView notify={notify} />
+        ) : view === "audit" ? (
+          <AuditView logs={logs} documents={documents} />
+        ) : (
+          <LibraryView
+            currentUser={currentUser}
+            metrics={metrics}
+            documents={visible}
+            allCount={published.length}
+            query={query}
+            correction={searchCorrection}
+            category={category}
+            setCategory={setCategory}
+            setQuery={setQuery}
+            onSearch={runSearch}
+            searchLoading={searchLoading}
+            favorites={favorites}
+            toggleFavorite={toggleFavorite}
+            onSelect={(doc) => {
+              openSearchResult(doc).catch((error) =>
+                notify(error instanceof Error ? error.message : "资料加载失败"),
+              );
+              audit(doc.id, "VIEW", `查看《${doc.title}》`);
+            }}
+            favoriteMode={view === "favorites"}
+          />
+        )}
+      </div>
+
+      {selected && (
+        <DocumentDrawer
+          document={selected}
+          returnToAi={documentReturnTarget === "ai"}
+          canRestore={currentUser.role !== "EMPLOYEE"}
+          favorite={favorites.includes(selected.id)}
+          onClose={() => {
+            setSelected(null);
+            setDocumentReturnTarget(null);
+          }}
+          onFavorite={() => toggleFavorite(selected.id)}
+          onPermissionsChanged={async () => {
+            await openDocument(selected.id);
+            notify("权限策略已更新并写入审计记录");
+          }}
+          onSaved={async () => {
+            await buildLocalSemanticIndex(selected.id).catch(() => undefined);
+            await openDocument(selected.id);
+            const refreshed = await fetch("/api/documents", {
+              cache: "no-store",
+            }).then((r) => r.json());
+            if (refreshed.data?.documents)
+              setDocuments(refreshed.data.documents.map(normalizeDocument));
+            notify("已保存为新草稿版本并更新索引，请提交审核");
+          }}
+          onRestore={async (version) => {
+            const response = await fetch("/api/platform", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                action: "RESTORE_VERSION",
+                documentId: selected.id,
+                version,
+              }),
+            });
+            const payload = await response.json();
+            if (!response.ok)
+              return notify(payload.error?.message ?? "恢复失败");
+            await buildLocalSemanticIndex(selected.id).catch(() => undefined);
+            await openDocument(selected.id);
+            notify(
+              `已恢复为 V${payload.data.version}.0 草稿并更新索引，需重新审核后发布`,
+            );
+          }}
+          onFeedback={() => setFeedbackOpen(true)}
+          onShare={() => engageDocument(selected, "SHARE")}
+          onSubscribe={() =>
+            engageDocument(
+              selected,
+              selected.subscribed ? "UNSUBSCRIBE" : "SUBSCRIBE",
+            )
+          }
+          onContact={() => engageDocument(selected, "CONTACT_OWNER")}
+          onExport={() => {
+            downloadBlob(
+              `${selected.title}.txt`,
+              `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`,
+              "text/plain;charset=utf-8",
+            );
+            audit(selected.id, "EXPORT", `导出《${selected.title}》`);
+            notify("已导出文档摘要");
+          }}
+          onDownload={async () => {
+            try {
+              const response = await fetch(
+                `/api/documents/${selected.id}?download=1`,
+              );
+              if (!response.ok) {
+                const payload = await response
+                  .json()
+                  .catch(() => ({ error: { message: "原文件加载失败" } }));
+                throw new Error(payload.error?.message ?? "原文件加载失败");
+              }
+              const blob = await response.blob();
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = selected.sourceName ?? selected.title;
+              a.click();
+              URL.revokeObjectURL(url);
+              audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`);
+              notify("原文件已加载，下载任务已开始");
+            } catch (error) {
+              notify(error instanceof Error ? error.message : "原文件加载失败");
+            }
+          }}
+        />
+      )}
+
+      {uploadOpen && (
+        <UploadModal
+          loading={loading}
+          progress={pipelineProgress}
+          currentUser={currentUser}
+          options={uploadOptions}
+          onSubmit={submitUpload}
+          onClose={() => setUploadOpen(false)}
+        />
+      )}
+      {feedbackOpen && selected && (
+        <FeedbackModal
+          onClose={() => setFeedbackOpen(false)}
+          onSubmit={async (content) => {
+            try {
+              const response = await fetch(`/api/documents/${selected.id}`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ type: "纠错", content }),
+              });
+              const payload = await response.json();
+              if (!response.ok)
+                throw new Error(payload.error?.message ?? "反馈提交失败");
+              setFeedbackOpen(false);
+              notify("反馈已提交给知识负责人");
+            } catch (error) {
+              notify(error instanceof Error ? error.message : "反馈提交失败");
+            }
+          }}
+        />
+      )}
+      {workflowDialog && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => setWorkflowDialog(null)}
+        >
+          <form
+            className="feedback-modal workflow-modal"
+            onMouseDown={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const comment = String(
+                new FormData(e.currentTarget).get("comment") || "",
+              );
+              updateStatus(workflowDialog.id, workflowDialog.action, comment);
+            }}
+          >
+            <button type="button" onClick={() => setWorkflowDialog(null)}>
+              ×
+            </button>
+            <span>
+              {workflowDialog.action === "approve"
+                ? "发布确认"
+                : workflowDialog.action === "reject"
+                  ? "审批驳回"
+                  : "文档作废"}
+            </span>
+            <h2>
+              {workflowDialog.action === "approve"
+                ? "确认发布到知识目录？"
+                : workflowDialog.action === "reject"
+                  ? "请填写驳回原因"
+                  : "请填写作废原因"}
+            </h2>
+            <p>
+              {workflowDialog.action === "approve"
+                ? "发布后将进入有权限用户的搜索与 AI 索引，并通知订阅者。"
+                : "原因会通知上传人并永久写入审批与审计记录。"}
+            </p>
+            <textarea
+              name="comment"
+              required={workflowDialog.action !== "approve"}
+              defaultValue={
+                workflowDialog.action === "approve"
+                  ? "内容与权限已核验，同意发布"
+                  : ""
+              }
+              placeholder="请输入处理意见"
+              rows={4}
+            />
+            <footer>
+              <button type="button" onClick={() => setWorkflowDialog(null)}>
+                取消
+              </button>
+              <button className="primary-action">确认执行</button>
+            </footer>
+          </form>
+        </div>
+      )}
+      {governanceDialog && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={() => setGovernanceDialog(null)}
+        >
+          <form
+            className="feedback-modal governance-resolution"
+            onMouseDown={(e) => e.stopPropagation()}
+            onSubmit={resolveGovernance}
+          >
+            <button type="button" onClick={() => setGovernanceDialog(null)}>
+              ×
+            </button>
+            <span>知识治理闭环</span>
+            <h2>{governanceDialog.reason}</h2>
+            <p>
+              反馈来源：{governanceDialog.reporter} ·{" "}
+              {governanceDialog.documentTitle}
+              。涉及错误、缺失或过期内容时，必须先更新并发布知识，系统才允许关闭任务。
+            </p>
+            <label>
+              关联已发布知识
+              <select
+                name="targetDocumentId"
+                defaultValue={governanceDialog.sourceDocumentId ?? ""}
+              >
+                <option value="">不关联具体文档</option>
+                {documents
+                  .filter((doc) => doc.status === "published")
+                  .map((doc) => (
+                    <option key={doc.id} value={doc.id}>
+                      {doc.title} · V{doc.version}.0
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <label>
+              处理结果
+              <textarea
+                name="resolution"
+                required
+                minLength={4}
+                rows={5}
+                placeholder="例如：已更新差旅制度至 V4.0 并重新发布，补充了电子发票要求。"
+              />
+            </label>
+            <footer>
+              <button type="button" onClick={() => setGovernanceDialog(null)}>
+                取消
+              </button>
+              <button className="primary-action">提交并通知反馈人</button>
+            </footer>
+          </form>
+        </div>
+      )}
+      <div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>
+        {aiGuideVisible && (
+          <div className="ai-guide" role="status">
+            <button
+              aria-label="关闭智能助手提示"
+              onClick={() => setAiGuideVisible(false)}
+            >
+              ×
+            </button>
+            <b>有制度或流程问题？</b>
+            <span>可以问我报销、入职、研发规范等企业知识</span>
+          </div>
+        )}
+        <button
+          className="ai-fab"
+          onClick={openAi}
+          aria-label={aiUnread ? "问问小知，有新的回答" : "打开问问小知"}
+        >
+          <span className="ai-spark">✦</span>
+          <span>
+            <b>{aiUnread ? "回答已生成" : "问问小知"}</b>
+            <small>{aiUnread ? "点击继续查看" : "回答会标注知识来源"}</small>
+          </span>
+          {aiUnread && (
+            <i className="ai-unread" aria-label="1条未读回答">
+              1
+            </i>
+          )}
+          <em className="ai-quick">搜制度 · 查流程 · 找负责人</em>
+        </button>
+      </div>
+      {aiOpen && (
+        <AiPanel
+          onClose={closeAi}
+          onActivity={() => setAiSessionUpdated(true)}
+          onGovernanceCreated={() =>
+            refreshGovernanceTasks().catch(() => undefined)
+          }
+          onOpen={async (documentId) => {
+            try {
+              setDocumentReturnTarget("ai");
+              await openDocument(documentId);
+            } catch (error) {
+              setDocumentReturnTarget(null);
+              notify(error instanceof Error ? error.message : "资料加载失败");
+            }
+          }}
+        />
+      )}
+      {toast && (
+        <div className="toast" role="status">
+          ✓ {toast}
+        </div>
+      )}
     </div>
-
-    {selected && <DocumentDrawer document={selected} returnToAi={documentReturnTarget==="ai"} canRestore={currentUser.role!=="EMPLOYEE"} favorite={favorites.includes(selected.id)} onClose={() => {setSelected(null);setDocumentReturnTarget(null);}} onFavorite={() => toggleFavorite(selected.id)} onSaved={async()=>{await buildLocalSemanticIndex(selected.id).catch(()=>undefined);await openDocument(selected.id);const refreshed=await fetch("/api/documents",{cache:"no-store"}).then(r=>r.json());if(refreshed.data?.documents)setDocuments(refreshed.data.documents.map(normalizeDocument));notify("已保存为新草稿版本并更新索引，请提交审核");}} onRestore={async version=>{const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"RESTORE_VERSION",documentId:selected.id,version})});const payload=await response.json();if(!response.ok)return notify(payload.error?.message??"恢复失败");await buildLocalSemanticIndex(selected.id).catch(()=>undefined);await openDocument(selected.id);notify(`已恢复为 V${payload.data.version}.0 草稿并更新索引，需重新审核后发布`);}} onFeedback={() => setFeedbackOpen(true)} onShare={() => engageDocument(selected, "SHARE")} onSubscribe={() => engageDocument(selected, selected.subscribed?"UNSUBSCRIBE":"SUBSCRIBE")} onContact={() => engageDocument(selected, "CONTACT_OWNER")} onExport={() => { downloadBlob(`${selected.title}.txt`, `${selected.title}\n\n${selected.content}\n\n负责人：${selected.owner}\n版本：V${selected.version}.0`, "text/plain;charset=utf-8"); audit(selected.id, "EXPORT", `导出《${selected.title}》`); notify("已导出文档摘要"); }} onDownload={async () => { try { const response = await fetch(`/api/documents/${selected.id}?download=1`); if (!response.ok) { const payload = await response.json().catch(() => ({ error: { message: "原文件加载失败" } })); throw new Error(payload.error?.message ?? "原文件加载失败"); } const blob = await response.blob(); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = selected.sourceName ?? selected.title; a.click(); URL.revokeObjectURL(url); audit(selected.id, "DOWNLOAD", `下载《${selected.title}》附件`); notify("原文件已加载，下载任务已开始"); } catch (error) { notify(error instanceof Error ? error.message : "原文件加载失败"); } }} />}
-
-    {uploadOpen && <UploadModal loading={loading} progress={pipelineProgress} currentUser={currentUser} options={uploadOptions} onSubmit={submitUpload} onClose={() => setUploadOpen(false)} />}
-    {feedbackOpen && selected && <FeedbackModal onClose={() => setFeedbackOpen(false)} onSubmit={async (content) => { try {const response=await fetch(`/api/documents/${selected.id}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ type: "纠错", content }) });const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"反馈提交失败");setFeedbackOpen(false);notify("反馈已提交给知识负责人");}catch(error){notify(error instanceof Error?error.message:"反馈提交失败");} }} />}
-    {workflowDialog&&<div className="modal-backdrop" onMouseDown={()=>setWorkflowDialog(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={e=>{e.preventDefault();const comment=String(new FormData(e.currentTarget).get("comment")||"");updateStatus(workflowDialog.id,workflowDialog.action,comment);}}><button type="button" onClick={()=>setWorkflowDialog(null)}>×</button><span>{workflowDialog.action==="approve"?"发布确认":workflowDialog.action==="reject"?"审批驳回":"文档作废"}</span><h2>{workflowDialog.action==="approve"?"确认发布到知识目录？":workflowDialog.action==="reject"?"请填写驳回原因":"请填写作废原因"}</h2><p>{workflowDialog.action==="approve"?"发布后将进入有权限用户的搜索与 AI 索引，并通知订阅者。":"原因会通知上传人并永久写入审批与审计记录。"}</p><textarea name="comment" required={workflowDialog.action!=="approve"} defaultValue={workflowDialog.action==="approve"?"内容与权限已核验，同意发布":""} placeholder="请输入处理意见" rows={4}/><footer><button type="button" onClick={()=>setWorkflowDialog(null)}>取消</button><button className="primary-action">确认执行</button></footer></form></div>}
-    <div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>{aiGuideVisible && <div className="ai-guide" role="status"><button aria-label="关闭智能助手提示" onClick={() => setAiGuideVisible(false)}>×</button><b>有制度或流程问题？</b><span>可以问我报销、入职、研发规范等企业知识</span></div>}<button className="ai-fab" onClick={openAi} aria-label={aiUnread ? "问问小知，有新的回答" : "打开问问小知"}><span className="ai-spark">✦</span><span><b>{aiUnread ? "回答已生成" : "问问小知"}</b><small>{aiUnread ? "点击继续查看" : "回答会标注知识来源"}</small></span>{aiUnread && <i className="ai-unread" aria-label="1条未读回答">1</i>}<em className="ai-quick">搜制度 · 查流程 · 找负责人</em></button></div>
-    {aiOpen && <AiPanel onClose={closeAi} onActivity={() => setAiSessionUpdated(true)} onGovernanceCreated={() => refreshGovernanceTasks().catch(() => undefined)} onOpen={async (documentId) => { try { setDocumentReturnTarget("ai");await openDocument(documentId); } catch (error) { setDocumentReturnTarget(null);notify(error instanceof Error ? error.message : "资料加载失败"); } }} />}
-    {toast && <div className="toast" role="status">✓ {toast}</div>}
-  </div>;
+  );
 }
 
-function LibraryView({ currentUser, metrics, documents, allCount, query, category, setCategory, setQuery, onSearch, searchLoading, favorites, toggleFavorite, onSelect, favoriteMode }: { currentUser:CurrentUser; metrics:Metrics; documents: KnowledgeDocument[]; allCount: number; query: string; category: string; setCategory: (v: string) => void; setQuery: (v: string) => void; onSearch:()=>void; searchLoading:boolean; favorites: number[]; toggleFavorite: (id: number) => void; onSelect: (doc: KnowledgeDocument) => void; favoriteMode: boolean }) {
-  return <main className="workspace">
-    <section className="welcome"><div><span className="page-kicker">KNOWLEDGE HUB</span><h1>{favoriteMode ? "我的收藏" : `你好，${currentUser.displayName}`}</h1><p>{favoriteMode ? "集中查看你持续关注的知识资产。" : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}</p></div><div className="governance-chip"><span>知识健康度</span><b>{metrics.health??(metrics.total?Math.round(metrics.verified/metrics.total*100):100)}<small>%</small></b><i>{metrics.due_soon} 份即将复核</i></div></section>
-    {!favoriteMode && <section className="hero-search"><span>⌕</span><div><small>混合检索：关键词 + 向量语义 + 权威度</small><input aria-label="知识检索" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")onSearch();}} placeholder="例如：差旅报销需要哪些材料？" /></div><button onClick={onSearch} disabled={searchLoading}>{searchLoading?"检索中":"搜索"}</button></section>}
-    <section className="library-section"><div className="section-title"><div><span className="page-kicker">CURATED KNOWLEDGE</span><h2>{favoriteMode ? "已收藏知识" : "知识目录"}</h2></div><div className="filter-tabs" role="tablist">{categories.map((item) => <button role="tab" aria-selected={category === item} className={category === item ? "active" : ""} key={item} onClick={() => setCategory(item)}>{item}</button>)}</div></div>
-      {documents.length ? <div className="doc-grid">{documents.map((doc) => <article className="doc-card" key={doc.id}><div className="doc-card-head"><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><button aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`} onClick={() => toggleFavorite(doc.id)}>{favorites.includes(doc.id) ? "★" : "☆"}</button></div><button className="doc-main" onClick={() => onSelect(doc)}><span className="file-tile">{doc.mimeType?.includes("pdf") ? "PDF" : doc.mimeType?.includes("word") ? "DOC" : "DOC"}</span><h3>{doc.title}</h3><p>{doc.summary}</p></button><div className="tag-row">{doc.tags.split(",").filter(Boolean).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div><div className="doc-foot"><span className="mini-avatar">{doc.owner.slice(0, 1)}</span><div><b>{doc.owner}</b><small>{doc.uploader} 上传 · V{doc.version}.0</small></div><span>{doc.category}</span></div></article>)}</div>
-      : <div className="empty-state"><b>⌕</b><h3>没有匹配的知识</h3><p>尝试搜索“报销”“入职”或清除筛选。</p><button onClick={() => { setQuery(""); setCategory("全部"); }}>清除筛选</button></div>}</section>
-  </main>;
+function LibraryView({
+  currentUser,
+  metrics,
+  documents,
+  allCount,
+  query,
+  correction,
+  category,
+  setCategory,
+  setQuery,
+  onSearch,
+  searchLoading,
+  favorites,
+  toggleFavorite,
+  onSelect,
+  favoriteMode,
+}: {
+  currentUser: CurrentUser;
+  metrics: Metrics;
+  documents: KnowledgeDocument[];
+  allCount: number;
+  query: string;
+  correction: QueryCorrection | null;
+  category: string;
+  setCategory: (v: string) => void;
+  setQuery: (v: string) => void;
+  onSearch: (useOriginal?: boolean) => void;
+  searchLoading: boolean;
+  favorites: number[];
+  toggleFavorite: (id: number) => void;
+  onSelect: (doc: KnowledgeDocument) => void;
+  favoriteMode: boolean;
+}) {
+  return (
+    <main className="workspace">
+      <section className="welcome">
+        <div>
+          <span className="page-kicker">KNOWLEDGE HUB</span>
+          <h1>
+            {favoriteMode ? "我的收藏" : `你好，${currentUser.displayName}`}
+          </h1>
+          <p>
+            {favoriteMode
+              ? "集中查看你持续关注的知识资产。"
+              : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}
+          </p>
+        </div>
+        <div className="governance-chip">
+          <span>知识健康度</span>
+          <b>
+            {metrics.health ??
+              (metrics.total
+                ? Math.round((metrics.verified / metrics.total) * 100)
+                : 100)}
+            <small>%</small>
+          </b>
+          <i>{metrics.due_soon} 份即将复核</i>
+        </div>
+      </section>
+      {!favoriteMode && (
+        <>
+          <section className="hero-search">
+            <span>⌕</span>
+            <div>
+              <small>混合检索：关键词 + 向量语义 + 权威度</small>
+              <input
+                aria-label="知识检索"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") onSearch();
+                }}
+                placeholder="例如：差旅报销需要哪些材料？"
+              />
+            </div>
+            <button onClick={() => onSearch()} disabled={searchLoading}>
+              {searchLoading ? "检索中" : "搜索"}
+            </button>
+          </section>
+          {correction?.applied &&
+            correction.corrected !== correction.original && (
+              <div className="search-correction" role="status">
+                <span>✓</span>
+                <div>
+                  <b>已按“{correction.corrected}”检索</b>
+                  <small>{correction.reason}</small>
+                </div>
+                <button onClick={() => onSearch(true)}>
+                  仍搜索“{correction.original}”
+                </button>
+              </div>
+            )}
+        </>
+      )}
+      <section className="library-section">
+        <div className="section-title">
+          <div>
+            <span className="page-kicker">CURATED KNOWLEDGE</span>
+            <h2>{favoriteMode ? "已收藏知识" : "知识目录"}</h2>
+          </div>
+          <div className="filter-tabs" role="tablist">
+            {categories.map((item) => (
+              <button
+                role="tab"
+                aria-selected={category === item}
+                className={category === item ? "active" : ""}
+                key={item}
+                onClick={() => setCategory(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
+        {documents.length ? (
+          <div className="doc-grid">
+            {documents.map((doc) => (
+              <article className="doc-card" key={doc.id}>
+                <div className="doc-card-head">
+                  <span className={`doc-status ${doc.status}`}>
+                    {statusLabel[doc.status]}
+                  </span>
+                  <button
+                    aria-label={`${favorites.includes(doc.id) ? "取消收藏" : "收藏"}${doc.title}`}
+                    onClick={() => toggleFavorite(doc.id)}
+                  >
+                    {favorites.includes(doc.id) ? "★" : "☆"}
+                  </button>
+                </div>
+                <button className="doc-main" onClick={() => onSelect(doc)}>
+                  <span className="file-tile">
+                    {doc.mimeType?.includes("pdf")
+                      ? "PDF"
+                      : doc.mimeType?.includes("word")
+                        ? "DOC"
+                        : "DOC"}
+                  </span>
+                  <h3>{doc.title}</h3>
+                  <p>{doc.summary}</p>
+                </button>
+                <div className="tag-row">
+                  {doc.tags
+                    .split(",")
+                    .filter(Boolean)
+                    .slice(0, 3)
+                    .map((tag) => (
+                      <span key={tag}>{tag}</span>
+                    ))}
+                </div>
+                <div className="doc-foot">
+                  <span className="mini-avatar">{doc.owner.slice(0, 1)}</span>
+                  <div>
+                    <b>{doc.owner}</b>
+                    <small>
+                      {doc.uploader} 上传 · V{doc.version}.0
+                    </small>
+                  </div>
+                  <span>{doc.category}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty-state">
+            <b>⌕</b>
+            <h3>没有匹配的知识</h3>
+            <p>尝试搜索“报销”“入职”或清除筛选。</p>
+            <button
+              onClick={() => {
+                setQuery("");
+                setCategory("全部");
+              }}
+            >
+              清除筛选
+            </button>
+          </div>
+        )}
+      </section>
+    </main>
+  );
 }
 
-function AdminView({ documents, metrics, governanceTasks, role, onUpload, onSelect, onStatus,onResolve }: { documents: KnowledgeDocument[]; metrics:Metrics; governanceTasks: GovernanceTask[]; role: string; onUpload: () => void; onSelect: (d: KnowledgeDocument) => void; onStatus: (id: number, action: "submit" | "approve" | "reject" | "archive") => void;onResolve:(id:number)=>void }) {
-  const [statusFilter,setStatusFilter]=useState("ALL");
-  const cards = [{ label: "知识总量", value: metrics.total, hint: "权限范围内" }, { label: "待审核", value: metrics.pending, hint: "需及时处理" }, { label: "解析失败", value: metrics.parse_failed, hint: "可在治理中心重试" }, { label: "即将复核", value: metrics.due_soon, hint: "未来 30 天" }];
+function AdminView({
+  documents,
+  metrics,
+  governanceTasks,
+  role,
+  onUpload,
+  onSelect,
+  onStatus,
+  onResolve,
+}: {
+  documents: KnowledgeDocument[];
+  metrics: Metrics;
+  governanceTasks: GovernanceTask[];
+  role: string;
+  onUpload: () => void;
+  onSelect: (d: KnowledgeDocument) => void;
+  onStatus: (
+    id: number,
+    action: "submit" | "approve" | "reject" | "archive",
+  ) => void;
+  onResolve: (task: GovernanceTask) => void;
+}) {
+  const [statusFilter, setStatusFilter] = useState("ALL");
+  const cards = [
+    { label: "知识总量", value: metrics.total, hint: "权限范围内" },
+    { label: "待审核", value: metrics.pending, hint: "需及时处理" },
+    {
+      label: "解析失败",
+      value: metrics.parse_failed,
+      hint: "可在治理中心重试",
+    },
+    { label: "即将复核", value: metrics.due_soon, hint: "未来 30 天" },
+  ];
   const canApprove = role === "SUPER_ADMIN" || role === "DEPT_ADMIN";
-  const shown=statusFilter==="ALL"?documents:documents.filter(doc=>doc.status===statusFilter);
-  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">GOVERNANCE CONSOLE</span><h1>知识维护工作台</h1><p>管理资料入库、审核发布、AI反馈、版本与生命周期。</p></div><button className="primary-action" onClick={onUpload}>＋ 上传新资料</button></section><div className="metric-grid">{cards.map(card => <div key={card.label}><span>{card.label}</span><b>{card.value}</b><small>{card.hint}</small></div>)}</div>{governanceTasks.length > 0 && <section className="governance-tasks"><div className="table-title"><div><h2>AI 问答待治理</h2><p>用户“没解决”的问答已关联部门与引用知识</p></div><span>{governanceTasks.length} 项待处理</span></div>{governanceTasks.map(task => <div className="governance-task" key={task.id}><span>AI</span><div><b>{task.reason} · {task.documentTitle}</b><p>{task.detail || "用户未补充具体说明"}</p><small>{task.reporter} 提交 · {task.createdAt}</small></div><button onClick={()=>onResolve(task.id)}>标记已解决</button></div>)}</section>}<section className="table-card"><div className="table-title"><div><h2>资料与审批记录</h2><p>草稿提交部门审核，审批通过后自动进入知识目录</p></div><select aria-label="按状态筛选资料" value={statusFilter} onChange={e=>setStatusFilter(e.target.value)}><option value="ALL">全部状态</option><option value="draft">草稿</option><option value="review">待审核</option><option value="published">已发布</option><option value="archived">已作废</option></select></div><div className="data-table"><div className="data-row table-head"><span>资料名称</span><span>分类 / 密级</span><span>上传人与负责人</span><span>版本 / 复核日</span><span>状态</span><span>操作</span></div>{shown.map(doc => <div className="data-row" key={doc.id}><button className="table-document" onClick={() => onSelect(doc)}><span>{doc.mimeType?.includes("pdf") ? "P" : "W"}</span><div><b>{doc.title}</b><small>{doc.sourceName ?? "在线文档"} · {fmtSize(doc.size)}</small></div></button><span><b>{doc.category}</b><small>{doc.securityLevel}</small></span><span><b>{doc.uploader}</b><small>负责人：{doc.owner}</small></span><span><b>V{doc.version}.0</b><small>{doc.reviewDueAt || "未设置"}</small></span><span><i className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</i></span><span className="row-actions">{doc.status === "draft" ? <button onClick={() => onStatus(doc.id, "submit")}>提交审核</button> : doc.status === "review" && canApprove ? <><button onClick={() => onStatus(doc.id, "approve")}>审批通过</button><button onClick={() => onStatus(doc.id, "reject")}>驳回</button></> : doc.status === "published" && canApprove ? <><button onClick={() => onStatus(doc.id, "archive")}>作废</button><button onClick={() => onSelect(doc)}>查看</button></> : <button onClick={() => onSelect(doc)}>查看</button>}</span></div>)}</div></section></main>;
+  const shown =
+    statusFilter === "ALL"
+      ? documents
+      : documents.filter((doc) => doc.status === statusFilter);
+  return (
+    <main className="workspace">
+      <section className="admin-heading">
+        <div>
+          <span className="page-kicker">GOVERNANCE CONSOLE</span>
+          <h1>知识维护工作台</h1>
+          <p>管理资料入库、审核发布、用户反馈、版本与生命周期。</p>
+        </div>
+        <button className="primary-action" onClick={onUpload}>
+          ＋ 上传新资料
+        </button>
+      </section>
+      <div className="metric-grid">
+        {cards.map((card) => (
+          <div key={card.label}>
+            <span>{card.label}</span>
+            <b>{card.value}</b>
+            <small>{card.hint}</small>
+          </div>
+        ))}
+      </div>
+      {governanceTasks.length > 0 && (
+        <section className="governance-tasks">
+          <div className="table-title">
+            <div>
+              <h2>知识反馈待治理</h2>
+              <p>AI 问答“没解决”和文档纠错统一进入负责人处理闭环</p>
+            </div>
+            <span>{governanceTasks.length} 项处理中</span>
+          </div>
+          {governanceTasks.map((task) => (
+            <div className="governance-task" key={task.id}>
+              <span>{task.status === "IN_PROGRESS" ? "处理中" : "待办"}</span>
+              <div>
+                <b>
+                  {task.reason} · {task.documentTitle}
+                </b>
+                <p>{task.detail || "用户未补充具体说明"}</p>
+                <small>
+                  {task.reporter} 提交
+                  {task.assignee ? ` · ${task.assignee} 负责` : ""} · {task.createdAt}
+                </small>
+              </div>
+              <button onClick={() => onResolve(task)}>处理并闭环</button>
+            </div>
+          ))}
+        </section>
+      )}
+      <section className="table-card">
+        <div className="table-title">
+          <div>
+            <h2>资料与审批记录</h2>
+            <p>草稿提交部门审核，审批通过后自动进入知识目录</p>
+          </div>
+          <select
+            aria-label="按状态筛选资料"
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          >
+            <option value="ALL">全部状态</option>
+            <option value="draft">草稿</option>
+            <option value="review">待审核</option>
+            <option value="published">已发布</option>
+            <option value="archived">已作废</option>
+          </select>
+        </div>
+        <div className="data-table">
+          <div className="data-row table-head">
+            <span>资料名称</span>
+            <span>分类 / 密级</span>
+            <span>上传人与负责人</span>
+            <span>版本 / 复核日</span>
+            <span>状态</span>
+            <span>操作</span>
+          </div>
+          {shown.map((doc) => (
+            <div className="data-row" key={doc.id}>
+              <button className="table-document" onClick={() => onSelect(doc)}>
+                <span>{doc.mimeType?.includes("pdf") ? "P" : "W"}</span>
+                <div>
+                  <b>{doc.title}</b>
+                  <small>
+                    {doc.sourceName ?? "在线文档"} · {fmtSize(doc.size)}
+                  </small>
+                </div>
+              </button>
+              <span>
+                <b>{doc.category}</b>
+                <small>{doc.securityLevel}</small>
+              </span>
+              <span>
+                <b>{doc.uploader}</b>
+                <small>负责人：{doc.owner}</small>
+              </span>
+              <span>
+                <b>V{doc.version}.0</b>
+                <small>{doc.reviewDueAt || "未设置"}</small>
+              </span>
+              <span>
+                <i className={`doc-status ${doc.status}`}>
+                  {statusLabel[doc.status]}
+                </i>
+              </span>
+              <span className="row-actions">
+                {doc.status === "draft" ? (
+                  <button onClick={() => onStatus(doc.id, "submit")}>
+                    提交审核
+                  </button>
+                ) : doc.status === "review" && canApprove ? (
+                  <>
+                    <button onClick={() => onStatus(doc.id, "approve")}>
+                      审批通过
+                    </button>
+                    <button onClick={() => onStatus(doc.id, "reject")}>
+                      驳回
+                    </button>
+                  </>
+                ) : doc.status === "published" && canApprove ? (
+                  <>
+                    <button onClick={() => onStatus(doc.id, "archive")}>
+                      作废
+                    </button>
+                    <button onClick={() => onSelect(doc)}>查看</button>
+                  </>
+                ) : (
+                  <button onClick={() => onSelect(doc)}>查看</button>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+    </main>
+  );
 }
 
-function PlatformView({role,notify}:{role:string;notify:(message:string)=>void}){
-  type PlatformData={metrics:Record<string,number>;searches:Record<string,number>;content:{action:string;count:number}[];quality:{question:string;count:number}[];jobs:Record<string,unknown>[];spaces:Record<string,unknown>[];approvals:Record<string,unknown>[];settings:Record<string,unknown>[]};
-  const [data,setData]=useState<PlatformData|null>(null);const [loading,setLoading]=useState(true);const [semanticProgress,setSemanticProgress]=useState("");
-  async function load(){setLoading(true);try{const response=await fetch("/api/platform",{cache:"no-store"});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"治理数据加载失败");setData(payload.data);}catch(error){notify(error instanceof Error?error.message:"治理数据加载失败");}finally{setLoading(false);}}
-  useEffect(()=>{const timer=window.setTimeout(()=>load(),0);return()=>window.clearTimeout(timer);},[]);// eslint-disable-line react-hooks/exhaustive-deps
-  async function action(body:Record<string,unknown>){const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});const payload=await response.json();if(!response.ok)return notify(payload.error?.message??"操作失败");notify("操作已执行并写入治理记录");await load();}
-  async function rebuildSemantic(){if(semanticProgress)return;try{const response=await fetch("/api/documents",{cache:"no-store"});const payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"资料列表加载失败");const rows=(payload.data?.documents??[]) as Record<string,unknown>[];let success=0,skipped=0;for(let index=0;index<rows.length;index++){const id=Number(rows[index].id);setSemanticProgress(`正在重建 ${index+1}/${rows.length}`);try{const result=await buildLocalSemanticIndex(id,progress=>setSemanticProgress(`${index+1}/${rows.length} · ${progress.message}`));if(result.indexed)success++;else skipped++;}catch{skipped++;}}notify(`语义索引重建完成：${success} 份成功，${skipped} 份跳过`);await load();}catch(error){notify(error instanceof Error?error.message:"语义索引重建失败");}finally{setSemanticProgress("");}}
-  if(loading||!data)return <main className="workspace"><div className="account-loading">正在汇总真实治理数据...</div></main>;
-  const m=data.metrics??{},s=data.searches??{};
-  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">KNOWLEDGE OPERATIONS</span><h1>治理与洞察</h1><p>解析流水线、搜索缺口、空间目录、审批轨迹和 AI 参数统一管理。</p></div><div className="member-actions"><button className="outline-action" onClick={rebuildSemantic} disabled={Boolean(semanticProgress)}>{semanticProgress||"重建本地语义索引"}</button><button className="outline-action" onClick={load}>刷新数据</button></div></section>
-    <div className="metric-grid"><div><span>知识健康度</span><b>{m.health??100}%</b><small>动态计算</small></div><div><span>30天检索</span><b>{s.searches??0}</b><small>{s.users??0} 位用户</small></div><div><span>零结果</span><b>{s.zero_results??0}</b><small>需补充知识</small></div><div><span>解析失败</span><b>{m.parse_failed??0}</b><small>支持重试</small></div></div>
-    <div className="platform-grid"><section className="platform-card"><header><h2>文件解析流水线</h2><span>{data.jobs.length} 条</span></header>{data.jobs.map(job=><div className="platform-row" key={String(job.id)}><div><b>{String(job.title)}</b><small>V{String(job.document_version)} · {String(job.stage)} · {String(job.extracted_chars)} 字</small></div><i className={String(job.status).toLowerCase()}>{String(job.status)}</i>{String(job.status)==="FAILED"&&<button onClick={()=>action({action:"PROCESS",documentId:job.document_id})}>重新解析</button>}</div>)}</section>
-    <section className="platform-card"><header><h2>零结果与知识缺口</h2><span>近30天</span></header>{data.quality.length?data.quality.map(item=><div className="platform-row" key={item.question}><div><b>{item.question}</b><small>出现 {item.count} 次，建议补充或优化标签</small></div></div>):<p className="platform-empty">当前没有未命中问答</p>}</section></div>
-    <section className="platform-card wide-card"><header><h2>知识空间与目录</h2><span>部门隔离</span></header><div className="space-grid">{data.spaces.map((space,index)=><div key={`${space.id}-${space.folder_id}-${index}`}><b>{String(space.name)}</b><span>{space.folder_name?String(space.folder_name):"根目录"}</span><small>{String(space.document_count??0)} 份资料</small></div>)}</div>{role==="SUPER_ADMIN"&&<form className="inline-governance" onSubmit={e=>{e.preventDefault();const values=Object.fromEntries(new FormData(e.currentTarget));action({action:"CREATE_SPACE",...values});e.currentTarget.reset();}}><input name="name" required placeholder="新空间名称"/><input name="code" required placeholder="唯一编码"/><button>创建空间</button></form>}</section>
-    <section className="platform-card wide-card"><header><h2>审批与版本轨迹</h2><span>{data.approvals.length} 条</span></header>{data.approvals.slice(0,12).map(row=><div className="platform-row" key={String(row.id)}><div><b>{String(row.title)} · {String(row.action)}</b><small>{String(row.applicant)} → {String(row.approver??"待审批")} · {String(row.create_time)}</small></div></div>)}</section>
-    {role==="SUPER_ADMIN"&&<section className="platform-card wide-card"><header><h2>AI 检索参数</h2><span>生产配置</span></header>{data.settings.map(setting=><form className="setting-row" key={String(setting.key)} onSubmit={e=>{e.preventDefault();const value=String(new FormData(e.currentTarget).get("value"));action({action:"UPDATE_SETTING",key:setting.key,value,description:setting.description});}}><label><b>{String(setting.key)}</b><small>{String(setting.description)}</small></label><input name="value" defaultValue={String(setting.value)}/><button>保存</button></form>)}</section>}
-    <EnterprisePanels role={role} notify={notify}/>
-  </main>;
+function PlatformView({
+  role,
+  notify,
+}: {
+  role: string;
+  notify: (message: string) => void;
+}) {
+  type PlatformData = {
+    metrics: Record<string, number>;
+    searches: Record<string, number>;
+    content: { action: string; count: number }[];
+    quality: { question: string; count: number }[];
+    jobs: Record<string, unknown>[];
+    spaces: Record<string, unknown>[];
+    approvals: Record<string, unknown>[];
+    settings: Record<string, unknown>[];
+  };
+  const [data, setData] = useState<PlatformData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [semanticProgress, setSemanticProgress] = useState("");
+  async function load() {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/platform", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "治理数据加载失败");
+      setData(payload.data);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "治理数据加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(), 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function action(body: Record<string, unknown>) {
+    const response = await fetch("/api/platform", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "操作失败");
+    notify("操作已执行并写入治理记录");
+    await load();
+  }
+  async function rebuildSemantic() {
+    if (semanticProgress) return;
+    try {
+      const response = await fetch("/api/documents", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "资料列表加载失败");
+      const rows = (payload.data?.documents ?? []) as Record<string, unknown>[];
+      let success = 0,
+        skipped = 0;
+      for (let index = 0; index < rows.length; index++) {
+        const id = Number(rows[index].id);
+        setSemanticProgress(`正在重建 ${index + 1}/${rows.length}`);
+        try {
+          const result = await buildLocalSemanticIndex(id, (progress) =>
+            setSemanticProgress(
+              `${index + 1}/${rows.length} · ${progress.message}`,
+            ),
+          );
+          if (result.indexed) success++;
+          else skipped++;
+        } catch {
+          skipped++;
+        }
+      }
+      notify(`语义索引重建完成：${success} 份成功，${skipped} 份跳过`);
+      await load();
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "语义索引重建失败");
+    } finally {
+      setSemanticProgress("");
+    }
+  }
+  if (loading || !data)
+    return (
+      <main className="workspace">
+        <div className="account-loading">正在汇总真实治理数据...</div>
+      </main>
+    );
+  const m = data.metrics ?? {},
+    s = data.searches ?? {};
+  return (
+    <main className="workspace">
+      <section className="admin-heading">
+        <div>
+          <span className="page-kicker">KNOWLEDGE OPERATIONS</span>
+          <h1>治理与洞察</h1>
+          <p>解析流水线、搜索缺口、空间目录、审批轨迹和 AI 参数统一管理。</p>
+        </div>
+        <div className="member-actions">
+          <button
+            className="outline-action"
+            onClick={rebuildSemantic}
+            disabled={Boolean(semanticProgress)}
+          >
+            {semanticProgress || "重建本地语义索引"}
+          </button>
+          <button className="outline-action" onClick={load}>
+            刷新数据
+          </button>
+        </div>
+      </section>
+      <div className="metric-grid">
+        <div>
+          <span>知识健康度</span>
+          <b>{m.health ?? 100}%</b>
+          <small>动态计算</small>
+        </div>
+        <div>
+          <span>30天检索</span>
+          <b>{s.searches ?? 0}</b>
+          <small>{s.users ?? 0} 位用户</small>
+        </div>
+        <div>
+          <span>零结果</span>
+          <b>{s.zero_results ?? 0}</b>
+          <small>需补充知识</small>
+        </div>
+        <div>
+          <span>解析失败</span>
+          <b>{m.parse_failed ?? 0}</b>
+          <small>支持重试</small>
+        </div>
+      </div>
+      <div className="platform-grid">
+        <section className="platform-card">
+          <header>
+            <h2>文件解析流水线</h2>
+            <span>{data.jobs.length} 条</span>
+          </header>
+          {data.jobs.map((job) => (
+            <div className="platform-row" key={String(job.id)}>
+              <div>
+                <b>{String(job.title)}</b>
+                <small>
+                  V{String(job.document_version)} · {String(job.stage)} ·{" "}
+                  {String(job.extracted_chars)} 字
+                </small>
+              </div>
+              <i className={String(job.status).toLowerCase()}>
+                {String(job.status)}
+              </i>
+              {String(job.status) === "FAILED" && (
+                <button
+                  onClick={() =>
+                    action({ action: "PROCESS", documentId: job.document_id })
+                  }
+                >
+                  重新解析
+                </button>
+              )}
+            </div>
+          ))}
+        </section>
+        <section className="platform-card">
+          <header>
+            <h2>零结果与知识缺口</h2>
+            <span>近30天</span>
+          </header>
+          {data.quality.length ? (
+            data.quality.map((item) => (
+              <div className="platform-row" key={item.question}>
+                <div>
+                  <b>{item.question}</b>
+                  <small>出现 {item.count} 次，建议补充或优化标签</small>
+                </div>
+              </div>
+            ))
+          ) : (
+            <p className="platform-empty">当前没有未命中问答</p>
+          )}
+        </section>
+      </div>
+      <section className="platform-card wide-card">
+        <header>
+          <h2>知识空间与目录</h2>
+          <span>部门隔离</span>
+        </header>
+        <div className="space-grid">
+          {data.spaces.map((space, index) => (
+            <div key={`${space.id}-${space.folder_id}-${index}`}>
+              <b>{String(space.name)}</b>
+              <span>
+                {space.folder_name ? String(space.folder_name) : "根目录"}
+              </span>
+              <small>{String(space.document_count ?? 0)} 份资料</small>
+            </div>
+          ))}
+        </div>
+        {role === "SUPER_ADMIN" && (
+          <form
+            className="inline-governance"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const values = Object.fromEntries(new FormData(e.currentTarget));
+              action({ action: "CREATE_SPACE", ...values });
+              e.currentTarget.reset();
+            }}
+          >
+            <input name="name" required placeholder="新空间名称" />
+            <input name="code" required placeholder="唯一编码" />
+            <button>创建空间</button>
+          </form>
+        )}
+      </section>
+      <section className="platform-card wide-card">
+        <header>
+          <h2>审批与版本轨迹</h2>
+          <span>{data.approvals.length} 条</span>
+        </header>
+        {data.approvals.slice(0, 12).map((row) => (
+          <div className="platform-row" key={String(row.id)}>
+            <div>
+              <b>
+                {String(row.title)} · {String(row.action)}
+              </b>
+              <small>
+                {String(row.applicant)} → {String(row.approver ?? "待审批")} ·{" "}
+                {String(row.create_time)}
+              </small>
+            </div>
+          </div>
+        ))}
+      </section>
+      {role === "SUPER_ADMIN" && (
+        <section className="platform-card wide-card">
+          <header>
+            <h2>AI 检索参数</h2>
+            <span>生产配置</span>
+          </header>
+          {data.settings.map((setting) => (
+            <form
+              className="setting-row"
+              key={String(setting.key)}
+              onSubmit={(e) => {
+                e.preventDefault();
+                const value = String(
+                  new FormData(e.currentTarget).get("value"),
+                );
+                action({
+                  action: "UPDATE_SETTING",
+                  key: setting.key,
+                  value,
+                  description: setting.description,
+                });
+              }}
+            >
+              <label>
+                <b>{String(setting.key)}</b>
+                <small>{String(setting.description)}</small>
+              </label>
+              <input name="value" defaultValue={String(setting.value)} />
+              <button>保存</button>
+            </form>
+          ))}
+        </section>
+      )}
+      <EnterprisePanels role={role} notify={notify} />
+    </main>
+  );
 }
 
-function EnterprisePanels({role,notify}:{role:string;notify:(message:string)=>void}){const [data,setData]=useState<Record<string,Record<string,unknown>[]>|null>(null);async function load(){const response=await fetch("/api/enterprise",{cache:"no-store"}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"企业治理数据加载失败");setData(payload.data);}useEffect(()=>{const timer=window.setTimeout(()=>load(),0);return()=>window.clearTimeout(timer);},[]);// eslint-disable-line react-hooks/exhaustive-deps
-async function act(body:Record<string,unknown>){const response=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"操作失败");notify("操作已生效、落库并写入审计");await load();}if(!data)return <section className="platform-card wide-card"><p className="platform-empty">企业治理能力加载中...</p></section>;const categories=data.categories??[],security=data.security??[],prompts=data.prompts??[],connectors=data.connectors??[],backups=data.backups??[],cases=data.evalCases??[],webhooks=data.webhooks??[],retention=data.retention??[];return <>
-<div className="platform-grid"><section className="platform-card"><header><h2>分类与用户组</h2><span>{categories.length} 个分类 · {(data.groups??[]).length} 个组</span></header>{categories.slice(0,8).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.code)} · {item.dept_id?"部门级":"全局"}</small></div></div>)}<form className="inline-governance" onSubmit={e=>{e.preventDefault();act({action:"SAVE_CATEGORY",...Object.fromEntries(new FormData(e.currentTarget))});e.currentTarget.reset();}}><input name="name" required placeholder="分类名称"/><input name="code" required placeholder="分类编码"/><button>新增分类</button></form></section><section className="platform-card"><header><h2>安全事件</h2><span>{security.length} 项待处理</span></header>{security.length?security.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.type)} · {String(item.title??"平台事件")}</b><small>{String(item.severity)} · {String(item.detail)}</small></div><button onClick={()=>act({action:"RESOLVE_SECURITY",id:item.id})}>关闭</button></div>):<p className="platform-empty">当前没有未处理安全事件</p>}</section></div>
-{role==="SUPER_ADMIN"&&<><section className="platform-card wide-card"><header><h2>Prompt 版本与 RAG 评测</h2><span>{cases.length} 条验收用例</span></header>{prompts.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)} · V{String(item.version)}</b><small>{String(item.status)} · {String(item.creator)}</small></div>{item.status!=="PUBLISHED"&&<button onClick={()=>act({action:"PUBLISH_PROMPT",id:item.id})}>发布此版</button>}</div>)}<form className="enterprise-form" onSubmit={e=>{e.preventDefault();act({action:"SAVE_PROMPT",...Object.fromEntries(new FormData(e.currentTarget))});e.currentTarget.reset();}}><input name="name" required placeholder="Prompt 名称"/><input name="code" defaultValue="enterprise_rag"/><textarea name="instructions" required placeholder="生产指令（至少20字）"/><button>保存新版本</button></form><form className="inline-governance" onSubmit={e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));act({action:"SAVE_EVAL_CASE",question:v.question,expectedKeywords:String(v.keywords).split(',')});e.currentTarget.reset();}}><input name="question" required placeholder="评测问题"/><input name="keywords" required placeholder="期望关键词，逗号分隔"/><button>新增用例</button></form><button className="platform-wide-action" onClick={()=>act({action:"RUN_EVAL"})}>运行全部 RAG 评测</button></section><div className="platform-grid"><section className="platform-card"><header><h2>外部知识连接器</h2><span>{connectors.length} 个</span></header>{connectors.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.type)} · {String(item.status)} · {String(item.last_error||"正常")}</small></div><button onClick={()=>act({action:"TEST_CONNECTOR",id:item.id})}>连通测试</button></div>)}<form className="enterprise-form compact" onSubmit={e=>{e.preventDefault();act({action:"SAVE_CONNECTOR",...Object.fromEntries(new FormData(e.currentTarget)),enabled:true});e.currentTarget.reset();}}><input name="name" required placeholder="名称"/><select name="type"><option>REST</option><option>S3</option><option>SHAREPOINT</option></select><input name="endpoint" placeholder="HTTPS 地址"/><input name="secret" type="password" placeholder="密钥"/><button>保存</button></form></section><section className="platform-card"><header><h2>备份与恢复验证</h2><span>{backups.length} 份</span></header>{backups.slice(0,5).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.object_key)}</b><small>{String(item.row_count)} 行 · {String(item.status)}</small></div><button onClick={()=>act({action:"VERIFY_BACKUP",id:item.id})}>校验</button></div>)}<button className="platform-wide-action" onClick={()=>act({action:"CREATE_BACKUP"})}>创建并校验快照</button></section></div><section className="platform-card wide-card"><header><h2>Webhook 事件投递</h2><span>{webhooks.length} 个端点</span></header>{webhooks.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.url)} · 最近状态 {String(item.last_status??"未测试")}</small></div><button onClick={()=>act({action:"TEST_WEBHOOK",id:item.id})}>发送测试事件</button></div>)}<form className="enterprise-form" onSubmit={e=>{e.preventDefault();act({action:"SAVE_WEBHOOK",...Object.fromEntries(new FormData(e.currentTarget)),events:["DOCUMENT_PUBLISHED"]});e.currentTarget.reset();}}><input name="name" required placeholder="端点名称"/><input name="url" type="url" required placeholder="https://..."/><input name="secret" type="password" placeholder="签名密钥（可自动生成）"/><button>保存端点</button></form></section></>}
-<section className="platform-card wide-card"><header><h2>保留期、法务留置与水印</h2><span>{retention.length} 份资料</span></header>{retention.slice(0,12).map(item=><form className="retention-row" key={String(item.id)} onSubmit={e=>{e.preventDefault();const v=Object.fromEntries(new FormData(e.currentTarget));act({action:"SET_RETENTION",...v,documentId:item.id});}}><label><b>{String(item.title)}</b><small>扫描：{String(item.scan_status)} · DLP：{String(item.dlp_findings)}</small></label><input name="retentionUntil" type="date" defaultValue={String(item.retention_until??"").slice(0,10)}/><label><input name="legalHold" type="checkbox" defaultChecked={Boolean(item.legal_hold)}/> 法务留置</label><label><input name="watermarkEnabled" type="checkbox" defaultChecked={Boolean(item.watermark_enabled)}/> 下载水印</label><button>保存策略</button></form>)}</section>
-</>}
-
-function AuditView({ logs, documents }: { logs: AuditLog[]; documents: KnowledgeDocument[] }) { const action: Record<string, string> = { VIEW: "查看", DOWNLOAD: "下载", EXPORT: "导出", FEEDBACK: "提交反馈", UPDATE: "更新", UPLOAD: "上传", APPROVE: "审批通过", REJECT: "驳回", SUBMIT_REVIEW: "提交复核", ACCOUNT_CREATE:"添加成员", ACCOUNT_IMPORT:"批量导入成员", ACCOUNT_UPDATE:"变更成员权限" }; return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">AUDIT TRAIL</span><h1>审计日志</h1><p>追踪资料、成员与权限的全部关键操作。</p></div><button className="outline-action" onClick={() => downloadBlob("知识库审计日志.csv", `时间,操作者,操作,详情\n${logs.map(l => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`, "text/csv;charset=utf-8")}>导出 CSV</button></section><section className="audit-card">{logs.map(log => <div className="audit-item" key={log.id}><span className="audit-icon">{log.action === "DOWNLOAD" ? "↓" : log.action === "VIEW" ? "◉" : "✓"}</span><div><b>{log.actor} · {action[log.action] ?? log.action}</b><p>{log.detail || documents.find(d => d.id === log.documentId)?.title}</p></div><time>{log.createdAt}</time></div>)}</section></main>; }
-
-function AccountAdminView({ notify }: { notify:(message:string)=>void }) {
-  const [accounts,setAccounts]=useState<EnterpriseAccount[]>([]); const [departments,setDepartments]=useState<UploadDepartment[]>([]); const [loading,setLoading]=useState(true); const [showCreate,setShowCreate]=useState(false);const [showImport,setShowImport]=useState(false);const [importText,setImportText]=useState("");
-  async function load() { setLoading(true); try { const response=await fetch("/api/admin/users",{cache:"no-store"}); const payload=await response.json(); if(!response.ok) throw new Error(payload.error?.message ?? "账号加载失败"); setAccounts(payload.data.users); setDepartments(payload.data.departments); } catch(error) { notify(error instanceof Error ? error.message : "账号加载失败"); } finally { setLoading(false); } }
-  useEffect(()=>{ const timer=window.setTimeout(()=>load(),0); return ()=>window.clearTimeout(timer); },[]); // eslint-disable-line react-hooks/exhaustive-deps
-  async function createAccount(event:FormEvent<HTMLFormElement>) { event.preventDefault(); const form=new FormData(event.currentTarget); const response=await fetch("/api/admin/users",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(Object.fromEntries(form))}); const payload=await response.json(); if(!response.ok) return notify(payload.error?.message ?? "成员添加失败"); setShowCreate(false); notify("成员已添加并完成授权，使用该企业邮箱登录即可"); await load(); }
-  async function importMembers(event:FormEvent<HTMLFormElement>){event.preventDefault();const rows=importText.split(/\r?\n/).map(row=>row.trim()).filter(Boolean);const members=rows.map(row=>{const [displayName,email,deptCode,role="EMPLOYEE"]=row.split(",").map(value=>value.trim());return{displayName,email,deptCode,role};});const response=await fetch("/api/admin/users",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({members})});const payload=await response.json();if(!response.ok)return notify(payload.error?.message??"批量导入失败");setImportText("");setShowImport(false);notify(`已导入 ${payload.data.imported} 名成员并完成部门授权`);await load();}
-  async function saveAccount(account:EnterpriseAccount,event:FormEvent<HTMLFormElement>) { event.preventDefault(); const values=Object.fromEntries(new FormData(event.currentTarget)); const response=await fetch("/api/admin/users",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id:account.id,...values})}); const payload=await response.json(); if(!response.ok) return notify(payload.error?.message ?? "账号更新失败"); notify(values.status === "OFFBOARDED" ? "离职权限已回收，后续请求立即失效" : values.status === "DISABLED" ? "账号已停用" : "账号权限已更新"); await load(); }
-  const statusLabelMap:Record<string,string>={ACTIVE:"使用中",PENDING:"待授权",DISABLED:"已停用",OFFBOARDED:"已离职"}; const roleLabel:Record<string,string>={SUPER_ADMIN:"超级管理员",DEPT_ADMIN:"部门管理员",EMPLOYEE:"普通员工",UNASSIGNED:"待分配"};
-  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">IDENTITY & ACCESS</span><h1>成员与权限</h1><p>统一管理员工加入、部门授权、首次登录、停用及离职权限回收。</p></div><div className="member-actions"><button className="outline-action" onClick={()=>setShowImport(value=>!value)}>批量导入</button><button className="primary-action" onClick={()=>setShowCreate(value=>!value)}>＋ 添加成员</button></div></section><div className="identity-metrics"><div><span>已登录使用</span><b>{accounts.filter(a=>a.status==="ACTIVE"&&a.last_login_time).length}</b></div><div><span>待首次登录</span><b>{accounts.filter(a=>a.status==="ACTIVE"&&!a.last_login_time).length}</b></div><div><span>停用 / 离职</span><b>{accounts.filter(a=>["DISABLED","OFFBOARDED"].includes(a.status)).length}</b></div><p>身份由企业统一登录确认；系统按成员目录中的部门和角色授权，不保存员工密码。</p></div>{showCreate&&<form className="account-create" onSubmit={createAccount}><label>企业邮箱<input name="email" type="email" required placeholder="name@company.com"/></label><label>员工姓名<input name="displayName" required/></label><label>主部门<select name="deptId" required>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select></label><label>角色<select name="role"><option value="EMPLOYEE">普通员工</option><option value="DEPT_ADMIN">部门管理员</option><option value="SUPER_ADMIN">超级管理员</option></select></label><button className="primary-action">添加并授权</button></form>}{showImport&&<form className="member-import" onSubmit={importMembers}><div><b>批量导入成员</b><p>每行格式：姓名,企业邮箱,部门编码,角色。角色支持 EMPLOYEE、DEPT_ADMIN、SUPER_ADMIN；单次最多 500 人，整批校验通过后写入。</p></div><textarea value={importText} onChange={e=>setImportText(e.target.value)} rows={6} required placeholder={"张三,zhangsan@company.com,PRODUCT,EMPLOYEE\n李四,lisi@company.com,HR,DEPT_ADMIN"}/><footer><button type="button" onClick={()=>setShowImport(false)}>取消</button><button className="primary-action">校验并导入</button></footer></form>}<section className="account-card"><header><div><h2>企业成员目录</h2><p>支持单个添加、批量导入和 SCIM 目录同步；未授权访问会进入待授权队列</p></div><span>{accounts.length} 名成员</span></header>{loading?<div className="account-loading">正在同步企业成员目录...</div>:accounts.map(account=><form className="account-row" key={account.id} onSubmit={event=>saveAccount(account,event)}><span className="account-avatar">{account.display_name.slice(0,1)}</span><label>成员<input name="displayName" defaultValue={account.display_name}/><small>{account.email}</small></label><label>主部门<select name="deptId" defaultValue={account.primary_dept_id||departments[0]?.id}>{departments.map(d=><option key={d.id} value={d.id}>{d.name}</option>)}</select><small>{account.departments}</small></label><label>角色<select name="role" defaultValue={account.role==="UNASSIGNED"?"EMPLOYEE":account.role}><option value="EMPLOYEE">普通员工</option><option value="DEPT_ADMIN">部门管理员</option><option value="SUPER_ADMIN">超级管理员</option></select><small>{roleLabel[account.role]}</small></label><label>账号状态<select name="status" defaultValue={account.status==="PENDING"?"ACTIVE":account.status}><option value="ACTIVE">允许登录</option><option value="DISABLED">暂停访问</option><option value="OFFBOARDED">离职回收</option></select><small>{account.status==="ACTIVE"&&!account.last_login_time?"待首次登录":statusLabelMap[account.status]}</small></label><label>登录与来源<span>{account.last_login_time?.slice(0,16).replace("T"," ")||"尚未登录"}</span><small>{account.identity_provider==="DIRECTORY_IMPORT"?"批量导入":account.identity_provider==="SCIM"?"SCIM 同步":"企业统一登录"}</small></label><button>保存</button></form>)}</section></main>;
+function EnterprisePanels({
+  role,
+  notify,
+}: {
+  role: string;
+  notify: (message: string) => void;
+}) {
+  const [data, setData] = useState<Record<
+    string,
+    Record<string, unknown>[]
+  > | null>(null);
+  async function load() {
+    const response = await fetch("/api/enterprise", { cache: "no-store" }),
+      payload = await response.json();
+    if (!response.ok)
+      return notify(payload.error?.message ?? "企业治理数据加载失败");
+    setData(payload.data);
+  }
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(), 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function act(body: Record<string, unknown>) {
+    const response = await fetch("/api/enterprise", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+      payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "操作失败");
+    notify("操作已生效、落库并写入审计");
+    await load();
+  }
+  if (!data)
+    return (
+      <section className="platform-card wide-card">
+        <p className="platform-empty">企业治理能力加载中...</p>
+      </section>
+    );
+  const categories = data.categories ?? [],
+    security = data.security ?? [],
+    prompts = data.prompts ?? [],
+    connectors = data.connectors ?? [],
+    backups = data.backups ?? [],
+    cases = data.evalCases ?? [],
+    webhooks = data.webhooks ?? [],
+    retention = data.retention ?? [];
+  return (
+    <>
+      <div className="platform-grid">
+        <section className="platform-card">
+          <header>
+            <h2>分类与用户组</h2>
+            <span>
+              {categories.length} 个分类 · {(data.groups ?? []).length} 个组
+            </span>
+          </header>
+          {categories.slice(0, 8).map((item) => (
+            <div className="platform-row" key={String(item.id)}>
+              <div>
+                <b>{String(item.name)}</b>
+                <small>
+                  {String(item.code)} · {item.dept_id ? "部门级" : "全局"}
+                </small>
+              </div>
+            </div>
+          ))}
+          <form
+            className="inline-governance"
+            onSubmit={(e) => {
+              e.preventDefault();
+              act({
+                action: "SAVE_CATEGORY",
+                ...Object.fromEntries(new FormData(e.currentTarget)),
+              });
+              e.currentTarget.reset();
+            }}
+          >
+            <input name="name" required placeholder="分类名称" />
+            <input name="code" required placeholder="分类编码" />
+            <button>新增分类</button>
+          </form>
+        </section>
+        <section className="platform-card">
+          <header>
+            <h2>安全事件</h2>
+            <span>{security.length} 项待处理</span>
+          </header>
+          {security.length ? (
+            security.map((item) => (
+              <div className="platform-row" key={String(item.id)}>
+                <div>
+                  <b>
+                    {String(item.type)} · {String(item.title ?? "平台事件")}
+                  </b>
+                  <small>
+                    {String(item.severity)} · {String(item.detail)}
+                  </small>
+                </div>
+                <button
+                  onClick={() =>
+                    act({ action: "RESOLVE_SECURITY", id: item.id })
+                  }
+                >
+                  关闭
+                </button>
+              </div>
+            ))
+          ) : (
+            <p className="platform-empty">当前没有未处理安全事件</p>
+          )}
+        </section>
+      </div>
+      {role === "SUPER_ADMIN" && (
+        <>
+          <section className="platform-card wide-card">
+            <header>
+              <h2>Prompt 版本与 RAG 评测</h2>
+              <span>{cases.length} 条验收用例</span>
+            </header>
+            {prompts.map((item) => (
+              <div className="platform-row" key={String(item.id)}>
+                <div>
+                  <b>
+                    {String(item.name)} · V{String(item.version)}
+                  </b>
+                  <small>
+                    {String(item.status)} · {String(item.creator)}
+                  </small>
+                </div>
+                {item.status !== "PUBLISHED" && (
+                  <button
+                    onClick={() =>
+                      act({ action: "PUBLISH_PROMPT", id: item.id })
+                    }
+                  >
+                    发布此版
+                  </button>
+                )}
+              </div>
+            ))}
+            <form
+              className="enterprise-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                act({
+                  action: "SAVE_PROMPT",
+                  ...Object.fromEntries(new FormData(e.currentTarget)),
+                });
+                e.currentTarget.reset();
+              }}
+            >
+              <input name="name" required placeholder="Prompt 名称" />
+              <input name="code" defaultValue="enterprise_rag" />
+              <textarea
+                name="instructions"
+                required
+                placeholder="生产指令（至少20字）"
+              />
+              <button>保存新版本</button>
+            </form>
+            <form
+              className="inline-governance"
+              onSubmit={(e) => {
+                e.preventDefault();
+                const v = Object.fromEntries(new FormData(e.currentTarget));
+                act({
+                  action: "SAVE_EVAL_CASE",
+                  question: v.question,
+                  expectedKeywords: String(v.keywords).split(","),
+                });
+                e.currentTarget.reset();
+              }}
+            >
+              <input name="question" required placeholder="评测问题" />
+              <input
+                name="keywords"
+                required
+                placeholder="期望关键词，逗号分隔"
+              />
+              <button>新增用例</button>
+            </form>
+            <button
+              className="platform-wide-action"
+              onClick={() => act({ action: "RUN_EVAL" })}
+            >
+              运行全部 RAG 评测
+            </button>
+          </section>
+          <div className="platform-grid">
+            <section className="platform-card">
+              <header>
+                <h2>外部知识连接器</h2>
+                <span>{connectors.length} 个</span>
+              </header>
+              {connectors.map((item) => (
+                <div className="platform-row" key={String(item.id)}>
+                  <div>
+                    <b>{String(item.name)}</b>
+                    <small>
+                      {String(item.type)} · {String(item.status)} ·{" "}
+                      {String(item.last_error || "正常")}
+                    </small>
+                  </div>
+                  <button
+                    onClick={() =>
+                      act({ action: "TEST_CONNECTOR", id: item.id })
+                    }
+                  >
+                    连通测试
+                  </button>
+                </div>
+              ))}
+              <form
+                className="enterprise-form compact"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  act({
+                    action: "SAVE_CONNECTOR",
+                    ...Object.fromEntries(new FormData(e.currentTarget)),
+                    enabled: true,
+                  });
+                  e.currentTarget.reset();
+                }}
+              >
+                <input name="name" required placeholder="名称" />
+                <select name="type">
+                  <option>REST</option>
+                  <option>S3</option>
+                  <option>SHAREPOINT</option>
+                </select>
+                <input name="endpoint" placeholder="HTTPS 地址" />
+                <input name="secret" type="password" placeholder="密钥" />
+                <button>保存</button>
+              </form>
+            </section>
+            <section className="platform-card">
+              <header>
+                <h2>备份与恢复验证</h2>
+                <span>{backups.length} 份</span>
+              </header>
+              {backups.slice(0, 5).map((item) => (
+                <div className="platform-row" key={String(item.id)}>
+                  <div>
+                    <b>{String(item.object_key)}</b>
+                    <small>
+                      {String(item.row_count)} 行 · {String(item.status)}
+                    </small>
+                  </div>
+                  <button
+                    onClick={() =>
+                      act({ action: "VERIFY_BACKUP", id: item.id })
+                    }
+                  >
+                    校验
+                  </button>
+                </div>
+              ))}
+              <button
+                className="platform-wide-action"
+                onClick={() => act({ action: "CREATE_BACKUP" })}
+              >
+                创建并校验快照
+              </button>
+            </section>
+          </div>
+          <section className="platform-card wide-card">
+            <header>
+              <h2>Webhook 事件投递</h2>
+              <span>{webhooks.length} 个端点</span>
+            </header>
+            {webhooks.map((item) => (
+              <div className="platform-row" key={String(item.id)}>
+                <div>
+                  <b>{String(item.name)}</b>
+                  <small>
+                    {String(item.url)} · 最近状态{" "}
+                    {String(item.last_status ?? "未测试")}
+                  </small>
+                </div>
+                <button
+                  onClick={() => act({ action: "TEST_WEBHOOK", id: item.id })}
+                >
+                  发送测试事件
+                </button>
+              </div>
+            ))}
+            <form
+              className="enterprise-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                act({
+                  action: "SAVE_WEBHOOK",
+                  ...Object.fromEntries(new FormData(e.currentTarget)),
+                  events: ["DOCUMENT_PUBLISHED"],
+                });
+                e.currentTarget.reset();
+              }}
+            >
+              <input name="name" required placeholder="端点名称" />
+              <input name="url" type="url" required placeholder="https://..." />
+              <input
+                name="secret"
+                type="password"
+                placeholder="签名密钥（可自动生成）"
+              />
+              <button>保存端点</button>
+            </form>
+          </section>
+        </>
+      )}
+      <section className="platform-card wide-card">
+        <header>
+          <h2>保留期、法务留置与水印</h2>
+          <span>{retention.length} 份资料</span>
+        </header>
+        {retention.slice(0, 12).map((item) => (
+          <form
+            className="retention-row"
+            key={String(item.id)}
+            onSubmit={(e) => {
+              e.preventDefault();
+              const v = Object.fromEntries(new FormData(e.currentTarget));
+              act({ action: "SET_RETENTION", ...v, documentId: item.id });
+            }}
+          >
+            <label>
+              <b>{String(item.title)}</b>
+              <small>
+                扫描：{String(item.scan_status)} · DLP：
+                {String(item.dlp_findings)}
+              </small>
+            </label>
+            <input
+              name="retentionUntil"
+              type="date"
+              defaultValue={String(item.retention_until ?? "").slice(0, 10)}
+            />
+            <label>
+              <input
+                name="legalHold"
+                type="checkbox"
+                defaultChecked={Boolean(item.legal_hold)}
+              />{" "}
+              法务留置
+            </label>
+            <label>
+              <input
+                name="watermarkEnabled"
+                type="checkbox"
+                defaultChecked={Boolean(item.watermark_enabled)}
+              />{" "}
+              下载水印
+            </label>
+            <button>保存策略</button>
+          </form>
+        ))}
+      </section>
+    </>
+  );
 }
 
-function DocumentDrawer({ document: doc, returnToAi=false, canRestore, favorite, onClose, onFavorite, onSaved,onRestore, onFeedback, onExport, onDownload, onShare, onSubscribe, onContact }: { document: KnowledgeDocument;returnToAi?:boolean; canRestore:boolean; favorite: boolean; onClose: () => void; onFavorite: () => void; onSaved:()=>void;onRestore:(version:number)=>void; onFeedback: () => void; onExport: () => void; onDownload: () => void; onShare: () => void; onSubscribe: () => void; onContact: () => void }) {
+function AuditView({
+  logs,
+  documents,
+}: {
+  logs: AuditLog[];
+  documents: KnowledgeDocument[];
+}) {
+  const action: Record<string, string> = {
+    VIEW: "查看",
+    DOWNLOAD: "下载",
+    EXPORT: "导出",
+    FEEDBACK: "提交反馈",
+    UPDATE: "更新",
+    UPLOAD: "上传",
+    APPROVE: "审批通过",
+    REJECT: "驳回",
+    SUBMIT_REVIEW: "提交复核",
+    ACCOUNT_CREATE: "添加成员",
+    ACCOUNT_IMPORT: "批量导入成员",
+    ACCOUNT_UPDATE: "变更成员权限",
+  };
+  return (
+    <main className="workspace">
+      <section className="admin-heading">
+        <div>
+          <span className="page-kicker">AUDIT TRAIL</span>
+          <h1>审计日志</h1>
+          <p>追踪资料、成员与权限的全部关键操作。</p>
+        </div>
+        <button
+          className="outline-action"
+          onClick={() =>
+            downloadBlob(
+              "知识库审计日志.csv",
+              `时间,操作者,操作,详情\n${logs.map((l) => `${l.createdAt},${l.actor},${action[l.action] ?? l.action},${l.detail}`).join("\n")}`,
+              "text/csv;charset=utf-8",
+            )
+          }
+        >
+          导出 CSV
+        </button>
+      </section>
+      <section className="audit-card">
+        {logs.map((log) => (
+          <div className="audit-item" key={log.id}>
+            <span className="audit-icon">
+              {log.action === "DOWNLOAD"
+                ? "↓"
+                : log.action === "VIEW"
+                  ? "◉"
+                  : "✓"}
+            </span>
+            <div>
+              <b>
+                {log.actor} · {action[log.action] ?? log.action}
+              </b>
+              <p>
+                {log.detail ||
+                  documents.find((d) => d.id === log.documentId)?.title}
+              </p>
+            </div>
+            <time>{log.createdAt}</time>
+          </div>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+function AccountAdminView({ notify }: { notify: (message: string) => void }) {
+  const [accounts, setAccounts] = useState<EnterpriseAccount[]>([]);
+  const [departments, setDepartments] = useState<UploadDepartment[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState("");
+  async function load() {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/admin/users", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "账号加载失败");
+      setAccounts(payload.data.users);
+      setDepartments(payload.data.departments);
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "账号加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    const timer = window.setTimeout(() => load(), 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function createAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(form)),
+    });
+    const payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "成员添加失败");
+    setShowCreate(false);
+    notify("成员已添加并完成授权，使用该企业邮箱登录即可");
+    await load();
+  }
+  async function importMembers(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const rows = importText
+      .split(/\r?\n/)
+      .map((row) => row.trim())
+      .filter(Boolean);
+    const members = rows.map((row) => {
+      const [displayName, email, deptCode, role = "EMPLOYEE"] = row
+        .split(",")
+        .map((value) => value.trim());
+      return { displayName, email, deptCode, role };
+    });
+    const response = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ members }),
+    });
+    const payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "批量导入失败");
+    setImportText("");
+    setShowImport(false);
+    notify(`已导入 ${payload.data.imported} 名成员并完成部门授权`);
+    await load();
+  }
+  async function saveAccount(
+    account: EnterpriseAccount,
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const response = await fetch("/api/admin/users", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: account.id, ...values }),
+    });
+    const payload = await response.json();
+    if (!response.ok) return notify(payload.error?.message ?? "账号更新失败");
+    notify(
+      values.status === "OFFBOARDED"
+        ? "离职权限已回收，后续请求立即失效"
+        : values.status === "DISABLED"
+          ? "账号已停用"
+          : "账号权限已更新",
+    );
+    await load();
+  }
+  const statusLabelMap: Record<string, string> = {
+    ACTIVE: "使用中",
+    PENDING: "待授权",
+    DISABLED: "已停用",
+    OFFBOARDED: "已离职",
+  };
+  const roleLabel: Record<string, string> = {
+    SUPER_ADMIN: "超级管理员",
+    DEPT_ADMIN: "部门管理员",
+    EMPLOYEE: "普通员工",
+    UNASSIGNED: "待分配",
+  };
+  return (
+    <main className="workspace">
+      <section className="admin-heading">
+        <div>
+          <span className="page-kicker">IDENTITY & ACCESS</span>
+          <h1>成员与权限</h1>
+          <p>统一管理员工加入、部门授权、首次登录、停用及离职权限回收。</p>
+        </div>
+        <div className="member-actions">
+          <button
+            className="outline-action"
+            onClick={() => setShowImport((value) => !value)}
+          >
+            批量导入
+          </button>
+          <button
+            className="primary-action"
+            onClick={() => setShowCreate((value) => !value)}
+          >
+            ＋ 添加成员
+          </button>
+        </div>
+      </section>
+      <div className="identity-metrics">
+        <div>
+          <span>已登录使用</span>
+          <b>
+            {
+              accounts.filter((a) => a.status === "ACTIVE" && a.last_login_time)
+                .length
+            }
+          </b>
+        </div>
+        <div>
+          <span>待首次登录</span>
+          <b>
+            {
+              accounts.filter(
+                (a) => a.status === "ACTIVE" && !a.last_login_time,
+              ).length
+            }
+          </b>
+        </div>
+        <div>
+          <span>停用 / 离职</span>
+          <b>
+            {
+              accounts.filter((a) =>
+                ["DISABLED", "OFFBOARDED"].includes(a.status),
+              ).length
+            }
+          </b>
+        </div>
+        <p>
+          身份由企业统一登录确认；系统按成员目录中的部门和角色授权，不保存员工密码。
+        </p>
+      </div>
+      {showCreate && (
+        <form className="account-create" onSubmit={createAccount}>
+          <label>
+            企业邮箱
+            <input
+              name="email"
+              type="email"
+              required
+              placeholder="name@company.com"
+            />
+          </label>
+          <label>
+            员工姓名
+            <input name="displayName" required />
+          </label>
+          <label>
+            主部门
+            <select name="deptId" required>
+              {departments.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            角色
+            <select name="role">
+              <option value="EMPLOYEE">普通员工</option>
+              <option value="DEPT_ADMIN">部门管理员</option>
+              <option value="SUPER_ADMIN">超级管理员</option>
+            </select>
+          </label>
+          <button className="primary-action">添加并授权</button>
+        </form>
+      )}
+      {showImport && (
+        <form className="member-import" onSubmit={importMembers}>
+          <div>
+            <b>批量导入成员</b>
+            <p>
+              每行格式：姓名,企业邮箱,部门编码,角色。角色支持
+              EMPLOYEE、DEPT_ADMIN、SUPER_ADMIN；单次最多 500
+              人，整批校验通过后写入。
+            </p>
+          </div>
+          <textarea
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+            rows={6}
+            required
+            placeholder={
+              "张三,zhangsan@company.com,PRODUCT,EMPLOYEE\n李四,lisi@company.com,HR,DEPT_ADMIN"
+            }
+          />
+          <footer>
+            <button type="button" onClick={() => setShowImport(false)}>
+              取消
+            </button>
+            <button className="primary-action">校验并导入</button>
+          </footer>
+        </form>
+      )}
+      <section className="account-card">
+        <header>
+          <div>
+            <h2>企业成员目录</h2>
+            <p>
+              支持单个添加、批量导入和 SCIM 目录同步；未授权访问会进入待授权队列
+            </p>
+          </div>
+          <span>{accounts.length} 名成员</span>
+        </header>
+        {loading ? (
+          <div className="account-loading">正在同步企业成员目录...</div>
+        ) : (
+          accounts.map((account) => (
+            <form
+              className="account-row"
+              key={account.id}
+              onSubmit={(event) => saveAccount(account, event)}
+            >
+              <span className="account-avatar">
+                {account.display_name.slice(0, 1)}
+              </span>
+              <label>
+                成员
+                <input name="displayName" defaultValue={account.display_name} />
+                <small>{account.email}</small>
+              </label>
+              <label>
+                主部门
+                <select
+                  name="deptId"
+                  defaultValue={account.primary_dept_id || departments[0]?.id}
+                >
+                  {departments.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </select>
+                <small>{account.departments}</small>
+              </label>
+              <label>
+                角色
+                <select
+                  name="role"
+                  defaultValue={
+                    account.role === "UNASSIGNED" ? "EMPLOYEE" : account.role
+                  }
+                >
+                  <option value="EMPLOYEE">普通员工</option>
+                  <option value="DEPT_ADMIN">部门管理员</option>
+                  <option value="SUPER_ADMIN">超级管理员</option>
+                </select>
+                <small>{roleLabel[account.role]}</small>
+              </label>
+              <label>
+                账号状态
+                <select
+                  name="status"
+                  defaultValue={
+                    account.status === "PENDING" ? "ACTIVE" : account.status
+                  }
+                >
+                  <option value="ACTIVE">允许登录</option>
+                  <option value="DISABLED">暂停访问</option>
+                  <option value="OFFBOARDED">离职回收</option>
+                </select>
+                <small>
+                  {account.status === "ACTIVE" && !account.last_login_time
+                    ? "待首次登录"
+                    : statusLabelMap[account.status]}
+                </small>
+              </label>
+              <label>
+                登录与来源
+                <span>
+                  {account.last_login_time?.slice(0, 16).replace("T", " ") ||
+                    "尚未登录"}
+                </span>
+                <small>
+                  {account.identity_provider === "DIRECTORY_IMPORT"
+                    ? "批量导入"
+                    : account.identity_provider === "SCIM"
+                      ? "SCIM 同步"
+                      : "企业统一登录"}
+                </small>
+              </label>
+              <button>保存</button>
+            </form>
+          ))
+        )}
+      </section>
+    </main>
+  );
+}
+
+function DocumentDrawer({
+  document: doc,
+  returnToAi = false,
+  canRestore,
+  favorite,
+  onClose,
+  onFavorite,
+  onPermissionsChanged,
+  onSaved,
+  onRestore,
+  onFeedback,
+  onExport,
+  onDownload,
+  onShare,
+  onSubscribe,
+  onContact,
+}: {
+  document: KnowledgeDocument;
+  returnToAi?: boolean;
+  canRestore: boolean;
+  favorite: boolean;
+  onClose: () => void;
+  onFavorite: () => void;
+  onPermissionsChanged: () => void;
+  onSaved: () => void;
+  onRestore: (version: number) => void;
+  onFeedback: () => void;
+  onExport: () => void;
+  onDownload: () => void;
+  onShare: () => void;
+  onSubscribe: () => void;
+  onContact: () => void;
+}) {
   const [previewUrl, setPreviewUrl] = useState("");
-  const [editing,setEditing]=useState(false);const [editError,setEditError]=useState("");
+  const [editing, setEditing] = useState(false);
+  const [editError, setEditError] = useState("");
+  const [permissionError, setPermissionError] = useState("");
+  const [permissionSubjectType,setPermissionSubjectType]=useState<"USER"|"DEPT"|"GROUP">("DEPT");
   const isPdf = Boolean(doc.sourceKey && doc.mimeType?.includes("pdf"));
   useEffect(() => {
     if (!isPdf) return;
-    let url = ""; let cancelled = false;
-    fetch(`/api/documents/${doc.id}?download=1`).then(response => response.ok ? response.blob() : Promise.reject()).then(blob => { if (!cancelled) { url = URL.createObjectURL(blob); setPreviewUrl(url); } }).catch(() => undefined);
-    return () => { cancelled = true; if (url) URL.revokeObjectURL(url); };
+    let url = "";
+    let cancelled = false;
+    fetch(`/api/documents/${doc.id}?download=1`)
+      .then((response) => (response.ok ? response.blob() : Promise.reject()))
+      .then((blob) => {
+        if (!cancelled) {
+          url = URL.createObjectURL(blob);
+          setPreviewUrl(url);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+      if (url) URL.revokeObjectURL(url);
+    };
   }, [doc.id, isPdf]);
   const versions = doc.versions ?? [];
-  async function saveEdit(event:FormEvent<HTMLFormElement>){event.preventDefault();setEditError("");const values=Object.fromEntries(new FormData(event.currentTarget));const response=await fetch(`/api/documents/${doc.id}`,{method:"PUT",headers:{"content-type":"application/json"},body:JSON.stringify(values)});const payload=await response.json();if(!response.ok)return setEditError(payload.error?.message??"保存失败");setEditing(false);onSaved();}
-  return <div className={`drawer-backdrop${returnToAi?" from-ai":""}`} onMouseDown={onClose}><aside className="document-drawer" onMouseDown={e => e.stopPropagation()}><header><button aria-label={returnToAi?"返回问答":"关闭文档"} className={returnToAi?"return-to-ai":""} onClick={onClose}>{returnToAi?"← 返回问答":"×"}</button><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><span>{doc.securityLevel}</span></div><h2>{doc.title}</h2><p>{doc.summary || "暂无摘要"}</p></header><div className="drawer-actions">{doc.canEdit&&<button onClick={()=>setEditing(value=>!value)}>✎ {editing?"取消编辑":"编辑资料"}</button>}<button onClick={onFavorite}>{favorite ? "★ 已收藏" : "☆ 收藏"}</button><button onClick={onShare}>⎘ 内部链接</button><button onClick={onSubscribe}>◇ {doc.subscribed?"取消订阅":"订阅更新"}</button><button onClick={onContact}>@ 联系负责人</button>{doc.sourceKey && <button onClick={onDownload}>↓ 下载原件</button>}<button onClick={onExport}>⇧ 导出摘要</button><button onClick={onFeedback}>! 纠错反馈</button></div>{editing&&<form className="document-edit" onSubmit={saveEdit}><label>标题<input name="title" defaultValue={doc.title} required/></label><label>摘要<textarea name="summary" defaultValue={doc.summary} rows={3}/></label><label>正文<textarea name="content" defaultValue={doc.content} rows={12} required/></label>{editError&&<p>{editError}</p>}<button className="primary-action">保存为新草稿版本</button></form>}<section className="doc-info"><div><span>知识负责人</span><b>{doc.owner}</b></div><div><span>解析状态</span><b>{parseStatusLabel(doc.parseStatus)}</b><small>{doc.extractionDetail}</small></div><div><span>语义索引</span><b>{doc.aiIndexStatus==="INDEXED_LOCAL"?"本地向量已建立":doc.aiIndexStatus==="KEYWORD_READY"?"关键词可用":"等待建立"}</b></div><div><span>当前版本</span><b>V{doc.version}.0</b></div></section><article className="doc-content"><h3>{previewUrl ? "原件预览" : "文档正文"}</h3>{previewUrl ? <iframe className="pdf-preview" title={`${doc.title} PDF预览`} src={previewUrl} /> : doc.content.trim() ? doc.content.split("\n").filter(Boolean).map((p, i) => <p key={i}>{p}</p>) : <div className="content-empty"><b>{parseStatusLabel(doc.parseStatus)}</b><p>{doc.sourceName ? `原件 ${doc.sourceName} 已保存；请补充正文或重新执行本地解析后建立索引。` : "当前资料尚未填写正文。"}</p>{doc.sourceKey && <button onClick={onDownload}>下载原件查看</button>}</div>}</article><section className="version-list"><h3>版本记录</h3>{versions.length ? versions.map((item, index) => <div key={item.id}><span>V{item.version}.0</span><p><b>{index === 0 ? "当前版本" : "历史版本"}</b><small>{item.operator} · {item.changeNote || (item.version === 1 ? "首次上传" : "内容更新")} · {item.createdAt.slice(0, 10)}</small></p>{canRestore&&index>0&&<button onClick={()=>onRestore(item.version)}>恢复为新草稿</button>}</div>) : <div><span>V{doc.version}.0</span><p><b>首次上传版本</b><small>{doc.uploader} · 首次上传 · {doc.updatedAt.slice(0, 10)}</small></p></div>}</section></aside></div>;
+  async function saveEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setEditError("");
+    const values = Object.fromEntries(new FormData(event.currentTarget));
+    const response = await fetch(`/api/documents/${doc.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(values),
+    });
+    const payload = await response.json();
+    if (!response.ok) return setEditError(payload.error?.message ?? "保存失败");
+    setEditing(false);
+    onSaved();
+  }
+  const principalChoices=permissionSubjectType==="USER"?(doc.permissionPrincipals?.users??[]):permissionSubjectType==="GROUP"?(doc.permissionPrincipals?.groups??[]):(doc.permissionPrincipals?.departments??[]);
+  async function savePermission(event:FormEvent<HTMLFormElement>){
+    event.preventDefault();setPermissionError("");const values=Object.fromEntries(new FormData(event.currentTarget));const spaceScope=values.scope==="SPACE";if(spaceScope&&!doc.spaceId)return setPermissionError("该资料尚未归入知识空间，不能设置空间权限");
+    const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:spaceScope?"SET_SPACE_PERMISSION":"SET_ACL",documentId:doc.id,spaceId:doc.spaceId,subjectType:values.subjectType,subjectId:Number(values.subjectId),permission:values.permission,expiresAt:values.expiresAt||undefined})});const payload=await response.json();if(!response.ok)return setPermissionError(payload.error?.message??"权限保存失败");onPermissionsChanged();
+  }
+  async function removePermission(grant:PermissionGrant,scope:"DOCUMENT"|"SPACE"){
+    setPermissionError("");const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(scope==="DOCUMENT"?{action:"REMOVE_ACL",documentId:doc.id,id:grant.id}:{action:"REMOVE_SPACE_PERMISSION",spaceId:doc.spaceId,subjectType:grant.subject_type,subjectId:grant.subject_id,permission:grant.permission})});const payload=await response.json();if(!response.ok)return setPermissionError(payload.error?.message??"权限移除失败");onPermissionsChanged();
+  }
+  return (
+    <div
+      className={`drawer-backdrop${returnToAi ? " from-ai" : ""}`}
+      onMouseDown={onClose}
+    >
+      <aside
+        className="document-drawer"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <header>
+          <button
+            aria-label={returnToAi ? "返回问答" : "关闭文档"}
+            className={returnToAi ? "return-to-ai" : ""}
+            onClick={onClose}
+          >
+            {returnToAi ? "← 返回问答" : "×"}
+          </button>
+          <div>
+            <span className={`doc-status ${doc.status}`}>
+              {statusLabel[doc.status]}
+            </span>
+            <span>{doc.securityLevel}</span>
+          </div>
+          <h2>{doc.title}</h2>
+          <p>{doc.summary || "暂无摘要"}</p>
+        </header>
+        <div className="drawer-actions">
+          {doc.canEdit && (
+            <button onClick={() => setEditing((value) => !value)}>
+              ✎ {editing ? "取消编辑" : "编辑资料"}
+            </button>
+          )}
+          <button onClick={onFavorite}>
+            {favorite ? "★ 已收藏" : "☆ 收藏"}
+          </button>
+          <button onClick={onShare}>⎘ 内部链接</button>
+          <button onClick={onSubscribe}>
+            ◇ {doc.subscribed ? "取消订阅" : "订阅更新"}
+          </button>
+          <button onClick={onContact}>@ 联系负责人</button>
+          {doc.sourceKey && <button onClick={onDownload}>↓ 下载原件</button>}
+          <button onClick={onExport}>⇧ 导出摘要</button>
+          <button onClick={onFeedback}>! 纠错反馈</button>
+        </div>
+        {editing && (
+          <form className="document-edit" onSubmit={saveEdit}>
+            <label>
+              标题
+              <input name="title" defaultValue={doc.title} required />
+            </label>
+            <label>
+              摘要
+              <textarea name="summary" defaultValue={doc.summary} rows={3} />
+            </label>
+            <label>
+              正文
+              <textarea
+                name="content"
+                defaultValue={doc.content}
+                rows={12}
+                required
+              />
+            </label>
+            {editError && <p>{editError}</p>}
+            <button className="primary-action">保存为新草稿版本</button>
+          </form>
+        )}
+        <section className="doc-info">
+          <div>
+            <span>知识负责人</span>
+            <b>{doc.owner}</b>
+          </div>
+          <div>
+            <span>解析状态</span>
+            <b>{parseStatusLabel(doc.parseStatus)}</b>
+            <small>{doc.extractionDetail}</small>
+          </div>
+          <div>
+            <span>语义索引</span>
+            <b>
+              {doc.aiIndexStatus === "INDEXED_LOCAL"
+                ? "本地向量已建立"
+                : doc.aiIndexStatus === "KEYWORD_READY"
+                  ? "关键词可用"
+                  : "等待建立"}
+            </b>
+          </div>
+          <div>
+            <span>当前版本</span>
+            <b>V{doc.version}.0</b>
+          </div>
+        </section>
+        {doc.canManage&&doc.permissionPrincipals&&<section className="permission-editor"><header><div><h3>访问权限</h3><p>部门默认权限之外，可按员工、部门或用户组授权；编辑权限自动包含查看权限。</p></div><span>后端行级隔离</span></header><form onSubmit={savePermission}><select name="scope" defaultValue="DOCUMENT"><option value="DOCUMENT">仅当前资料</option>{doc.spaceId&&<option value="SPACE">整个知识空间</option>}</select><select name="subjectType" value={permissionSubjectType} onChange={e=>setPermissionSubjectType(e.target.value as "USER"|"DEPT"|"GROUP")}><option value="USER">员工</option><option value="DEPT">部门</option><option value="GROUP">用户组</option></select><select name="subjectId" required>{principalChoices.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}</select><select name="permission"><option value="VIEW">只读查看</option><option value="EDIT">允许编辑</option></select><input name="expiresAt" type="datetime-local" aria-label="授权到期时间"/><button disabled={!principalChoices.length}>添加授权</button></form>{permissionError&&<p className="permission-error">{permissionError}</p>}<div className="permission-list">{(doc.acl??[]).map(grant=><div key={`d-${grant.id}`}><span>资料</span><b>{grant.subject_name||`${grant.subject_type}#${grant.subject_id}`}</b><small>{grant.permission==="EDIT"?"可编辑":"只读"}{grant.expires_at?` · 至 ${grant.expires_at}`:" · 长期"}</small><button onClick={()=>removePermission(grant,"DOCUMENT")}>移除</button></div>)}{(doc.spacePermissions??[]).map(grant=><div key={`s-${grant.subject_type}-${grant.subject_id}-${grant.permission}`}><span>空间</span><b>{grant.subject_name||`${grant.subject_type}#${grant.subject_id}`}</b><small>{grant.permission==="EDIT"?"可编辑":"只读"} · 整个空间</small><button onClick={()=>removePermission(grant,"SPACE")}>移除</button></div>)}{!(doc.acl?.length||doc.spacePermissions?.length)&&<p>当前仅使用部门与共享范围默认权限。</p>}</div></section>}
+        <article className="doc-content">
+          <h3>{previewUrl ? "原件预览" : "文档正文"}</h3>
+          {previewUrl ? (
+            <iframe
+              className="pdf-preview"
+              title={`${doc.title} PDF预览`}
+              src={previewUrl}
+            />
+          ) : doc.content.trim() ? (
+            doc.content
+              .split("\n")
+              .filter(Boolean)
+              .map((p, i) => <p key={i}>{p}</p>)
+          ) : (
+            <div className="content-empty">
+              <b>{parseStatusLabel(doc.parseStatus)}</b>
+              <p>
+                {doc.sourceName
+                  ? `原件 ${doc.sourceName} 已保存；请补充正文或重新执行本地解析后建立索引。`
+                  : "当前资料尚未填写正文。"}
+              </p>
+              {doc.sourceKey && (
+                <button onClick={onDownload}>下载原件查看</button>
+              )}
+            </div>
+          )}
+        </article>
+        <section className="version-list">
+          <h3>版本记录</h3>
+          {versions.length ? (
+            versions.map((item, index) => (
+              <div key={item.id}>
+                <span>V{item.version}.0</span>
+                <p>
+                  <b>{index === 0 ? "当前版本" : "历史版本"}</b>
+                  <small>
+                    {item.operator} ·{" "}
+                    {item.changeNote ||
+                      (item.version === 1 ? "首次上传" : "内容更新")}{" "}
+                    · {item.createdAt.slice(0, 10)}
+                  </small>
+                </p>
+                {canRestore && index > 0 && (
+                  <button onClick={() => onRestore(item.version)}>
+                    恢复为新草稿
+                  </button>
+                )}
+              </div>
+            ))
+          ) : (
+            <div>
+              <span>V{doc.version}.0</span>
+              <p>
+                <b>首次上传版本</b>
+                <small>
+                  {doc.uploader} · 首次上传 · {doc.updatedAt.slice(0, 10)}
+                </small>
+              </p>
+            </div>
+          )}
+        </section>
+      </aside>
+    </div>
+  );
 }
 
-function UploadModal({ loading, progress, currentUser, options, onSubmit, onClose }: { loading: boolean; progress:ExtractionProgress|null; currentUser: { displayName: string; role: string; primaryDeptId: number }; options: UploadOptions; onSubmit: (e: FormEvent<HTMLFormElement>) => void; onClose: () => void }) {
+function UploadModal({
+  loading,
+  progress,
+  currentUser,
+  options,
+  onSubmit,
+  onClose,
+}: {
+  loading: boolean;
+  progress: ExtractionProgress | null;
+  currentUser: { displayName: string; role: string; primaryDeptId: number };
+  options: UploadOptions;
+  onSubmit: (e: FormEvent<HTMLFormElement>) => void;
+  onClose: () => void;
+}) {
   const [fileName, setFileName] = useState("");
   const [title, setTitle] = useState("");
   const [deptId, setDeptId] = useState(currentUser.primaryDeptId);
-  const [reviewDate] = useState(() => new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10));
-  const department = options.departments.find(item => item.id === deptId) ?? options.departments[0];
-  const departmentMembers = options.members.filter(item => item.dept_id === deptId);
-  const categoryByDepartment: Record<string, string> = { PRODUCT: "产品研发", HR: "组织人事", SALES: "销售市场", FINANCE: "财务法务", GENERAL: "组织人事" };
-  const defaultCategory = categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
-  const defaultOwner = departmentMembers.find(item => item.display_name === currentUser.displayName)?.display_name ?? departmentMembers[0]?.display_name ?? currentUser.displayName;
-  return <div className="modal-backdrop" onMouseDown={onClose}><form className="upload-modal" onSubmit={onSubmit} onMouseDown={e => e.stopPropagation()}><header><div><span className="page-kicker">KNOWLEDGE INGESTION</span><h2>上传企业资料</h2><p>身份与组织信息已按权限自动联动，文件将直接写入企业对象存储。</p></div><button type="button" onClick={onClose}>×</button></header>
-    <label className={`file-drop ${fileName ? "has-file" : ""}`}><input name="file" type="file" onChange={e => { const file = e.target.files?.[0]; setFileName(file?.name ?? ""); if (file && !title) setTitle(file.name.replace(/\.[^.]+$/, "")); }}/><span>{fileName ? "✓" : "⇧"}</span><b>{fileName || "点击选择或拖入文件"}</b><small>{fileName ? "文件已选择，标题已由文件名自动生成" : "支持企业常用文件格式；应用层不设置文件大小限制"}</small></label>
-    <div className="form-grid">
-      <label><span>资料标题 *</span><input name="title" value={title} onChange={e => setTitle(e.target.value)} required placeholder="选择文件后自动生成，可修改" /></label>
-      <label><span>知识分类 *</span><select key={`${deptId}-${defaultCategory}`} name="category" required defaultValue={defaultCategory}>{categories.slice(1).map(c => <option key={c}>{c}</option>)}</select></label>
-      <label><span>归属部门</span><select name="deptId" value={deptId} onChange={e => setDeptId(Number(e.target.value))} disabled={currentUser.role !== "SUPER_ADMIN"}>{options.departments.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select>{currentUser.role !== "SUPER_ADMIN" && <input type="hidden" name="deptId" value={deptId}/>}</label>
-      <label><span>知识负责人 *</span><select key={`${deptId}-${defaultOwner}`} name="owner" required defaultValue={defaultOwner}>{departmentMembers.length ? departmentMembers.map(member => <option key={member.id}>{member.display_name}</option>) : <option>{currentUser.displayName}</option>}</select></label>
-      <label><span>上传人（系统带出）</span><input value={currentUser.displayName} readOnly /></label>
-      <label><span>审核人（部门权限联动）</span><input value={department?.approver ?? "待配置部门管理员"} readOnly /></label>
-      <label><span>安全密级</span><select name="securityLevel" defaultValue="INTERNAL"><option value="INTERNAL">内部公开</option><option value="DEPT">部门可见</option><option value="SENSITIVE">敏感</option><option value="CONFIDENTIAL">核心机密</option></select></label>
-      <label><span>共享范围</span><select name="shareScope" disabled={currentUser.role === "EMPLOYEE"}><option value="DEPT">仅本部门</option><option value="CROSS_DEPT">跨部门共享</option></select>{currentUser.role === "EMPLOYEE" && <input type="hidden" name="shareScope" value="DEPT" />}</label>
-      <label><span>标签</span><input name="tags" placeholder="逗号分隔，如：差旅,报销" /></label>
-      <label><span>下次复核日</span><input name="reviewDueAt" type="date" defaultValue={reviewDate} /></label>
-      <label className="wide"><span>摘要</span><textarea name="summary" rows={2} placeholder="帮助员工快速判断内容是否相关" /></label>
-      <label className="wide"><span>正文 / 解析补充</span><textarea name="content" rows={4} placeholder="可粘贴核心内容，上传后仍可继续编辑" /></label>
-    </div><div className="publish-choice"><label><input type="radio" name="status" value="draft" defaultChecked/> 保存草稿</label><label><input type="radio" name="status" value="review"/> 提交部门审核</label></div>{loading&&progress&&<div className="ingestion-progress"><div><span style={{width:`${Math.max(4,progress.percent)}%`}}/></div><b>{progress.message}</b><small>{progress.stage==="OCR"?"图片文字仅在本机识别，不上传第三方 OCR 服务":progress.stage==="EMBED"?"正在使用本地中文模型建立语义索引":"原始文件将保留在企业文件存储中"}</small></div>}<footer><button type="button" onClick={onClose} disabled={loading}>取消</button><button className="primary-action" disabled={loading}>{loading ? progress?.message||"正在写入文件并生成记录..." : "上传并生成记录"}</button></footer></form></div>;
+  const [reviewDate] = useState(() =>
+    new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10),
+  );
+  const department =
+    options.departments.find((item) => item.id === deptId) ??
+    options.departments[0];
+  const departmentMembers = options.members.filter(
+    (item) => item.dept_id === deptId,
+  );
+  const categoryByDepartment: Record<string, string> = {
+    PRODUCT: "产品研发",
+    HR: "组织人事",
+    SALES: "销售市场",
+    FINANCE: "财务法务",
+    GENERAL: "组织人事",
+  };
+  const defaultCategory =
+    categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
+  const defaultOwner =
+    departmentMembers.find(
+      (item) => item.display_name === currentUser.displayName,
+    )?.display_name ??
+    departmentMembers[0]?.display_name ??
+    currentUser.displayName;
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <form
+        className="upload-modal"
+        onSubmit={onSubmit}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <header>
+          <div>
+            <span className="page-kicker">KNOWLEDGE INGESTION</span>
+            <h2>上传企业资料</h2>
+            <p>身份与组织信息已按权限自动联动，文件将直接写入企业对象存储。</p>
+          </div>
+          <button type="button" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        <label className={`file-drop ${fileName ? "has-file" : ""}`}>
+          <input
+            name="file"
+            type="file"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              setFileName(file?.name ?? "");
+              if (file && !title) setTitle(file.name.replace(/\.[^.]+$/, ""));
+            }}
+          />
+          <span>{fileName ? "✓" : "⇧"}</span>
+          <b>{fileName || "点击选择或拖入文件"}</b>
+          <small>
+            {fileName
+              ? "文件已选择，标题已由文件名自动生成"
+              : "支持企业常用文件格式；应用层不设置文件大小限制"}
+          </small>
+        </label>
+        <div className="form-grid">
+          <label>
+            <span>资料标题 *</span>
+            <input
+              name="title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              required
+              placeholder="选择文件后自动生成，可修改"
+            />
+          </label>
+          <label>
+            <span>知识分类 *</span>
+            <select
+              key={`${deptId}-${defaultCategory}`}
+              name="category"
+              required
+              defaultValue={defaultCategory}
+            >
+              {categories.slice(1).map((c) => (
+                <option key={c}>{c}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>归属部门</span>
+            <select
+              name="deptId"
+              value={deptId}
+              onChange={(e) => setDeptId(Number(e.target.value))}
+              disabled={currentUser.role !== "SUPER_ADMIN"}
+            >
+              {options.departments.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+            {currentUser.role !== "SUPER_ADMIN" && (
+              <input type="hidden" name="deptId" value={deptId} />
+            )}
+          </label>
+          <label>
+            <span>知识负责人 *</span>
+            <select
+              key={`${deptId}-${defaultOwner}`}
+              name="owner"
+              required
+              defaultValue={defaultOwner}
+            >
+              {departmentMembers.length ? (
+                departmentMembers.map((member) => (
+                  <option key={member.id}>{member.display_name}</option>
+                ))
+              ) : (
+                <option>{currentUser.displayName}</option>
+              )}
+            </select>
+          </label>
+          <label>
+            <span>上传人（系统带出）</span>
+            <input value={currentUser.displayName} readOnly />
+          </label>
+          <label>
+            <span>审核人（部门权限联动）</span>
+            <input
+              value={department?.approver ?? "待配置部门管理员"}
+              readOnly
+            />
+          </label>
+          <label>
+            <span>安全密级</span>
+            <select name="securityLevel" defaultValue="INTERNAL">
+              <option value="INTERNAL">内部公开</option>
+              <option value="DEPT">部门可见</option>
+              <option value="SENSITIVE">敏感</option>
+              <option value="CONFIDENTIAL">核心机密</option>
+            </select>
+          </label>
+          <label>
+            <span>共享范围</span>
+            <select
+              name="shareScope"
+              disabled={currentUser.role === "EMPLOYEE"}
+            >
+              <option value="DEPT">仅本部门</option>
+              <option value="CROSS_DEPT">跨部门共享</option>
+            </select>
+            {currentUser.role === "EMPLOYEE" && (
+              <input type="hidden" name="shareScope" value="DEPT" />
+            )}
+          </label>
+          <label>
+            <span>标签</span>
+            <input name="tags" placeholder="逗号分隔，如：差旅,报销" />
+          </label>
+          <label>
+            <span>下次复核日</span>
+            <input name="reviewDueAt" type="date" defaultValue={reviewDate} />
+          </label>
+          <label className="wide">
+            <span>摘要</span>
+            <textarea
+              name="summary"
+              rows={2}
+              placeholder="帮助员工快速判断内容是否相关"
+            />
+          </label>
+          <label className="wide">
+            <span>正文 / 解析补充</span>
+            <textarea
+              name="content"
+              rows={4}
+              placeholder="可粘贴核心内容，上传后仍可继续编辑"
+            />
+          </label>
+        </div>
+        <div className="publish-choice">
+          <label>
+            <input type="radio" name="status" value="draft" defaultChecked />{" "}
+            保存草稿
+          </label>
+          <label>
+            <input type="radio" name="status" value="review" /> 提交部门审核
+          </label>
+        </div>
+        {loading && progress && (
+          <div className="ingestion-progress">
+            <div>
+              <span style={{ width: `${Math.max(4, progress.percent)}%` }} />
+            </div>
+            <b>{progress.message}</b>
+            <small>
+              {progress.stage === "OCR"
+                ? "图片文字仅在本机识别，不上传第三方 OCR 服务"
+                : progress.stage === "EMBED"
+                  ? "正在使用本地中文模型建立语义索引"
+                  : "原始文件将保留在企业文件存储中"}
+            </small>
+          </div>
+        )}
+        <footer>
+          <button type="button" onClick={onClose} disabled={loading}>
+            取消
+          </button>
+          <button className="primary-action" disabled={loading}>
+            {loading
+              ? progress?.message || "正在写入文件并生成记录..."
+              : "上传并生成记录"}
+          </button>
+        </footer>
+      </form>
+    </div>
+  );
 }
 
-function FeedbackModal({ onClose, onSubmit }: { onClose: () => void; onSubmit: (v: string) => void }) { const [value, setValue] = useState(""); return <div className="modal-backdrop nested-modal" onMouseDown={onClose}><div className="feedback-modal" onMouseDown={e => e.stopPropagation()}><h2>提交纠错反馈</h2><p>反馈将自动关联当前文档与版本，并通知知识负责人。</p><textarea aria-label="反馈内容" value={value} onChange={e => setValue(e.target.value)} rows={5} placeholder="请描述错误、过期内容或补充建议..."/><div><button onClick={onClose}>取消</button><button className="primary-action" disabled={!value.trim()} onClick={() => onSubmit(value)}>提交反馈</button></div></div></div>; }
+function FeedbackModal({
+  onClose,
+  onSubmit,
+}: {
+  onClose: () => void;
+  onSubmit: (v: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  return (
+    <div className="modal-backdrop nested-modal" onMouseDown={onClose}>
+      <div className="feedback-modal" onMouseDown={(e) => e.stopPropagation()}>
+        <h2>提交纠错反馈</h2>
+        <p>反馈将自动关联当前文档与版本，并通知知识负责人。</p>
+        <textarea
+          aria-label="反馈内容"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          rows={5}
+          placeholder="请描述错误、过期内容或补充建议..."
+        />
+        <div>
+          <button onClick={onClose}>取消</button>
+          <button
+            className="primary-action"
+            disabled={!value.trim()}
+            onClick={() => onSubmit(value)}
+          >
+            提交反馈
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-function AiPanel({ onClose, onOpen, onGovernanceCreated, onActivity }: { onClose: () => void; onOpen: (documentId: number) => void | Promise<void>; onGovernanceCreated: () => void; onActivity: () => void }) {
-  type AiSource = { citation: number; documentId: number; title: string; version: number; department: string; excerpt: string; score: number };
-  type Conversation = { id: number; title: string; updateTime: string; lastMessage: string };
-  type Message = { id: number; role: "user" | "assistant"; content: string; mode?: string; model?:string; sources: AiSource[]; queryLogId?: number; helpful?: boolean | null; reason?: string };
-  const [question, setQuestion] = useState(""); const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [conversations, setConversations] = useState<Conversation[]>([]); const [conversationId, setConversationId] = useState<number | null>(null); const [messages, setMessages] = useState<Message[]>([]); const [feedbackTarget, setFeedbackTarget] = useState<number | null>(null); const [feedbackReason, setFeedbackReason] = useState(""); const [feedbackDetail, setFeedbackDetail] = useState("");
-  const conversationScrollRef=useRef<HTMLElement|null>(null);const keepAtBottomRef=useRef(true);
-  useEffect(()=>{if(!keepAtBottomRef.current)return;const frame=window.requestAnimationFrame(()=>{const node=conversationScrollRef.current;if(node)node.scrollTo({top:node.scrollHeight,behavior:window.matchMedia("(prefers-reduced-motion: reduce)").matches?"auto":"smooth"});});return()=>window.cancelAnimationFrame(frame);},[messages.length,loading,feedbackTarget]);
-  async function loadConversations(selectLatest = false) { const response = await fetch("/api/ai/conversations", { cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "历史会话加载失败"); const rows: Conversation[] = (payload.data.conversations ?? []).map((row: Record<string, unknown>) => ({ id: Number(row.id), title: String(row.title), updateTime: String(row.update_time), lastMessage: String(row.last_message ?? "") })); setConversations(rows); if (selectLatest && rows[0]) await loadConversation(rows[0].id); }
-  async function loadConversation(id: number) { keepAtBottomRef.current=true;setLoading(true); setError(""); try { const response = await fetch(`/api/ai/conversations?id=${id}`, { cache: "no-store" }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "会话加载失败"); setConversationId(id); setMessages((payload.data.messages ?? []).map((row: Record<string, unknown>) => { let sources: AiSource[] = []; try { sources = JSON.parse(String(row.source_payload ?? "[]")); } catch { /* ignore malformed history */ } return { id: Number(row.id), role: String(row.role) as "user" | "assistant", content: String(row.content), mode: row.mode ? String(row.mode) : undefined, sources, queryLogId: row.query_log_id ? Number(row.query_log_id) : undefined, helpful: row.helpful === null || row.helpful === undefined ? null : Boolean(row.helpful), reason: String(row.reason ?? "") }; })); } catch (caught) { setError(caught instanceof Error ? caught.message : "会话加载失败"); } finally { setLoading(false); } }
+function AiPanel({
+  onClose,
+  onOpen,
+  onGovernanceCreated,
+  onActivity,
+}: {
+  onClose: () => void;
+  onOpen: (documentId: number) => void | Promise<void>;
+  onGovernanceCreated: () => void;
+  onActivity: () => void;
+}) {
+  type AiSource = {
+    citation: number;
+    documentId: number;
+    title: string;
+    version: number;
+    department: string;
+    excerpt: string;
+    score: number;
+  };
+  type Conversation = {
+    id: number;
+    title: string;
+    updateTime: string;
+    lastMessage: string;
+  };
+  type Message = {
+    id: number;
+    role: "user" | "assistant";
+    content: string;
+    mode?: string;
+    model?: string;
+    sources: AiSource[];
+    correction?: QueryCorrection;
+    queryLogId?: number;
+    helpful?: boolean | null;
+    reason?: string;
+  };
+  const [question, setQuestion] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationId, setConversationId] = useState<number | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [feedbackTarget, setFeedbackTarget] = useState<number | null>(null);
+  const [feedbackReason, setFeedbackReason] = useState("");
+  const [feedbackDetail, setFeedbackDetail] = useState("");
+  const conversationScrollRef = useRef<HTMLElement | null>(null);
+  const keepAtBottomRef = useRef(true);
+  useEffect(() => {
+    if (!keepAtBottomRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      const node = conversationScrollRef.current;
+      if (node)
+        node.scrollTo({
+          top: node.scrollHeight,
+          behavior: window.matchMedia("(prefers-reduced-motion: reduce)")
+            .matches
+            ? "auto"
+            : "smooth",
+        });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [messages.length, loading, feedbackTarget]);
+  async function loadConversations(selectLatest = false) {
+    const response = await fetch("/api/ai/conversations", {
+      cache: "no-store",
+    });
+    const payload = await response.json();
+    if (!response.ok)
+      throw new Error(payload.error?.message ?? "历史会话加载失败");
+    const rows: Conversation[] = (payload.data.conversations ?? []).map(
+      (row: Record<string, unknown>) => ({
+        id: Number(row.id),
+        title: String(row.title),
+        updateTime: String(row.update_time),
+        lastMessage: String(row.last_message ?? ""),
+      }),
+    );
+    setConversations(rows);
+    if (selectLatest && rows[0]) await loadConversation(rows[0].id);
+  }
+  async function loadConversation(id: number) {
+    keepAtBottomRef.current = true;
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/ai/conversations?id=${id}`, {
+        cache: "no-store",
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "会话加载失败");
+      setConversationId(id);
+      setMessages(
+        (payload.data.messages ?? []).map((row: Record<string, unknown>) => {
+          let sources: AiSource[] = [];
+          let correction: QueryCorrection | undefined;
+          try {
+            sources = JSON.parse(String(row.source_payload ?? "[]"));
+            correction = JSON.parse(String(row.correction_payload ?? "{}"));
+            if (!correction?.original) correction = undefined;
+          } catch {
+            /* ignore malformed history */
+          }
+          return {
+            id: Number(row.id),
+            role: String(row.role) as "user" | "assistant",
+            content: String(row.content),
+            mode: row.mode ? String(row.mode) : undefined,
+            sources,
+            correction,
+            queryLogId: row.query_log_id ? Number(row.query_log_id) : undefined,
+            helpful:
+              row.helpful === null || row.helpful === undefined
+                ? null
+                : Boolean(row.helpful),
+            reason: String(row.reason ?? ""),
+          };
+        }),
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "会话加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }
   // Initial server-backed session restore runs once when the workbench opens.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const timer = window.setTimeout(() => loadConversations(true).catch(caught => setError(caught instanceof Error ? caught.message : "历史会话加载失败")), 0); return () => window.clearTimeout(timer); }, []);
-  function newConversation() { keepAtBottomRef.current=true;setConversationId(null); setMessages([]); setQuestion(""); setError(""); }
-  async function deleteConversation(id: number) { if (!window.confirm("删除该历史会话？此操作不会删除原始知识文档。")) return; const response = await fetch(`/api/ai/conversations?id=${id}`, { method: "DELETE" }); if (!response.ok) return setError("会话删除失败"); if (conversationId === id) newConversation(); await loadConversations(false); }
-  async function ask(nextQuestion = question) { if (!nextQuestion.trim() || loading) return; keepAtBottomRef.current=true;const userText = nextQuestion.trim(); const optimisticId = -Date.now(); setMessages(current => [...current, { id: optimisticId, role: "user", content: userText, sources: [] }]); setQuestion(""); setLoading(true); setError(""); try { const previousUser=[...messages].reverse().find(item=>item.role==="user");const embeddingText=isContextFollowUp(userText)&&previousUser?`${previousUser.content}\n${userText}`:userText;const queryEmbedding=(await embedLocally([embeddingText]).catch(()=>[]))[0];const response = await fetch("/api/ai/ask", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ question: userText, conversationId,queryEmbedding }) }); const payload = await response.json(); if (!response.ok) throw new Error(payload.error?.message ?? "知识问答暂不可用"); const nextId = Number(payload.data.conversationId); setConversationId(nextId); setMessages(current => [...current.map(item => item.id === optimisticId ? { ...item, id: optimisticId - 1 } : item), { id: Number(payload.data.messageId), role: "assistant", content: payload.data.answer, sources: payload.data.sources, mode: payload.data.mode,model:payload.data.model, queryLogId: Number(payload.data.queryLogId), helpful: null }]); onActivity(); await loadConversations(false); } catch (caught) { setMessages(current => current.filter(item => item.id !== optimisticId)); setError(caught instanceof Error ? caught.message : "知识问答暂不可用"); } finally { setLoading(false); } }
-  async function submitHelpful(message: Message, helpful: boolean, reason = "", detail = "") { if (!message.queryLogId) return; const response = await fetch("/api/engagement", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "AI_HELPFUL", queryLogId: message.queryLogId, messageId: message.id, helpful, reason, detail }) }); const payload = await response.json(); if (!response.ok) return setError(payload.error?.message ?? "评价提交失败"); setMessages(current => current.map(item => item.id === message.id ? { ...item, helpful, reason } : item)); setFeedbackTarget(null); setFeedbackReason(""); setFeedbackDetail(""); if (!helpful) onGovernanceCreated(); }
+  useEffect(() => {
+    const timer = window.setTimeout(
+      () =>
+        loadConversations(true).catch((caught) =>
+          setError(
+            caught instanceof Error ? caught.message : "历史会话加载失败",
+          ),
+        ),
+      0,
+    );
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  function newConversation() {
+    keepAtBottomRef.current = true;
+    setConversationId(null);
+    setMessages([]);
+    setQuestion("");
+    setError("");
+  }
+  async function deleteConversation(id: number) {
+    if (!window.confirm("删除该历史会话？此操作不会删除原始知识文档。")) return;
+    const response = await fetch(`/api/ai/conversations?id=${id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) return setError("会话删除失败");
+    if (conversationId === id) newConversation();
+    await loadConversations(false);
+  }
+  async function ask(nextQuestion = question) {
+    if (!nextQuestion.trim() || loading) return;
+    keepAtBottomRef.current = true;
+    const userText = nextQuestion.trim();
+    const optimisticId = -Date.now();
+    setMessages((current) => [
+      ...current,
+      { id: optimisticId, role: "user", content: userText, sources: [] },
+    ]);
+    setQuestion("");
+    setLoading(true);
+    setError("");
+    try {
+      const previousUser = [...messages]
+        .reverse()
+        .find((item) => item.role === "user");
+      const embeddingText =
+        isContextFollowUp(userText) && previousUser
+          ? `${previousUser.content}\n${userText}`
+          : userText;
+      const queryEmbedding = (
+        await embedLocally([embeddingText]).catch(() => [])
+      )[0];
+      const response = await fetch("/api/ai/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: userText,
+          conversationId,
+          queryEmbedding,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "知识问答暂不可用");
+      const nextId = Number(payload.data.conversationId);
+      setConversationId(nextId);
+      setMessages((current) => [
+        ...current.map((item) =>
+          item.id === optimisticId ? { ...item, id: optimisticId - 1 } : item,
+        ),
+        {
+          id: Number(payload.data.messageId),
+          role: "assistant",
+          content: payload.data.answer,
+          sources: payload.data.sources,
+          correction: payload.data.correction,
+          mode: payload.data.mode,
+          model: payload.data.model,
+          queryLogId: Number(payload.data.queryLogId),
+          helpful: null,
+        },
+      ]);
+      onActivity();
+      await loadConversations(false);
+    } catch (caught) {
+      setMessages((current) =>
+        current.filter((item) => item.id !== optimisticId),
+      );
+      setError(caught instanceof Error ? caught.message : "知识问答暂不可用");
+    } finally {
+      setLoading(false);
+    }
+  }
+  async function submitHelpful(
+    message: Message,
+    helpful: boolean,
+    reason = "",
+    detail = "",
+  ) {
+    if (!message.queryLogId) return;
+    const response = await fetch("/api/engagement", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        action: "AI_HELPFUL",
+        queryLogId: message.queryLogId,
+        messageId: message.id,
+        helpful,
+        reason,
+        detail,
+      }),
+    });
+    const payload = await response.json();
+    if (!response.ok) return setError(payload.error?.message ?? "评价提交失败");
+    setMessages((current) =>
+      current.map((item) =>
+        item.id === message.id ? { ...item, helpful, reason } : item,
+      ),
+    );
+    setFeedbackTarget(null);
+    setFeedbackReason("");
+    setFeedbackDetail("");
+    if (!helpful) onGovernanceCreated();
+  }
   const hasMessages = messages.length > 0;
-  return <div className="modal-backdrop ai-backdrop" onMouseDown={onClose}><section className="ai-panel enterprise-ai" onMouseDown={e => e.stopPropagation()}><button className="close-button" aria-label="关闭智能问答" onClick={onClose}>×</button>
-    <aside className="ai-intro ai-history"><div className="ai-brand"><span className="ai-orb">✦</span><div><small>ZHIYU INTELLIGENCE</small><b>问问小知</b></div></div><button className="new-chat" onClick={newConversation}>＋ 新建会话</button><div className="history-title"><span>历史会话</span><small>{conversations.length}</small></div><div className="conversation-list">{conversations.map(item => <div className={conversationId === item.id ? "active" : ""} key={item.id}><button onClick={() => loadConversation(item.id)}><b>{item.title}</b><small>{item.lastMessage || "等待首次提问"}</small></button><button aria-label={`删除会话${item.title}`} onClick={() => deleteConversation(item.id)}>×</button></div>)}{!conversations.length && <p>暂无历史会话，开始第一次企业知识问答吧。</p>}</div><div className="ai-trust"><span>●</span> 会话已按账号安全保存</div></aside>
-    <main className="ai-workspace"><header><div><span className="pulse-dot"/><div><b>知识问答工作台</b><small>{conversationId ? "上下文已连接 · 自动保存" : "新会话 · 首次提问后保存"}</small></div></div><div className="ai-status"><span>✓ 账号权限上下文已生效</span><span>{messages.flatMap(m=>m.sources).length} 条引用</span><span>{conversationId?`${messages.length} 条上下文已恢复`:"等待建立会话"}</span></div></header><section ref={conversationScrollRef} className="ai-conversation" onScroll={event=>{const node=event.currentTarget;keepAtBottomRef.current=node.scrollHeight-node.scrollTop-node.clientHeight<96;}}>{hasMessages ? <div className="message-stream">{messages.map(message => message.role === "user" ? <div className="user-message" key={message.id}><span>你</span><p>{message.content}</p></div> : <div className="ai-answer" key={message.id}><div className="answer-meta"><span>AI</span><small>{message.mode?.startsWith("assistant_") ? "平台助手 · 无需知识检索" : message.mode?.startsWith("rag") ? message.mode.includes("local_vector")?"本地语义检索 · DeepSeek RAG":message.mode.includes("keyword_fallback")?"关键词回退 · DeepSeek RAG":"RAG 生成回答" : message.mode?.includes("retrieval") ? message.mode.includes("keyword_fallback")?"关键词安全检索":"本地语义安全检索" : "未找到可靠依据"}</small></div><p>{message.content}</p>{message.sources.length > 0 && <div className="source-label">引用来源 · {message.sources.length}</div>}{message.sources.map(source => <button key={`${message.id}-${source.documentId}-${source.citation}`} onClick={() => onOpen(source.documentId)}><b>引用 {source.citation}</b><span>{source.title} · V{source.version}.0 · {source.department} →</span><small>{source.excerpt}</small></button>)}{message.queryLogId && !message.mode?.startsWith("assistant_") && <div className="ai-followups">{message.sources.length>0&&<button onClick={() => ask("请根据当前问题和以上引用，生成结构化办理清单，包含步骤、所需材料、责任角色和注意事项")}>生成办理清单</button>}{message.sources.length>0&&<button className={message.helpful === true ? "selected" : ""} disabled={message.helpful !== null && message.helpful !== undefined} onClick={() => submitHelpful(message, true)}>{message.helpful === true ? "✓ 已评价有帮助" : "有帮助"}</button>}<button className={message.helpful === false ? "selected negative" : ""} disabled={message.helpful !== null && message.helpful !== undefined} onClick={() => setFeedbackTarget(message.id)}>{message.helpful === false ? "✓ 已提交改进" : "没解决"}</button></div>}{feedbackTarget === message.id && <div className="unresolved-form"><b>哪里没有解决？</b><div>{["答案不准确","没有找到资料","引用不相关","内容已过期"].map(reason => <button className={feedbackReason === reason ? "active" : ""} key={reason} onClick={() => setFeedbackReason(reason)}>{reason}</button>)}</div><textarea value={feedbackDetail} onChange={e => setFeedbackDetail(e.target.value)} placeholder="可补充具体问题，提交后会进入知识治理待办" rows={2}/><footer><button onClick={() => setFeedbackTarget(null)}>取消</button><button disabled={!feedbackReason} onClick={() => submitHelpful(message, false, feedbackReason, feedbackDetail)}>提交改进</button></footer></div>}</div>)}</div> : <div className="ai-empty"><span>✦</span><h3>今天想了解什么？</h3><p>我会从你有权限查看的企业知识中寻找答案，并标注每条依据。</p><div className="suggestions"><button onClick={() => setQuestion("差旅报销需要哪些材料？")}><i>制度查询</i><b>差旅报销需要哪些材料？</b><span>→</span></button><button onClick={() => setQuestion("新员工第一周需要完成什么？")}><i>入职指南</i><b>新员工第一周需要完成什么？</b><span>→</span></button><button onClick={() => setQuestion("生产环境发布需要哪些审批？")}><i>研发规范</i><b>生产环境发布需要哪些审批？</b><span>→</span></button></div></div>}{loading && <div className="thinking"><span/><span/><span/> 正在识别意图并检索权限范围内知识</div>}{error && <p className="ai-error">{error}</p>}<div className="chat-scroll-anchor" aria-hidden="true"/></section><footer className="ai-compose"><div className="ai-input"><span>✦</span><input aria-label="向企业知识库提问" value={question} onChange={e => setQuestion(e.target.value)} placeholder={hasMessages ? "继续追问当前会话..." : "输入你的问题，Enter 发送..."} onKeyDown={e => { if (e.key === "Enter") ask(); }}/><button onClick={() => ask()} disabled={!question.trim() || loading}>{loading ? "处理中" : "发送"}</button></div><small>意图识别 · 权限检索 · DeepSeek 生成 · 会话自动保存</small></footer></main>
-  </section></div>;
+  return (
+    <div className="modal-backdrop ai-backdrop" onMouseDown={onClose}>
+      <section
+        className="ai-panel enterprise-ai"
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <button
+          className="close-button"
+          aria-label="关闭智能问答"
+          onClick={onClose}
+        >
+          ×
+        </button>
+        <aside className="ai-intro ai-history">
+          <div className="ai-brand">
+            <span className="ai-orb">✦</span>
+            <div>
+              <small>ZHIYU INTELLIGENCE</small>
+              <b>问问小知</b>
+            </div>
+          </div>
+          <button className="new-chat" onClick={newConversation}>
+            ＋ 新建会话
+          </button>
+          <div className="history-title">
+            <span>历史会话</span>
+            <small>{conversations.length}</small>
+          </div>
+          <div className="conversation-list">
+            {conversations.map((item) => (
+              <div
+                className={conversationId === item.id ? "active" : ""}
+                key={item.id}
+              >
+                <button onClick={() => loadConversation(item.id)}>
+                  <b>{item.title}</b>
+                  <small>{item.lastMessage || "等待首次提问"}</small>
+                </button>
+                <button
+                  aria-label={`删除会话${item.title}`}
+                  onClick={() => deleteConversation(item.id)}
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {!conversations.length && (
+              <p>暂无历史会话，开始第一次企业知识问答吧。</p>
+            )}
+          </div>
+          <div className="ai-trust">
+            <span>●</span> 会话已按账号安全保存
+          </div>
+        </aside>
+        <main className="ai-workspace">
+          <header>
+            <div>
+              <span className="pulse-dot" />
+              <div>
+                <b>知识问答工作台</b>
+                <small>
+                  {conversationId
+                    ? "上下文已连接 · 自动保存"
+                    : "新会话 · 首次提问后保存"}
+                </small>
+              </div>
+            </div>
+            <div className="ai-status">
+              <span>✓ 账号权限上下文已生效</span>
+              <span>{messages.flatMap((m) => m.sources).length} 条引用</span>
+              <span>
+                {conversationId
+                  ? `${messages.length} 条上下文已恢复`
+                  : "等待建立会话"}
+              </span>
+            </div>
+          </header>
+          <section
+            ref={conversationScrollRef}
+            className="ai-conversation"
+            onScroll={(event) => {
+              const node = event.currentTarget;
+              keepAtBottomRef.current =
+                node.scrollHeight - node.scrollTop - node.clientHeight < 96;
+            }}
+          >
+            {hasMessages ? (
+              <div className="message-stream">
+                {messages.map((message) =>
+                  message.role === "user" ? (
+                    <div className="user-message" key={message.id}>
+                      <span>你</span>
+                      <p>{message.content}</p>
+                    </div>
+                  ) : (
+                    <div className="ai-answer" key={message.id}>
+                      <div className="answer-meta">
+                        <span>AI</span>
+                        <small>
+                          {message.mode?.startsWith("assistant_")
+                            ? "平台助手 · 无需知识检索"
+                            : message.mode?.startsWith("rag")
+                              ? message.mode.includes("local_vector")
+                                ? "本地语义检索 · DeepSeek RAG"
+                                : message.mode.includes("keyword_fallback")
+                                  ? "关键词回退 · DeepSeek RAG"
+                                  : "RAG 生成回答"
+                              : message.mode?.includes("retrieval")
+                                ? message.mode.includes("keyword_fallback")
+                                  ? "关键词安全检索"
+                                  : "本地语义安全检索"
+                                : "未找到可靠依据"}
+                        </small>
+                      </div>
+                      {message.correction?.applied &&
+                        message.correction.corrected !==
+                          message.correction.original && (
+                          <div className="answer-correction">
+                            <b>已按“{message.correction.corrected}”理解</b>
+                            <small>{message.correction.reason}</small>
+                          </div>
+                        )}
+                      <p>{message.content}</p>
+                      {message.sources.length > 0 && (
+                        <div className="source-label">
+                          引用来源 · {message.sources.length}
+                        </div>
+                      )}
+                      {message.sources.map((source) => (
+                        <button
+                          key={`${message.id}-${source.documentId}-${source.citation}`}
+                          onClick={() => onOpen(source.documentId)}
+                        >
+                          <b>引用 {source.citation}</b>
+                          <span>
+                            {source.title} · V{source.version}.0 ·{" "}
+                            {source.department} →
+                          </span>
+                          <small>{source.excerpt}</small>
+                        </button>
+                      ))}
+                      {message.queryLogId &&
+                        !message.mode?.startsWith("assistant_") && (
+                          <div className="ai-followups">
+                            {message.sources.length > 0 && (
+                              <button
+                                onClick={() =>
+                                  ask(
+                                    "请根据当前问题和以上引用，生成结构化办理清单，包含步骤、所需材料、责任角色和注意事项",
+                                  )
+                                }
+                              >
+                                生成办理清单
+                              </button>
+                            )}
+                            {message.sources.length > 0 && (
+                              <button
+                                className={
+                                  message.helpful === true ? "selected" : ""
+                                }
+                                disabled={
+                                  message.helpful !== null &&
+                                  message.helpful !== undefined
+                                }
+                                onClick={() => submitHelpful(message, true)}
+                              >
+                                {message.helpful === true
+                                  ? "✓ 已评价有帮助"
+                                  : "有帮助"}
+                              </button>
+                            )}
+                            <button
+                              className={
+                                message.helpful === false
+                                  ? "selected negative"
+                                  : ""
+                              }
+                              disabled={
+                                message.helpful !== null &&
+                                message.helpful !== undefined
+                              }
+                              onClick={() => setFeedbackTarget(message.id)}
+                            >
+                              {message.helpful === false
+                                ? "✓ 已提交改进"
+                                : "没解决"}
+                            </button>
+                          </div>
+                        )}
+                      {feedbackTarget === message.id && (
+                        <div className="unresolved-form">
+                          <b>哪里没有解决？</b>
+                          <div>
+                            {[
+                              "答案不准确",
+                              "没有找到资料",
+                              "引用不相关",
+                              "内容已过期",
+                            ].map((reason) => (
+                              <button
+                                className={
+                                  feedbackReason === reason ? "active" : ""
+                                }
+                                key={reason}
+                                onClick={() => setFeedbackReason(reason)}
+                              >
+                                {reason}
+                              </button>
+                            ))}
+                          </div>
+                          <textarea
+                            value={feedbackDetail}
+                            onChange={(e) => setFeedbackDetail(e.target.value)}
+                            placeholder="可补充具体问题，提交后会进入知识治理待办"
+                            rows={2}
+                          />
+                          <footer>
+                            <button onClick={() => setFeedbackTarget(null)}>
+                              取消
+                            </button>
+                            <button
+                              disabled={!feedbackReason}
+                              onClick={() =>
+                                submitHelpful(
+                                  message,
+                                  false,
+                                  feedbackReason,
+                                  feedbackDetail,
+                                )
+                              }
+                            >
+                              提交改进
+                            </button>
+                          </footer>
+                        </div>
+                      )}
+                    </div>
+                  ),
+                )}
+              </div>
+            ) : (
+              <div className="ai-empty">
+                <span>✦</span>
+                <h3>今天想了解什么？</h3>
+                <p>我会从你有权限查看的企业知识中寻找答案，并标注每条依据。</p>
+                <div className="suggestions">
+                  <button onClick={() => setQuestion("差旅报销需要哪些材料？")}>
+                    <i>制度查询</i>
+                    <b>差旅报销需要哪些材料？</b>
+                    <span>→</span>
+                  </button>
+                  <button
+                    onClick={() => setQuestion("新员工第一周需要完成什么？")}
+                  >
+                    <i>入职指南</i>
+                    <b>新员工第一周需要完成什么？</b>
+                    <span>→</span>
+                  </button>
+                  <button
+                    onClick={() => setQuestion("生产环境发布需要哪些审批？")}
+                  >
+                    <i>研发规范</i>
+                    <b>生产环境发布需要哪些审批？</b>
+                    <span>→</span>
+                  </button>
+                </div>
+              </div>
+            )}
+            {loading && (
+              <div className="thinking">
+                <span />
+                <span />
+                <span /> 正在识别意图并检索权限范围内知识
+              </div>
+            )}
+            {error && <p className="ai-error">{error}</p>}
+            <div className="chat-scroll-anchor" aria-hidden="true" />
+          </section>
+          <footer className="ai-compose">
+            <div className="ai-input">
+              <span>✦</span>
+              <input
+                aria-label="向企业知识库提问"
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder={
+                  hasMessages
+                    ? "继续追问当前会话..."
+                    : "输入你的问题，Enter 发送..."
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") ask();
+                }}
+              />
+              <button
+                onClick={() => ask()}
+                disabled={!question.trim() || loading}
+              >
+                {loading ? "处理中" : "发送"}
+              </button>
+            </div>
+            <small>意图识别 · 权限检索 · DeepSeek 生成 · 会话自动保存</small>
+          </footer>
+        </main>
+      </section>
+    </div>
+  );
 }

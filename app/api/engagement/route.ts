@@ -1,13 +1,12 @@
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../lib/api";
 import { enforceRateLimit, requireApiUser } from "../../../lib/authz";
+import { canReadDocument } from "../../../lib/document-access";
 
 async function readableDocument(id: number, ctx: Awaited<ReturnType<typeof requireApiUser>>) {
   const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
   if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在");
-  const ownDept = ctx.deptIds.includes(Number(doc.dept_id));const acl=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='VIEW' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
-  const published=doc.status === "ARCHIVED_ACTIVE"||(["DRAFT","PENDING_DEPT_REVIEW"].includes(String(doc.status))&&Number(doc.published_version)>0);const allowed = ctx.role === "SUPER_ADMIN" || (published && (ownDept || doc.share_scope === "CROSS_DEPT")) || Number(doc.create_user_id) === ctx.userId||Boolean(acl);
-  if (!allowed) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权操作该文档"); return doc;
+  if (!await canReadDocument(doc,ctx)) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权操作该文档"); return doc;
 }
 
 export async function POST(request: Request) {
@@ -24,9 +23,10 @@ export async function POST(request: Request) {
       if (!payload.helpful && !reason) throw new ApiError(400, "FEEDBACK_REASON_REQUIRED", "请选择没有解决的原因");
       const message = payload.messageId ? await db.prepare("SELECT id,source_payload FROM ai_messages WHERE id=? AND user_id=? AND query_log_id=?").bind(payload.messageId, ctx.userId, payload.queryLogId).first<Record<string, unknown>>() : null;
       let sourceDocumentId: number | null = null; try { sourceDocumentId = Number(JSON.parse(String(message?.source_payload ?? "[]"))[0]?.documentId) || null; } catch { /* malformed source payload */ }
+      const owner=sourceDocumentId?await db.prepare("SELECT owner_user_id,create_user_id FROM documents WHERE id=?").bind(sourceDocumentId).first<Record<string,unknown>>():null;
       await db.batch([
         db.prepare("INSERT INTO ai_answer_feedback(query_log_id,user_id,helpful,reason) VALUES(?,?,?,?) ON CONFLICT(query_log_id,user_id) DO UPDATE SET helpful=excluded.helpful,reason=excluded.reason,create_time=CURRENT_TIMESTAMP").bind(payload.queryLogId, ctx.userId, payload.helpful ? 1 : 0, [reason, detail].filter(Boolean).join("：")),
-        ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,source_message_id,reporter_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',?,?,?,?,?,?)").bind(ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId, reason, detail)] : []),
+        ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,source_message_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',?,?,?,?,?,?,?)").bind(ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId,Number(owner?.owner_user_id||owner?.create_user_id)||null, reason, detail)] : []),
       ]);
       return ok({ recorded: true, governanceTaskCreated: !payload.helpful }, rid, 201);
     }

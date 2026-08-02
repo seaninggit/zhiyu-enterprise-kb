@@ -5,10 +5,10 @@ import test from "node:test";
 const read = path => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("free local OCR and semantic retrieval are wired end to end", async () => {
-  const [client, index, search, ask, migration, page] = await Promise.all([
+  const [client, index, search, ask, migration, page,access] = await Promise.all([
     read("lib/client-knowledge.ts"), read("app/api/semantic-index/route.ts"),
     read("app/api/search/route.ts"), read("app/api/ai/ask/route.ts"),
-    read("drizzle/0009_free_local_ai_pipeline.sql"), read("app/page.tsx"),
+    read("drizzle/0009_free_local_ai_pipeline.sql"), read("app/page.tsx"),read("lib/document-access.ts"),
   ]);
   assert.match(client, /tesseract\.js/);
   assert.match(client, /paraphrase-multilingual-MiniLM-L12-v2|LOCAL_EMBEDDING_MODEL/);
@@ -17,7 +17,10 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(index, /INDEXED_LOCAL/);
   assert.match(search, /HYBRID_LOCAL/);
   assert.match(search, /row\.relevance > \(vector \? \.08 : 0\)/);
-  assert.match(search, /a\.subject_id IN \(\$\{placeholders\(ctx\.deptIds\)\}\)\)\)\)\)/);
+  assert.match(search, /publishedDocumentScope/);
+  assert.match(access, /document_acl/);
+  assert.match(access, /space_permissions/);
+  assert.match(access, /subject_type='GROUP'/);
   assert.match(ask, /rag_local_vector/);
   assert.match(ask, /hasComparableVector \? vector \* vectorWeight \+ keyword \* keywordWeight : keyword/);
   assert.match(ask, /item\.hasComparableVector \? \.18 : \.15/);
@@ -35,7 +38,7 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(page, /重建本地语义索引/);
   assert.match(page, /本地语义检索 · DeepSeek RAG/);
   assert.match(page, /平台助手 · 无需知识检索/);
-  assert.match(page, /returnToAi=\{documentReturnTarget==="ai"\}/);
+  assert.match(page, /returnToAi=\{documentReturnTarget === "ai"\}/);
   assert.match(page, /← 返回问答/);
 });
 
@@ -48,17 +51,17 @@ test("AI conversation preserves ordered context and returns from cited documents
   assert.match(conversations,/ORDER BY m\.sequence_no ASC,m\.id ASC/);
   assert.match(conversations,/ORDER BY m\.sequence_no DESC,m\.id DESC LIMIT 1/);
   assert.doesNotMatch(page,/await openDocument\(documentId\); setAiOpen\(false\)/);
-  assert.match(page,/embeddingText=isContextFollowUp/);
-  assert.match(page,/message\.sources\.length>0&&<button onClick=\{\(\) => ask/);
+  assert.match(page,/embeddingText\s*=\s*isContextFollowUp/);
+  assert.match(page,/message\.sources\.length\s*>\s*0\s*&&[\s\S]*?ask\(/);
 });
 
 test("AI conversation follows new messages without stealing manual history scroll", async()=>{
   const [page,css]=await Promise.all([read("app/page.tsx"),read("app/globals.css")]);
   assert.match(page,/conversationScrollRef/);
   assert.match(page,/keepAtBottomRef/);
-  assert.match(page,/node\.scrollTo\(\{top:node\.scrollHeight/);
-  assert.match(page,/node\.scrollHeight-node\.scrollTop-node\.clientHeight<96/);
-  assert.match(page,/keepAtBottomRef\.current=true;const userText/);
+  assert.match(page,/node\.scrollTo\(\{\s*top:\s*node\.scrollHeight/);
+  assert.match(page,/node\.scrollHeight\s*-\s*node\.scrollTop\s*-\s*node\.clientHeight\s*<\s*96/);
+  assert.match(page,/keepAtBottomRef\.current\s*=\s*true;\s*const userText/);
   assert.match(page,/chat-scroll-anchor/);
   assert.match(css,/scroll-padding-block-end:44px/);
   assert.match(css,/\.ai-compose \{ position:relative; z-index:2;/);

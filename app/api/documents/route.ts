@@ -2,6 +2,9 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, requiredText, safeText } from "../../../lib/api";
 import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../lib/authz";
+import { documentListScope } from "../../../lib/document-access";
+import { runGovernanceMaintenance } from "../../../lib/governance";
+import { assertPublishReady } from "../../../lib/publish-readiness";
 import { resolveDocumentTransition, WorkflowAction, WorkflowStatus } from "../../../lib/workflow";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
@@ -11,12 +14,8 @@ export async function GET(request: Request) {
   try {
     const ctx = await requireApiUser();
     const db = getD1();
-    let where = "d.is_deleted = 0"; const binds: unknown[] = [];
-    if (ctx.role === "DEPT_ADMIN") {
-      where += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR (d.share_scope='CROSS_DEPT' AND (d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL))))`; binds.push(...ctx.deptIds);
-    } else if (ctx.role === "EMPLOYEE") {
-      where += ` AND ((d.dept_id IN (${placeholders(ctx.deptIds)}) AND (d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL) OR d.create_user_id=?)) OR (d.share_scope='CROSS_DEPT' AND (d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL))))`; binds.push(...ctx.deptIds, ctx.userId);
-    }
+    await runGovernanceMaintenance().catch(()=>undefined);
+    const access=documentListScope(ctx,"d");const where=access.sql,binds=access.binds;
     const result = await db.prepare(`SELECT d.*, u.display_name AS creator_name, dep.name AS department_name,
       COALESCE((SELECT GROUP_CONCAT(t.name) FROM document_tags dt JOIN tags t ON t.id=dt.tag_id WHERE dt.document_id=d.id),'') AS tags
       FROM documents d JOIN users u ON u.id=d.create_user_id JOIN departments dep ON dep.id=d.dept_id
@@ -24,8 +23,8 @@ export async function GET(request: Request) {
     const visibleDocuments=(result.results as Record<string,unknown>[]).map(row=>{const manager=canManageDepartment(ctx,Number(row.dept_id)),creator=Number(row.create_user_id)===ctx.userId,useSnapshot=!manager&&!creator&&row.status!=="ARCHIVED_ACTIVE"&&row.published_version;return useSnapshot?{...row,title:row.published_title,summary:row.published_summary||String(row.published_content||"").slice(0,180),content:row.published_content||"",extracted_text:row.published_content||"",version:row.published_version,status:"ARCHIVED_ACTIVE"}:row;});
     const logs = ctx.role === "SUPER_ADMIN" ? await db.prepare("SELECT * FROM audit_logs ORDER BY create_time DESC LIMIT 50").all() : await db.prepare(`SELECT * FROM audit_logs WHERE dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
     const governanceTasks = ctx.role === "EMPLOYEE" ? { results: [] } : ctx.role === "SUPER_ADMIN"
-      ? await db.prepare("SELECT t.*,d.title AS document_title,u.display_name AS reporter FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id WHERE t.status='OPEN' ORDER BY t.create_time DESC LIMIT 50").all()
-      : await db.prepare(`SELECT t.*,d.title AS document_title,u.display_name AS reporter FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id WHERE t.status='OPEN' AND t.dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY t.create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
+      ? await db.prepare("SELECT t.*,d.title AS document_title,u.display_name AS reporter,a.display_name AS assignee FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id LEFT JOIN users a ON a.id=t.assignee_user_id WHERE t.status IN ('OPEN','IN_PROGRESS') ORDER BY t.create_time DESC LIMIT 50").all()
+      : await db.prepare(`SELECT t.*,d.title AS document_title,u.display_name AS reporter,a.display_name AS assignee FROM knowledge_governance_tasks t LEFT JOIN documents d ON d.id=t.source_document_id JOIN users u ON u.id=t.reporter_user_id LEFT JOIN users a ON a.id=t.assignee_user_id WHERE t.status IN ('OPEN','IN_PROGRESS') AND t.dept_id IN (${placeholders(ctx.deptIds)}) ORDER BY t.create_time DESC LIMIT 50`).bind(...ctx.deptIds).all();
     const departmentWhere = ctx.role === "SUPER_ADMIN" ? "d.is_active=1" : `d.is_active=1 AND d.id IN (${placeholders(ctx.deptIds)})`;
     const departments = await db.prepare(`SELECT d.id,d.code,d.name,d.parent_id,
       COALESCE((SELECT u.display_name FROM users u WHERE u.id=d.manager_user_id),
@@ -53,7 +52,7 @@ export async function POST(request: Request) {
     const title = requiredText(value("title") as string | null, "标题"); const category = requiredText(value("category") as string | null, "分类", 50); const owner = requiredText(value("owner") as string | null, "负责人", 100);
     const deptId = Number(value("deptId") || ctx.primaryDeptId);
     if (!ctx.deptIds.includes(deptId) && ctx.role !== "SUPER_ADMIN") throw new ApiError(403, "DEPARTMENT_FORBIDDEN", "只能在所属部门创建文档");
-    const requestedStatus = String(value("status") ?? "DRAFT"); const status = requestedStatus === "review" || requestedStatus === "PENDING_DEPT_REVIEW" ? "PENDING_DEPT_REVIEW" : "DRAFT";
+    const requestedStatus = String(value("status") ?? "DRAFT"); const wantsReview = requestedStatus === "review" || requestedStatus === "PENDING_DEPT_REVIEW"; const status = "DRAFT";
     const shareScope = String(value("shareScope") ?? "DEPT") === "CROSS_DEPT" && canManageDepartment(ctx, deptId) ? "CROSS_DEPT" : "DEPT";
     const file = value("file"); let sourceName = safeText(value("sourceName"), 240) || null; let mimeType = safeText(value("mimeType"), 200) || null; let size = Number(value("size") || 0);
     sourceKey = safeText(value("sourceKey"), 600) || null;
@@ -77,8 +76,19 @@ export async function POST(request: Request) {
     const tagNames = safeText(value("tags"), 500).split(",").map(t => t.trim()).filter(Boolean).slice(0, 20);
     for (const name of tagNames) { await db.prepare("INSERT OR IGNORE INTO tags(name,dept_id) VALUES(?,?)").bind(name, deptId).run(); await db.prepare("INSERT OR IGNORE INTO document_tags(document_id,tag_id) SELECT ?,id FROM tags WHERE name=? AND dept_id=?").bind(id, name, deptId).run(); }
     if(sourceKey||extractedContent){const {processDocument}=await import("../../../lib/ingestion");await processDocument(id).catch(()=>undefined);}
-    const document = await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first();
-    return ok({ document }, rid, 201);
+    let readinessWarning="";let document = await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
+    if(wantsReview&&document){
+      try{
+        await assertPublishReady(document);
+        await db.batch([
+          db.prepare("UPDATE documents SET status='PENDING_DEPT_REVIEW',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(ctx.userId,id),
+          db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,action,comment) VALUES(?,?,'SUBMIT','上传后提交部门审核')").bind(id,ctx.userId),
+          db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'SUBMIT',?,?,?,?)").bind(id,deptId,ctx.userId,ctx.displayName,"发布门禁校验通过，进入部门审核",rid),
+        ]);
+        document=await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
+      }catch(error){readinessWarning=error instanceof Error?error.message:"资料尚未达到发布条件，已保存为草稿";}
+    }
+    return ok({ document, readinessWarning }, rid, 201);
   } catch (error) {
     if (sourceKey) await (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES?.delete(sourceKey).catch(() => undefined);
     return fail(error, rid);
@@ -93,8 +103,9 @@ export async function PATCH(request: Request) {
     if (!payload.id || !payload.action) throw new ApiError(400, "VALIDATION_ERROR", "文档与操作不能为空");
     const db = getD1(); const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(payload.id).first<Record<string, unknown>>();
     if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在"); const deptId = Number(doc.dept_id); const creatorId = Number(doc.create_user_id);
-    const manager = canManageDepartment(ctx, deptId); if (payload.action === "submit" ? !(manager || creatorId === ctx.userId) : !manager) throw new ApiError(403, "FORBIDDEN", "无权执行该状态操作");
+    const manager = canManageDepartment(ctx, deptId); const creatorInDepartment=creatorId===ctx.userId&&ctx.deptIds.includes(deptId);if (payload.action === "submit" ? !(manager || creatorInDepartment) : !manager) throw new ApiError(403, "FORBIDDEN", "无权执行该状态操作");
     const comment=safeText(payload.comment,1000);if(["reject","archive","void"].includes(payload.action)&&comment.length<2)throw new ApiError(400,"COMMENT_REQUIRED","驳回或作废必须填写原因");
+    if(["submit","approve"].includes(payload.action))await assertPublishReady(doc);
     const target = resolveDocumentTransition(String(doc.status) as WorkflowStatus,payload.action as WorkflowAction);
     await db.batch([
       db.prepare("UPDATE documents SET status=?,published_version=CASE WHEN ?='ARCHIVED_ACTIVE' THEN version ELSE published_version END,published_title=CASE WHEN ?='ARCHIVED_ACTIVE' THEN title ELSE published_title END,published_summary=CASE WHEN ?='ARCHIVED_ACTIVE' THEN summary ELSE published_summary END,published_content=CASE WHEN ?='ARCHIVED_ACTIVE' THEN content ELSE published_content END,verification_status=CASE WHEN ?='ARCHIVED_ACTIVE' THEN 'VERIFIED' ELSE verification_status END,verified_at=CASE WHEN ?='ARCHIVED_ACTIVE' THEN CURRENT_TIMESTAMP ELSE verified_at END,update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(target,target,target,target,target,target,target,ctx.userId,payload.id),

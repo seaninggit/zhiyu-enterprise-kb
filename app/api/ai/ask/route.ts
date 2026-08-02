@@ -3,8 +3,10 @@ import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
 import { enforceRateLimit, requireApiUser } from "../../../../lib/authz";
 import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } from "../../../../lib/rag";
 import { isValidEmbedding } from "../../../../lib/text-chunks";
+import { publishedDocumentScope } from "../../../../lib/document-access";
+import { correctEnterpriseQuery } from "../../../../lib/query-correction";
+import { deterministicGroundedSummary, validatedGroundedAnswer } from "../../../../lib/answer-quality";
 
-function placeholders(values: number[]) { return values.map(() => "?").join(","); }
 function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(compact)||compact.length<=6;}
 function platformIntent(question:string,displayName:string,role:string){
   const normalized=question.trim().replace(/[？?。！!，,\s]/g,"").toLowerCase();
@@ -64,12 +66,12 @@ export async function POST(request: Request) {
       const assistantMessageId=Number(messageResults[1].meta.last_row_id);
       return ok({answer:direct.answer,sources:[],mode:direct.mode,provider:"platform",model,queryLogId:log.meta.last_row_id,conversationId,messageId:assistantMessageId,trust:{permissionScope:ctx.role,citationCount:0,contextMessages:conversationId?8:0}},rid);
     }
+    const correction=await correctEnterpriseQuery(db,question);
     const historyRows=await db.prepare("SELECT role,content,source_payload FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY sequence_no DESC,id DESC LIMIT 8").bind(conversationId,ctx.userId).all<Record<string,unknown>>();
     const previousUserMessage=historyRows.results.find(item=>item.role==="user");
-    const contextualFollowUp=isContextualFollowUp(question)&&Boolean(previousUserMessage);const retrievalQuestion=contextualFollowUp?`${safeText(previousUserMessage?.content,500)}\n${question}`:question;
+    const contextualFollowUp=isContextualFollowUp(question)&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:question;const retrievalQuestion=contextualFollowUp?`${safeText(previousUserMessage?.content,500)}\n${correctedQuestion}\n原始输入：${question}`:`${correctedQuestion}\n原始输入：${question}`;
     const previousAssistant=historyRows.results.find(item=>item.role==="assistant");const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(previousAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
-    let scope = "(d.status='ARCHIVED_ACTIVE' OR (d.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND d.published_version IS NOT NULL)) AND d.is_deleted=0"; const binds: unknown[] = [];
-    if (ctx.role !== "SUPER_ADMIN") { scope += ` AND (d.dept_id IN (${placeholders(ctx.deptIds)}) OR d.share_scope='CROSS_DEPT' OR EXISTS(SELECT 1 FROM document_acl a WHERE a.document_id=d.id AND a.permission='VIEW' AND (a.expires_at IS NULL OR a.expires_at>CURRENT_TIMESTAMP) AND ((a.subject_type='USER' AND a.subject_id=?) OR (a.subject_type='DEPT' AND a.subject_id IN (${placeholders(ctx.deptIds)})))))`; binds.push(...ctx.deptIds,ctx.userId,...ctx.deptIds); }
+    const access=publishedDocumentScope(ctx,"d");const scope=access.sql;const binds:unknown[]=[...access.binds];
     const settings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>();const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(10,Number(config["rag.top_k"]||5)));
     const loadChunks = () => db.prepare(`SELECT c.id,c.content,c.embedding,c.chunk_index,d.id AS document_id,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.title ELSE COALESCE(d.published_title,d.title) END title,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.version ELSE COALESCE(d.published_version,d.version) END version,d.update_time,dep.name AS department_name
       FROM document_chunks c JOIN documents d ON d.id=c.document_id JOIN departments dep ON dep.id=d.dept_id
@@ -92,17 +94,17 @@ export async function POST(request: Request) {
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
       generated = await generateGroundedAnswer(recent ? `${recent}\n当前问题：${question}` : question, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
-      answer = generated?.text || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : `${sources.map(source => `[${source.citation}] ${source.excerpt}`).join("\n\n")}\n\n以上为知识库检索结果，请以引用的最新生效版本为准。`);
-      const usedComparableVector=relevant.some(item=>item.hasComparableVector);mode = generated ? (usedComparableVector ? "rag_local_vector" : "rag_keyword_fallback") : (usedComparableVector ? "retrieval_local_vector" : "retrieval_keyword_fallback");
+      const grounded=validatedGroundedAnswer(generated?.text,sources);answer = grounded || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : deterministicGroundedSummary(sources));
+      const usedComparableVector=relevant.some(item=>item.hasComparableVector);mode = grounded ? (usedComparableVector ? "rag_local_vector" : "rag_keyword_fallback") : (usedComparableVector ? "retrieval_local_vector" : "retrieval_keyword_fallback");
     }
     const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();
     const messageResults = await db.batch([
       db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,source_payload,sequence_no) SELECT ?,?,'user',?,'[]',COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, question,conversationId),
-      db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,mode,source_payload,query_log_id,sequence_no) SELECT ?,?,'assistant',?,?,?,?,COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, answer, mode, JSON.stringify(sources), log.meta.last_row_id,conversationId),
+      db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,mode,source_payload,correction_payload,query_log_id,sequence_no) SELECT ?,?,'assistant',?,?,?,?,?,COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, answer, mode, JSON.stringify(sources),JSON.stringify(correction), log.meta.last_row_id,conversationId),
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
     const assistantMessageId=Number(messageResults[1].meta.last_row_id);
-    return ok({ answer, sources, mode, provider:generated?.provider||"local",model, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
+    return ok({ answer, sources, mode, provider:generated?.provider||"local",model,correction, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

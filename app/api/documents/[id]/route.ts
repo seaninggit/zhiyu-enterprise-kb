@@ -2,15 +2,12 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "../../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
 import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../../lib/authz";
+import { canEditDocument, canReadDocument } from "../../../../lib/document-access";
 
 async function authorizedDocument(id: number, ctx: Awaited<ReturnType<typeof requireApiUser>>) {
   const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
   if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在");
-  const deptId = Number(doc.dept_id); const ownDept = ctx.deptIds.includes(deptId); const creator = Number(doc.create_user_id) === ctx.userId;
-  const hasPublished=Number(doc.published_version||0)>0&&["DRAFT","PENDING_DEPT_REVIEW"].includes(String(doc.status));
-  const acl=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='VIEW' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
-  const readable = ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ownDept) || (ownDept && (doc.status === "ARCHIVED_ACTIVE" || hasPublished || creator)) || (doc.share_scope === "CROSS_DEPT" && (doc.status === "ARCHIVED_ACTIVE" || hasPublished)) || Boolean(acl);
-  if (!readable) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权访问该文档"); return doc;
+  if (!await canReadDocument(doc,ctx)) throw new ApiError(403, "ROW_ACCESS_DENIED", "无权访问该文档"); return doc;
 }
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
@@ -25,9 +22,16 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     }
     const versions = await db.prepare("SELECT * FROM document_versions WHERE document_id=? ORDER BY version DESC").bind(id).all();
     const manager=canManageDepartment(ctx,Number(doc.dept_id)); const creator=Number(doc.create_user_id)===ctx.userId; const baseDoc={...doc,content:doc.content||doc.extracted_text||""};const visibleDoc=!manager&&!creator&&doc.status!=="ARCHIVED_ACTIVE"&&doc.published_version?{...baseDoc,title:doc.published_title,summary:doc.published_summary||String(doc.published_content||"").slice(0,180),content:doc.published_content||"",extracted_text:doc.published_content||"",version:doc.published_version,status:"ARCHIVED_ACTIVE"}:baseDoc;
-    const approvals=await db.prepare("SELECT a.*,u.display_name approver FROM approval_records a LEFT JOIN users u ON u.id=a.approver_user_id WHERE a.document_id=? ORDER BY a.create_time DESC").bind(id).all(); const acl=manager?await db.prepare("SELECT * FROM document_acl WHERE document_id=? ORDER BY create_time DESC").bind(id).all():{results:[]};
-    const aclEdit=await db.prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='EDIT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();const subscription=await db.prepare("SELECT is_active FROM knowledge_subscriptions WHERE document_id=? AND user_id=?").bind(id,ctx.userId).first<{is_active:number}>();
-    return ok({ document: visibleDoc, versions: versions.results, approvals:approvals.results, acl:acl.results,capabilities:{canEdit:manager||creator||Boolean(aclEdit),canManage:manager},subscribed:Boolean(subscription?.is_active) }, rid);
+    const approvals=await db.prepare("SELECT a.*,u.display_name approver FROM approval_records a LEFT JOIN users u ON u.id=a.approver_user_id WHERE a.document_id=? ORDER BY a.create_time DESC").bind(id).all();
+    const acl=manager?await db.prepare(`SELECT a.*,CASE a.subject_type WHEN 'USER' THEN (SELECT display_name FROM users WHERE id=a.subject_id) WHEN 'DEPT' THEN (SELECT name FROM departments WHERE id=a.subject_id) WHEN 'GROUP' THEN (SELECT name FROM enterprise_groups WHERE id=a.subject_id) END subject_name FROM document_acl a WHERE a.document_id=? ORDER BY a.create_time DESC`).bind(id).all():{results:[]};
+    const permissionPrincipals=manager?{
+      departments:(await db.prepare(ctx.role==="SUPER_ADMIN"?"SELECT id,name FROM departments WHERE is_active=1 ORDER BY name":`SELECT id,name FROM departments WHERE is_active=1 AND id IN (${ctx.deptIds.map(()=>"?").join(",")}) ORDER BY name`).bind(...(ctx.role==="SUPER_ADMIN"?[]:ctx.deptIds)).all()).results,
+      users:(await db.prepare(ctx.role==="SUPER_ADMIN"?"SELECT id,display_name name FROM users WHERE status='ACTIVE' ORDER BY display_name":`SELECT DISTINCT u.id,u.display_name name FROM users u JOIN user_departments ud ON ud.user_id=u.id WHERE u.status='ACTIVE' AND ud.dept_id IN (${ctx.deptIds.map(()=>"?").join(",")}) ORDER BY u.display_name`).bind(...(ctx.role==="SUPER_ADMIN"?[]:ctx.deptIds)).all()).results,
+      groups:(await db.prepare(ctx.role==="SUPER_ADMIN"?"SELECT id,name FROM enterprise_groups WHERE is_active=1 ORDER BY name":`SELECT id,name FROM enterprise_groups WHERE is_active=1 AND (dept_id IS NULL OR dept_id IN (${ctx.deptIds.map(()=>"?").join(",")})) ORDER BY name`).bind(...(ctx.role==="SUPER_ADMIN"?[]:ctx.deptIds)).all()).results,
+    }:null;
+    const spacePermissions=manager&&doc.space_id?(await db.prepare(`SELECT p.*,CASE p.subject_type WHEN 'USER' THEN (SELECT display_name FROM users WHERE id=p.subject_id) WHEN 'DEPT' THEN (SELECT name FROM departments WHERE id=p.subject_id) WHEN 'GROUP' THEN (SELECT name FROM enterprise_groups WHERE id=p.subject_id) END subject_name FROM space_permissions p WHERE p.space_id=? ORDER BY p.create_time DESC`).bind(doc.space_id).all()).results:[];
+    const editable=await canEditDocument(doc,ctx);const subscription=await db.prepare("SELECT is_active FROM knowledge_subscriptions WHERE document_id=? AND user_id=?").bind(id,ctx.userId).first<{is_active:number}>();
+    return ok({ document: visibleDoc, versions: versions.results, approvals:approvals.results, acl:acl.results,permissionPrincipals,spacePermissions,capabilities:{canEdit:editable,canManage:manager},subscribed:Boolean(subscription?.is_active) }, rid);
   } catch (error) { return fail(error, rid); }
 }
 
@@ -35,8 +39,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const deptId = Number(doc.dept_id);
-    const aclEdit=await getD1().prepare(`SELECT 1 FROM document_acl WHERE document_id=? AND permission='EDIT' AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) AND ((subject_type='USER' AND subject_id=?) OR (subject_type='DEPT' AND subject_id IN (${ctx.deptIds.map(()=>"?").join(",")}))) LIMIT 1`).bind(id,ctx.userId,...ctx.deptIds).first();
-    if (!(canManageDepartment(ctx, deptId) || Number(doc.create_user_id) === ctx.userId || aclEdit)) throw new ApiError(403, "EDIT_FORBIDDEN", "无权编辑该资料");
+    if (!await canEditDocument(doc,ctx)) throw new ApiError(403, "EDIT_FORBIDDEN", "无权编辑该资料");
     const payload = await request.json() as { title?: string; content?: string; summary?: string }; const title = safeText(payload.title || doc.title, 200); const content = safeText(payload.content || doc.content, 500000); const nextVersion = Number(doc.version) + 1; const db = getD1();
     await db.batch([
       db.prepare("UPDATE documents SET title=?,summary=?,content=?,extracted_text=?,extraction_method='MANUAL_EDIT',extraction_detail='在线编辑正文',version=?,status='DRAFT',parse_status='COMPLETED',ai_index_status='PENDING',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(title, safeText(payload.summary || doc.summary, 1000), content,content, nextVersion, ctx.userId, id),
@@ -50,7 +53,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const rid = requestId(request);
-  try { const ctx = await requireApiUser(); await enforceRateLimit(ctx, "feedback", 20, 60); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const payload = await request.json() as { type?: string; content?: string }; const content = safeText(payload.content, 2000); if (!content) throw new ApiError(400, "VALIDATION_ERROR", "反馈内容不能为空"); const db = getD1(); const receiver=Number(doc.owner_user_id||doc.create_user_id); await db.batch([db.prepare("INSERT INTO feedback(document_id,type,content,reporter_user_id,reporter) VALUES(?,?,?,?,?)").bind(id, safeText(payload.type || "纠错", 30), content, ctx.userId, ctx.displayName), db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "FEEDBACK", ctx.userId, ctx.displayName, content, rid),db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'KNOWLEDGE_FEEDBACK','收到知识纠错反馈',?,?,?)").bind(receiver,`${ctx.displayName}：${content}`,id)]); return ok({ submitted: true }, rid, 201); } catch (error) { return fail(error, rid); }
+  try { const ctx = await requireApiUser(); await enforceRateLimit(ctx, "feedback", 20, 60); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const payload = await request.json() as { type?: string; content?: string }; const type=safeText(payload.type || "纠错", 30);const content = safeText(payload.content, 2000); if (!content) throw new ApiError(400, "VALIDATION_ERROR", "反馈内容不能为空"); const db = getD1(); const receiver=Number(doc.owner_user_id||doc.create_user_id); await db.batch([db.prepare("INSERT INTO feedback(document_id,type,content,reporter_user_id,reporter) VALUES(?,?,?,?,?)").bind(id, type, content, ctx.userId, ctx.displayName),db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('DOCUMENT_FEEDBACK','OPEN',?,?,?,?,?,?)").bind(doc.dept_id,id,ctx.userId,receiver,type,content), db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "FEEDBACK", ctx.userId, ctx.displayName, content, rid),db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'KNOWLEDGE_FEEDBACK','收到知识纠错反馈',?,?)").bind(receiver,`${ctx.displayName}：${content}`,id)]); return ok({ submitted: true,governanceTaskCreated:true }, rid, 201); } catch (error) { return fail(error, rid); }
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {

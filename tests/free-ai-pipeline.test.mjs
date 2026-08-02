@@ -49,6 +49,18 @@ test("AI conversation preserves ordered context and returns from cited documents
   assert.match(page,/message\.sources\.length>0&&<button onClick=\{\(\) => ask/);
 });
 
+test("AI conversation follows new messages without stealing manual history scroll", async()=>{
+  const [page,css]=await Promise.all([read("app/page.tsx"),read("app/globals.css")]);
+  assert.match(page,/conversationScrollRef/);
+  assert.match(page,/keepAtBottomRef/);
+  assert.match(page,/node\.scrollTo\(\{top:node\.scrollHeight/);
+  assert.match(page,/node\.scrollHeight-node\.scrollTop-node\.clientHeight<96/);
+  assert.match(page,/keepAtBottomRef\.current=true;const userText/);
+  assert.match(page,/chat-scroll-anchor/);
+  assert.match(css,/scroll-padding-block-end:44px/);
+  assert.match(css,/\.ai-compose \{ position:relative; z-index:2;/);
+});
+
 test("content changes invalidate stale vectors before rebuilding", async () => {
   const [detail, platform, rag] = await Promise.all([
     read("app/api/documents/[id]/route.ts"), read("app/api/platform/route.ts"), read("lib/rag.ts"),

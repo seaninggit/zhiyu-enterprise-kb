@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       d.mime_type,d.update_time,d.verification_status,s.name space_name,dep.name department_name,c.content,c.embedding
       FROM documents d JOIN departments dep ON dep.id=d.dept_id LEFT JOIN knowledge_spaces s ON s.id=d.space_id
       LEFT JOIN document_chunks c ON c.document_id=d.id AND c.is_active=1 WHERE ${scope} ORDER BY d.update_time DESC LIMIT 1500`).bind(...binds).all<Record<string, unknown>>();
-    const localVector = isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const vector = localVector || (await embedTexts([correction.corrected]).catch(() => []))[0]; const queryTerms = Array.from(new Set([...terms(correction.corrected),...terms(query)])); const byDocument = new Map<number, Record<string, unknown> & { score: number; excerpt: string; relevance: number }>();
+    const localVector = !correction.applied&&isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const vector = localVector || (await embedTexts([correction.corrected]).catch(() => []))[0]; const queryTerms = Array.from(new Set([...terms(correction.corrected),...terms(query)])); const byDocument = new Map<number, Record<string, unknown> & { score: number; excerpt: string; relevance: number }>();
     for (const row of rows.results) {
       const corpus = `${row.title} ${row.summary} ${row.content ?? ""}`.toLowerCase();
       const keyword = queryTerms.reduce((sum, term) => sum + (corpus.includes(term) ? 1 : 0), 0) / Math.max(1, queryTerms.length);

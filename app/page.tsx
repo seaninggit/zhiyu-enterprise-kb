@@ -245,6 +245,20 @@ function parseStatusLabel(status = "PENDING") {
             ? "解析失败"
             : "等待解析";
 }
+function AiAnswerContent({ content }: { content: string }) {
+  const normalized = content
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .trim();
+  return (
+    <div className="answer-content">
+      {normalized.split(/\n{2,}/).map((block, index) => (
+        <p key={`${index}-${block.slice(0, 18)}`}>{block}</p>
+      ))}
+    </div>
+  );
+}
 function downloadBlob(name: string, body: string, type: string) {
   const url = URL.createObjectURL(new Blob([body], { type }));
   const link = document.createElement("a");
@@ -1374,8 +1388,8 @@ function LibraryView({
               <div className="search-correction" role="status">
                 <span>✓</span>
                 <div>
-                  <b>已按“{correction.corrected}”检索</b>
-                  <small>{correction.reason}</small>
+                  <b>猜你想查“{correction.corrected}”</b>
+                  <small>已同时保留原词进行检索 · {correction.reason}</small>
                 </div>
                 <button onClick={() => onSearch(true)}>
                   仍搜索“{correction.original}”
@@ -3524,26 +3538,26 @@ function AiPanel({
                             ? "平台助手 · 无需知识检索"
                             : message.mode?.startsWith("rag")
                               ? message.mode.includes("local_vector")
-                                ? "本地语义检索 · DeepSeek RAG"
+                                ? "已检索企业知识 · 语义匹配"
                                 : message.mode.includes("keyword_fallback")
-                                  ? "关键词回退 · DeepSeek RAG"
-                                  : "RAG 生成回答"
+                                  ? "已检索企业知识 · 关键词匹配"
+                                  : "已检索企业知识 · AI 整理"
                               : message.mode?.includes("retrieval")
                                 ? message.mode.includes("keyword_fallback")
-                                  ? "关键词安全检索"
-                                  : "本地语义安全检索"
-                                : "未找到可靠依据"}
+                                  ? "已核验企业知识 · 引用摘要"
+                                  : "已核验企业知识 · 语义摘要"
+                                : "暂未找到可靠依据"}
                         </small>
                       </div>
                       {message.correction?.applied &&
                         message.correction.corrected !==
                           message.correction.original && (
                           <div className="answer-correction">
-                            <b>已按“{message.correction.corrected}”理解</b>
-                            <small>{message.correction.reason}</small>
+                            <b>猜你想问“{message.correction.corrected}”</b>
+                            <small>我已按这个意思查找，并保留了原始输入</small>
                           </div>
                         )}
-                      <p>{message.content}</p>
+                      <AiAnswerContent content={message.content} />
                       {message.sources.length > 0 && (
                         <div className="source-label">
                           引用来源 · {message.sources.length}

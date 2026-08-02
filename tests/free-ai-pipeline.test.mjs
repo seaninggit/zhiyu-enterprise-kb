@@ -36,7 +36,7 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(migration, /extraction_method/);
   assert.match(migration, /ocr_status/);
   assert.match(page, /重建本地语义索引/);
-  assert.match(page, /本地语义检索 · DeepSeek RAG/);
+  assert.match(page, /已检索企业知识 · 语义匹配/);
   assert.match(page, /平台助手 · 无需知识检索/);
   assert.match(page, /returnToAi=\{documentReturnTarget === "ai"\}/);
   assert.match(page, /← 返回问答/);

@@ -5,19 +5,23 @@ import test from "node:test";
 const read = path => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("homophone correction is persisted, dual-retrieved and visible to users", async () => {
-  const [migration, correction, search, ask, page] = await Promise.all([
-    read("drizzle/0012_knowledge_quality_closure.sql"), read("lib/query-correction.ts"),
-    read("app/api/search/route.ts"), read("app/api/ai/ask/route.ts"), read("app/page.tsx"),
+  const [migration, naturalMigration, correction, search, ask, page] = await Promise.all([
+    read("drizzle/0012_knowledge_quality_closure.sql"), read("drizzle/0013_natural_ai_responses.sql"),
+    read("lib/query-correction.ts"), read("app/api/search/route.ts"), read("app/api/ai/ask/route.ts"), read("app/page.tsx"),
   ]);
   assert.match(migration, /'虚球','需求'/);
+  assert.match(naturalMigration, /'铲品','产品'/);
+  assert.match(naturalMigration, /已有相关来源时，不得声称/);
   assert.match(migration, /search_corrections/);
   assert.match(correction, /pinyin-pro/);
   assert.match(correction, /replaceAll/);
   assert.match(search, /terms\(correction\.corrected\)/);
   assert.match(search, /terms\(query\)/);
   assert.match(ask, /correction_payload/);
-  assert.match(page, /已按“\{correction\.corrected\}”检索/);
+  assert.match(page, /猜你想查“\{correction\.corrected\}”/);
   assert.match(page, /仍搜索“\{correction\.original\}”/);
+  assert.match(ask, /系统识别意图：\$\{correctedQuestion\}/);
+  assert.match(ask, /embedTexts\(\[correctedQuestion\]\)/);
 });
 
 test("publication readiness blocks unparsed, unscanned or unindexed knowledge", async () => {

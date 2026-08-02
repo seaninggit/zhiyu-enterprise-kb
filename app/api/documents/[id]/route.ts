@@ -47,6 +47,11 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
       db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,?,?,?,?,?,?)").bind(id, nextVersion, title, content, "内容更新，重新进入草稿", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, deptId, "UPDATE", ctx.userId, ctx.displayName, `更新至 V${nextVersion}`, rid),
     ]);
+    const { processDocument } = await import("../../../../lib/ingestion");
+    await processDocument(id).catch(async (error) => {
+      await db.prepare("UPDATE documents SET ai_index_status='FAILED' WHERE id=?").bind(id).run();
+      console.error(JSON.stringify({ level: "error", requestId: rid, action: "AI_REINDEX_AFTER_EDIT", documentId: id, message: error instanceof Error ? error.message : "索引失败" }));
+    });
     return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first() }, rid);
   } catch (error) { return fail(error, rid); }
 }

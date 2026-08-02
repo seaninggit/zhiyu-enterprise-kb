@@ -27,6 +27,9 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(ask, /assistant_identity/);
   assert.match(ask, /assistant_capabilities/);
   assert.match(ask, /assistant_account/);
+  assert.match(ask, /assistant_farewell/);
+  assert.match(ask, /退下\|下去\|休息/);
+  assert.match(ask, /source_document_ids,request_id[\s\S]*VALUES\(\?,\?,\?,\?,\?,'\[\]'/);
   assert.match(migration, /extraction_method/);
   assert.match(migration, /ocr_status/);
   assert.match(page, /重建本地语义索引/);

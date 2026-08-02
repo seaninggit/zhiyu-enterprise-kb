@@ -13,6 +13,7 @@ function platformIntent(question:string,displayName:string,role:string){
   if(/^(我是谁|我的账号是什么|我的身份是什么)$/.test(normalized)){const roleName=role==="SUPER_ADMIN"?"超级管理员":role==="DEPT_ADMIN"?"部门管理员":"普通员工";return{mode:"assistant_account",answer:`你当前登录为 ${displayName}，系统角色是${roleName}。知识检索、文档查看和维护操作都会按照你的部门与角色权限执行。`};}
   if(/^(你好|您好|嗨|哈喽|hello|hi|在吗|早上好|下午好|晚上好)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
   if(/^(谢谢|感谢|明白了|知道了|好的|好)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。如果还需要核对制度原文、继续追问或生成办理清单，直接告诉我即可。"};
+  if(/^(再见|拜拜|回见|下次见|结束|结束对话|结束会话|关闭对话|关闭会话|先这样|先这样吧|就这样|就这样吧|没事了|不用了|不聊了)$/.test(normalized)||/^(那)?(你)?(可以|先|就|请)?(退下|下去|休息)(了|吧|去吧)?$/.test(normalized))return{mode:"assistant_farewell",answer:"好的，我先结束本轮问答。之后需要查询企业制度、业务流程或办事材料时，随时叫我。"};
   return null;
 }
 const QUESTION_TERMS = new Set(["哪些", "什么", "怎么", "如何", "需要", "是否", "可以", "相关", "信息", "内容", "要求", "流程"]);

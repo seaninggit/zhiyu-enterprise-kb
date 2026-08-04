@@ -37,3 +37,25 @@ test("external access creates isolated employee sessions with normal business ca
   assert.match(edgeGateway, /x-zhiyu-public-gateway/);
   assert.match(edgeGateway, /oai-authenticated-user-email/);
 });
+
+test("public demo mode provisions role accounts and lets visitors switch identity", async () => {
+  const [identity, auth, page] = await Promise.all([
+    read("app/chatgpt-auth.ts"),
+    read("lib/authz.ts"),
+    read("app/page.tsx"),
+  ]);
+
+  assert.match(identity, /zhiyu_demo_role/);
+  assert.match(identity, /demo\.super@public\.zhiyu\.invalid/);
+  assert.match(identity, /demo\.dept@public\.zhiyu\.invalid/);
+  assert.match(identity, /demo\.employee@public\.zhiyu\.invalid/);
+  assert.match(identity, /PUBLIC_DEMO_MODE/);
+  assert.match(identity, /x-zhiyu-demo-role/);
+  assert.match(auth, /demoRoleFromEmail/);
+  assert.match(auth, /isDeptAdmin/);
+  assert.match(auth, /demoMode:/);
+  assert.match(page, /选择演示身份登录/);
+  assert.match(page, /zhiyu_demo_role=/);
+  assert.match(page, /x-zhiyu-demo-role/);
+  assert.match(page, /切换演示身份/);
+});

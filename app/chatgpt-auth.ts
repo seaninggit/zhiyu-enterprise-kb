@@ -17,14 +17,65 @@ const SIGN_IN_PATH = "/signin-with-chatgpt";
 const SIGN_OUT_PATH = "/signout-with-chatgpt";
 const CALLBACK_PATH = "/callback";
 const PUBLIC_SESSION_COOKIE = "zhiyu_public_session";
+export const DEMO_ROLE_COOKIE = "zhiyu_demo_role";
+const DEMO_ROLE_HEADER = "x-zhiyu-demo-role";
 const PUBLIC_ACCESS_DOMAIN = "public.zhiyu.invalid";
+const DEMO_ROLES = ["SUPER_ADMIN", "DEPT_ADMIN", "EMPLOYEE"] as const;
+export type DemoRole = (typeof DEMO_ROLES)[number];
+
+const DEMO_ROLE_PROFILE: Record<
+  DemoRole,
+  { email: string; displayName: string }
+> = {
+  SUPER_ADMIN: {
+    email: "demo.super@public.zhiyu.invalid",
+    displayName: "演示超级管理员",
+  },
+  DEPT_ADMIN: {
+    email: "demo.dept@public.zhiyu.invalid",
+    displayName: "演示部门管理员",
+  },
+  EMPLOYEE: {
+    email: "demo.employee@public.zhiyu.invalid",
+    displayName: "演示普通员工",
+  },
+};
 
 function publicViewerEnabled() {
   return (env as unknown as { PUBLIC_VIEWER_MODE?: string }).PUBLIC_VIEWER_MODE !== "false";
 }
 
+export function demoModeEnabled() {
+  return (env as unknown as { PUBLIC_DEMO_MODE?: string }).PUBLIC_DEMO_MODE !== "false";
+}
+
 export function isPublicViewerEmail(email: string) {
   return email.toLowerCase().endsWith(`@${PUBLIC_ACCESS_DOMAIN}`);
+}
+
+export function demoRoleFromEmail(email: string): DemoRole | null {
+  const lower = email.toLowerCase();
+  for (const role of DEMO_ROLES) {
+    if (lower === DEMO_ROLE_PROFILE[role].email) return role;
+  }
+  return null;
+}
+
+export function demoEmailForRole(role: DemoRole): string {
+  return DEMO_ROLE_PROFILE[role].email;
+}
+
+function demoIdentityFromRole(rawRole: string | null): ChatGPTUser | null {
+  if (!demoModeEnabled() || !rawRole) return null;
+  const raw = rawRole.toUpperCase();
+  const role = raw && (DEMO_ROLES as readonly string[]).includes(raw) ? (raw as DemoRole) : null;
+  if (!role) return null;
+  const profile = DEMO_ROLE_PROFILE[role];
+  return {
+    displayName: profile.displayName,
+    email: profile.email,
+    fullName: null,
+  };
 }
 
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
@@ -33,6 +84,13 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   if (!email) {
     if (!publicViewerEnabled()) return null;
     const cookie = requestHeaders.get("cookie") ?? "";
+    const roleFromCookie = cookie.match(
+      new RegExp(`(?:^|;\\s*)${DEMO_ROLE_COOKIE}=([A-Z_]+)`, "i"),
+    )?.[1] ?? null;
+    const demo = demoIdentityFromRole(
+      requestHeaders.get(DEMO_ROLE_HEADER) ?? roleFromCookie,
+    );
+    if (demo) return demo;
     const session = cookie.match(new RegExp(`(?:^|;\\s*)${PUBLIC_SESSION_COOKIE}=([a-f0-9]{32})`, "i"))?.[1]?.toLowerCase();
     const suffix = session ?? "shared";
     return {

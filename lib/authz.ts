@@ -1,17 +1,51 @@
 import { and, eq } from "drizzle-orm";
-import { getChatGPTUser, isPublicViewerEmail } from "../app/chatgpt-auth";
+import {
+  demoModeEnabled,
+  demoRoleFromEmail,
+  getChatGPTUser,
+  isPublicViewerEmail,
+  type DemoRole,
+} from "../app/chatgpt-auth";
 import { getDb, getD1 } from "../db";
 import { roles, userDepartments, userRoles, users } from "../db/schema";
 import { ApiError } from "./api";
 
 export type RoleCode = "SUPER_ADMIN" | "DEPT_ADMIN" | "EMPLOYEE";
-export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number; isPublicViewer: boolean };
+export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number; isPublicViewer: boolean; demoMode: boolean };
+
+const DEMO_DEPARTMENT: Record<
+  DemoRole,
+  { deptId: number; code: string; name: string; isDeptAdmin: 0 | 1 }
+> = {
+  SUPER_ADMIN: { deptId: 1, code: "GENERAL", name: "综合管理部", isDeptAdmin: 0 },
+  DEPT_ADMIN: { deptId: 2, code: "PRODUCT", name: "产品研发部", isDeptAdmin: 1 },
+  EMPLOYEE: { deptId: 3, code: "HR", name: "组织人事部", isDeptAdmin: 0 },
+};
+
+function demoRoleCode(role: DemoRole): RoleCode {
+  return role === "SUPER_ADMIN" ? "SUPER_ADMIN" : role === "DEPT_ADMIN" ? "DEPT_ADMIN" : "EMPLOYEE";
+}
 
 async function ensureIdentityRecord(email: string, displayName: string) {
   const db = getDb();
   const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
   if (found.length) return;
   const d1 = getD1();
+  const demoRole = demoRoleFromEmail(email);
+  if (demoRole) {
+    const dept = DEMO_DEPARTMENT[demoRole];
+    const roleCode = demoRoleCode(demoRole);
+    await d1.batch([
+      d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(1, 'SUPER_ADMIN', '超级管理员', '全局知识治理')"),
+      d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(2, 'DEPT_ADMIN', '部门管理员', '本部门知识治理')"),
+      d1.prepare("INSERT OR IGNORE INTO roles(id, code, name, description) VALUES(3, 'EMPLOYEE', '普通员工', '知识生产与使用')"),
+      d1.prepare("INSERT OR IGNORE INTO departments(id, code, name, is_active) VALUES(?, ?, ?, 1)").bind(dept.deptId, dept.code, dept.name),
+      d1.prepare("INSERT OR IGNORE INTO users(email, display_name, status, identity_provider) VALUES(?, ?, 'ACTIVE', 'PUBLIC_ACCESS')").bind(email, displayName),
+      d1.prepare("INSERT OR IGNORE INTO user_roles(user_id, role_id) SELECT u.id, r.id FROM users u CROSS JOIN roles r WHERE u.email=? AND r.code=?").bind(email, roleCode),
+      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id, dept_id, is_primary, is_dept_admin) SELECT u.id, ?, 1, ? FROM users u WHERE u.email=?").bind(dept.deptId, dept.isDeptAdmin, email),
+    ]);
+    return;
+  }
   if (isPublicViewerEmail(email)) {
     await d1.batch([
       d1.prepare("INSERT OR IGNORE INTO users(email,display_name,status,identity_provider) VALUES(?,?,'ACTIVE','PUBLIC_ACCESS')").bind(email, displayName),
@@ -48,7 +82,7 @@ export async function requireApiUser(): Promise<AuthContext> {
   const role = (roleRows.some(r => r.code === "SUPER_ADMIN") ? "SUPER_ADMIN" : roleRows.some(r => r.code === "DEPT_ADMIN") || deptRows.some(d => d.isDeptAdmin) ? "DEPT_ADMIN" : "EMPLOYEE") as RoleCode;
   const primary = deptRows.find(d => d.isPrimary)?.deptId ?? deptRows[0]?.deptId;
   if (!primary) throw new ApiError(403, "NO_DEPARTMENT", "账号未分配部门");
-  return { userId: user.id, email: user.email, displayName: user.displayName, role, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email) };
+  return { userId: user.id, email: user.email, displayName: user.displayName, role, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email), demoMode: demoModeEnabled() };
 }
 
 export function canManageDepartment(ctx: AuthContext, deptId: number) { return ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ctx.deptIds.includes(deptId)); }

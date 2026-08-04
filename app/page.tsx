@@ -8,6 +8,19 @@ import {
   type ExtractionProgress,
 } from "../lib/client-knowledge";
 
+if (typeof window !== "undefined") {
+  const originalFetch = window.fetch.bind(window);
+  window.fetch = (input, init) => {
+    const role = window.localStorage.getItem("zhiyu_demo_role");
+    if (role) {
+      const headers = new Headers(init?.headers);
+      headers.set("x-zhiyu-demo-role", role);
+      init = { ...init, headers };
+    }
+    return originalFetch(input, init);
+  };
+}
+
 type View =
   | "library"
   | "admin"
@@ -114,6 +127,7 @@ type CurrentUser = {
   role: string;
   primaryDeptId: number;
   isPublicViewer?: boolean;
+  demoMode?: boolean;
 };
 type EnterpriseAccount = {
   id: number;
@@ -269,6 +283,45 @@ function downloadBlob(name: string, body: string, type: string) {
   URL.revokeObjectURL(url);
 }
 
+const DEMO_ROLE_OPTIONS = [
+  {
+    code: "EMPLOYEE",
+    name: "普通员工",
+    description: "查看本部门知识、上传资料、收藏与 AI 问答",
+  },
+  {
+    code: "DEPT_ADMIN",
+    name: "部门管理员",
+    description: "本部门审批发布、权限配置、治理与审计",
+  },
+  {
+    code: "SUPER_ADMIN",
+    name: "超级管理员",
+    description: "全平台治理、成员权限、审计与系统配置",
+  },
+] as const;
+
+function hasDemoRole() {
+  if (typeof window === "undefined") return false;
+  return (
+    window.localStorage.getItem("zhiyu_demo_role") !== null ||
+    document.cookie.includes("zhiyu_demo_role=")
+  );
+}
+
+function selectDemoRole(role: string) {
+  window.localStorage.setItem("zhiyu_demo_role", role);
+  document.cookie = `zhiyu_demo_role=${role}; path=/; max-age=2592000; samesite=lax`;
+  window.location.reload();
+}
+
+function exitDemoRole() {
+  window.localStorage.removeItem("zhiyu_demo_role");
+  document.cookie =
+    "zhiyu_demo_role=; path=/; max-age=0; samesite=lax";
+  window.location.reload();
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("library");
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -309,6 +362,7 @@ export default function Home() {
   });
   const [authError, setAuthError] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [demoLoginOpen, setDemoLoginOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [aiGuideVisible, setAiGuideVisible] = useState(true);
   const [aiUnread, setAiUnread] = useState(false);
@@ -337,6 +391,7 @@ export default function Home() {
     aiOpen ||
     uploadOpen ||
     feedbackOpen ||
+    demoLoginOpen ||
     selected !== null ||
     workflowDialog !== null ||
     governanceDialog !== null;
@@ -384,7 +439,15 @@ export default function Home() {
           setGovernanceTasks(
             data.data.governanceTasks.map(normalizeGovernanceTask),
           );
-        if (data.data?.currentUser) setCurrentUser(data.data.currentUser);
+        if (data.data?.currentUser) {
+          setCurrentUser(data.data.currentUser);
+          if (
+            data.data.currentUser.demoMode &&
+            !hasDemoRole()
+          ) {
+            setDemoLoginOpen(true);
+          }
+        }
         if (data.data?.uploadOptions?.departments?.length)
           setUploadOptions(data.data.uploadOptions);
         setFavorites(data.data?.favorites ?? []);
@@ -876,10 +939,16 @@ export default function Home() {
             <b>{currentUser.displayName}</b>
             <small>
               {currentUser.isPublicViewer
-                ? "外部普通员工"
+                ? currentUser.demoMode
+                  ? currentUser.role === "SUPER_ADMIN"
+                    ? "演示超级管理员"
+                    : currentUser.role === "DEPT_ADMIN"
+                      ? "演示部门管理员"
+                      : "演示普通员工"
+                  : "外部普通员工"
                 : currentUser.role === "SUPER_ADMIN"
-                ? "超级管理员"
-                : currentUser.role === "DEPT_ADMIN"
+                  ? "超级管理员"
+                  : currentUser.role === "DEPT_ADMIN"
                   ? "部门管理员"
                   : "普通员工"}
             </small>
@@ -899,6 +968,19 @@ export default function Home() {
               >
                 成员与权限
               </button>
+            )}
+            {currentUser.demoMode && (
+              <>
+                <button
+                  onClick={() => {
+                    setDemoLoginOpen(true);
+                    setAccountMenuOpen(false);
+                  }}
+                >
+                  切换演示身份
+                </button>
+                <button onClick={exitDemoRole}>退出演示</button>
+              </>
             )}
             {!currentUser.isPublicViewer && <a href="/signout-with-chatgpt?return_to=/">退出登录</a>}
           </div>
@@ -1297,6 +1379,51 @@ export default function Home() {
             }
           }}
         />
+      )}
+      {demoLoginOpen && (
+        <div
+          className="modal-backdrop demo-login-backdrop"
+          onMouseDown={() => setDemoLoginOpen(false)}
+        >
+          <section
+            className="demo-login"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
+            <header>
+              <button
+                aria-label="关闭演示身份选择"
+                onClick={() => setDemoLoginOpen(false)}
+              >
+                ×
+              </button>
+              <span>公开演示环境</span>
+              <h2>选择演示身份登录</h2>
+              <p>
+                系统已为三类角色生成账号与权限，选择后按对应角色进入界面。
+              </p>
+            </header>
+            <div className="demo-role-grid">
+              {DEMO_ROLE_OPTIONS.map((role) => (
+                <button
+                  key={role.code}
+                  className={
+                    currentUser.role === role.code ? "demo-role-card active" : "demo-role-card"
+                  }
+                  onClick={() => selectDemoRole(role.code)}
+                >
+                  <b>{role.name}</b>
+                  <span>{role.description}</span>
+                  <i>{currentUser.role === role.code ? "当前身份" : "进入"}</i>
+                </button>
+              ))}
+            </div>
+            <footer>
+              <button onClick={() => setDemoLoginOpen(false)}>
+                以外部访客身份继续
+              </button>
+            </footer>
+          </section>
+        </div>
       )}
       {toast && (
         <div className="toast" role="status">

@@ -17,7 +17,7 @@ export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host = requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "zhiyu-enterprise-kb.yangshanpm.chatgpt.site";
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.includes("localhost") ? "http" : "https");
-  const image = `${protocol}://${host}/og.png`;
+  const image = `${protocol}://${host}/og.svg`;
   return {
     title: "知域 · 企业知识库",
     description: "覆盖上传、审核、发布、搜索、版本、导出与审计的企业知识中台。",

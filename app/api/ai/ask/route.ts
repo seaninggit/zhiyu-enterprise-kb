@@ -6,6 +6,7 @@ import { isValidEmbedding } from "../../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../../lib/document-access";
 import { correctEnterpriseQuery } from "../../../../lib/query-correction";
 import { deterministicGroundedSummary, validatedGroundedAnswer } from "../../../../lib/answer-quality";
+import { runAgent, type AgentMessage } from "../../../../lib/agent";
 
 function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(compact)||compact.length<=6;}
 function platformIntent(question:string,displayName:string,role:string,publicViewer=false){
@@ -47,6 +48,57 @@ export async function POST(request: Request) {
     const payload = await request.json() as { question?: string; conversationId?: number; queryEmbedding?: unknown }; const question = safeText(payload.question, 500);
     if (question.length < 2) throw new ApiError(400, "VALIDATION_ERROR", "请输入完整问题");
     const db = getD1(); let conversationId = Number(payload.conversationId || 0);
+    // --- Agent mode ---
+    const agentMode = payload.mode === "agent" || payload.agent === true;
+    if (agentMode && ctx.role !== "EMPLOYEE") {
+      await enforceRateLimit(ctx, "agent-operation", 15, 60);
+      const agentHistory: AgentMessage[] = [];
+      if (conversationId) {
+        const rows = await db.prepare("SELECT role, content, source_payload FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY sequence_no ASC LIMIT 12").bind(conversationId, ctx.userId).all<Record<string,unknown>>();
+        for (const r of rows.results) {
+          const role = String(r.role);
+          if (role === "user" || role === "assistant") {
+            agentHistory.push({ role, content: String(r.content) });
+          }
+        }
+      } else {
+        const created = await db.prepare("INSERT INTO ai_conversations(user_id,title) VALUES(?,?)").bind(ctx.userId, question.slice(0, 32)).run();
+        conversationId = Number(created.meta.last_row_id);
+      }
+      const result = await runAgent(question, agentHistory, ctx);
+      const inputTokens = Math.ceil(question.length / 4) + 200;
+      const outputTokens = Math.ceil(result.answer.length / 4);
+      const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,'[]',?,?,?,?,?,0)").bind(ctx.userId, ctx.primaryDeptId, question, result.answer, `agent_iterations_${result.iterations}`, rid, Date.now() - started, inputTokens, outputTokens, "deepseek-agent").run();
+      const agentSources = result.toolCalls.map((tc) => ({
+        documentId: 0,
+        title: tc.tool,
+        version: 1,
+        department: "agent",
+        excerpt: tc.result.slice(0, 180),
+        score: 1,
+      }));
+      const sourcePayload = JSON.stringify(agentSources);
+      const msgResults = await db.batch([
+        db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,source_payload,sequence_no) SELECT ?,?,'user',?,'[]',COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, question, conversationId),
+        db.prepare("INSERT INTO ai_messages(conversation_id,user_id,role,content,mode,source_payload,query_log_id,sequence_no) SELECT ?,?,'assistant',?,?,?,?,COALESCE(MAX(sequence_no),0)+1 FROM ai_messages WHERE conversation_id=?").bind(conversationId, ctx.userId, result.answer, `agent_${result.iterations}_iterations`, sourcePayload, log.meta.last_row_id, conversationId),
+        db.prepare("UPDATE ai_conversations SET update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(conversationId, ctx.userId),
+      ]);
+      const msgId = Number(msgResults[1].meta.last_row_id);
+      return ok({
+        answer: result.answer,
+        sources: agentSources,
+        mode: "agent",
+        provider: "deepseek",
+        model: "deepseek-agent",
+        agentToolCalls: result.toolCalls.length,
+        agentIterations: result.iterations,
+        queryLogId: log.meta.last_row_id,
+        conversationId,
+        messageId: msgId,
+        trust: { permissionScope: ctx.role, citationCount: result.toolCalls.length, contextMessages: 0 },
+      }, rid);
+    }
+
     if(/忽略(以上|之前|系统)|ignore (all |the )?(previous|system)|system prompt|泄露.*提示词|越过.*权限/i.test(question)){await db.prepare("INSERT INTO security_events(type,severity,detail) VALUES('PROMPT_INJECTION','HIGH',?)").bind(`用户#${ctx.userId}：${question}`).run();throw new ApiError(400,"UNSAFE_PROMPT","问题包含试图绕过权限或系统指令的内容，已拒绝并记录安全事件");}
     if (conversationId) {
       const owned = await db.prepare("SELECT id FROM ai_conversations WHERE id=? AND user_id=? AND status='ACTIVE'").bind(conversationId, ctx.userId).first();

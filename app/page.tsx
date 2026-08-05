@@ -349,6 +349,7 @@ export default function Home() {
     useState<QueryCorrection | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
@@ -389,6 +390,7 @@ export default function Home() {
   });
   const hasOpenOverlay =
     aiOpen ||
+    agentOpen ||
     uploadOpen ||
     feedbackOpen ||
     demoLoginOpen ||
@@ -1067,7 +1069,7 @@ export default function Home() {
             onResolve={setGovernanceDialog}
           />
         ) : view === "platform" ? (
-          <PlatformView role={currentUser.role} notify={notify} />
+          <PlatformView role={currentUser.role} notify={notify} onOpenAgent={() => setAgentOpen(true)} />
         ) : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? (
           <AccountAdminView notify={notify} />
         ) : view === "audit" ? (
@@ -1375,6 +1377,22 @@ export default function Home() {
               await openDocument(documentId);
             } catch (error) {
               setDocumentReturnTarget(null);
+              notify(error instanceof Error ? error.message : "资料加载失败");
+            }
+          }}
+        />
+      )}
+      {agentOpen && (
+        <AgentPanel
+          notify={notify}
+          onClose={() => setAgentOpen(false)}
+          onGovernanceCreated={() =>
+            refreshGovernanceTasks().catch(() => undefined)
+          }
+          onOpen={async (documentId) => {
+            try {
+              await openDocument(documentId);
+            } catch (error) {
               notify(error instanceof Error ? error.message : "资料加载失败");
             }
           }}
@@ -1793,9 +1811,11 @@ function AdminView({
 function PlatformView({
   role,
   notify,
+  onOpenAgent,
 }: {
   role: string;
   notify: (message: string) => void;
+  onOpenAgent: () => void;
 }) {
   type PlatformData = {
     metrics: Record<string, number>;
@@ -1889,6 +1909,12 @@ function PlatformView({
           <p>解析流水线、搜索缺口、空间目录、审批轨迹和 AI 参数统一管理。</p>
         </div>
         <div className="member-actions">
+          <button
+            className="primary-action"
+            onClick={onOpenAgent}
+          >
+            ✦ AI 治理 Agent
+          </button>
           <button
             className="outline-action"
             onClick={rebuildSemantic}
@@ -3869,6 +3895,179 @@ function AiPanel({
             <small>意图识别 · 权限检索 · DeepSeek 生成 · 会话自动保存</small>
           </footer>
         </main>
+      </section>
+    </div>
+  );
+}
+
+function AgentPanel({
+  onClose,
+  onOpen,
+  onGovernanceCreated,
+  notify,
+}: {
+  onClose: () => void;
+  onOpen: (documentId: number) => void;
+  onGovernanceCreated: () => void;
+  notify: (message: string) => void;
+}) {
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [messages, setMessages] = useState<Array<{ role: string; content: string; toolCalls?: Array<{ tool: string; result: string }> }>>([]);
+
+  async function send() {
+    if (!input.trim() || loading) return;
+    const cmd = input.trim();
+    setInput("");
+    setMessages((m) => [...m, { role: "user", content: cmd }]);
+    setLoading(true);
+    try {
+      const res = await fetch("/api/ai/ask", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ question: cmd, mode: "agent", agent: true }),
+      });
+      const p = await res.json();
+      if (!res.ok) throw new Error(p.error?.message ?? "Agent 执行失败");
+      setMessages((m) => [
+        ...m,
+        {
+          role: "assistant",
+          content: p.data.answer,
+          toolCalls: (p.data.sources || []).map((s: Record<string, unknown>) => ({
+            tool: String(s.title || ""),
+            result: String(s.excerpt || ""),
+          })),
+        },
+      ]);
+      if (p.data.agentToolCalls > 0) notify(`Agent 执行了 ${p.data.agentToolCalls} 次工具调用`);
+      onGovernanceCreated();
+    } catch (e) {
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${e instanceof Error ? e.message : "执行失败"}` }]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section
+        className="upload-modal"
+        onMouseDown={(e) => e.stopPropagation()}
+        style={{ width: "min(720px,94vw)", padding: 0, display: "flex", flexDirection: "column", maxHeight: "min(640px,88vh)" }}
+      >
+        <header style={{ padding: "22px 24px 14px", display: "flex", justifyContent: "space-between", alignItems: "start" }}>
+          <div>
+            <span className="page-kicker">KNOWLEDGE OPS AGENT</span>
+            <h2 style={{ margin: "6px 0 4px", fontFamily: "Georgia,'Songti SC',serif", fontSize: 23, fontWeight: 500 }}>
+              ✦ AI 治理智能助手
+            </h2>
+            <p style={{ color: "#81908c", fontSize: 10, margin: 0 }}>
+              我能巡检知识质量、检测重复内容、批量作废过期文档、创建治理任务。告诉我你想做什么。
+            </p>
+          </div>
+          <button onClick={onClose} style={{ border: 0, background: "transparent", fontSize: 22, color: "#778580" }}>×</button>
+        </header>
+
+        <div style={{ flex: 1, overflow: "auto", padding: "8px 24px", minHeight: 180, maxHeight: 420 }}>
+          {messages.length === 0 ? (
+            <div style={{ padding: "30px 0", display: "grid", gap: 9 }}>
+              {[
+                { icon: "🔍", label: "巡检知识质量", cmd: "帮我巡检产品研发部的知识质量，检查有没有过期、重复或解析失败的文档" },
+                { icon: "🗑️", label: "批量清理过期文档", cmd: "列出所有已过期和即将过期的文档，建议我作废哪些" },
+                { icon: "📋", label: "创建治理任务", cmd: "找出所有解析失败的文档，为每份创建治理任务" },
+              ].map((item) => (
+                <button
+                  key={item.label}
+                  onClick={() => setInput(item.cmd)}
+                  style={{
+                    textAlign: "left", padding: "13px 16px", border: "1px solid #dce8e4", borderRadius: 9,
+                    background: "white", color: "#38534c", fontSize: 11, display: "flex", alignItems: "center", gap: 10,
+                  }}
+                >
+                  <span style={{ fontSize: 16 }}>{item.icon}</span>
+                  <div>
+                    <b style={{ fontSize: 10 }}>{item.label}</b>
+                    <small style={{ display: "block", color: "#93a29f", fontSize: 8, marginTop: 2 }}>{item.cmd.slice(0, 60)}…</small>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 16 }}>
+              {messages.map((msg, i) => (
+                <div key={i}>
+                  <div style={{
+                    display: "flex", gap: 9, alignItems: "flex-start",
+                    flexDirection: msg.role === "user" ? "row-reverse" : "row",
+                  }}>
+                    <span style={{
+                      width: 26, height: 26, borderRadius: 7, display: "grid", placeItems: "center",
+                      background: msg.role === "user" ? "#e4ece8" : "linear-gradient(145deg,#16a98f,#0d6b64)",
+                      color: msg.role === "user" ? "#3d6057" : "white", fontSize: 9, fontWeight: 700, flexShrink: 0,
+                    }}>
+                      {msg.role === "user" ? "你" : "AI"}
+                    </span>
+                    <div style={{
+                      maxWidth: "78%", padding: "10px 14px", borderRadius: msg.role === "user" ? "11px 3px 11px 11px" : "11px",
+                      background: msg.role === "user" ? "#f0f4f2" : "#f7fbf9", border: msg.role === "user" ? "none" : "1px solid #dce8e4",
+                      fontSize: 10, lineHeight: 1.7, color: "#38534c", whiteSpace: "pre-wrap",
+                    }}>
+                      {msg.content}
+                    </div>
+                  </div>
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <div style={{ marginLeft: 35, marginTop: 8, display: "grid", gap: 5 }}>
+                      {msg.toolCalls.map((tc, j) => (
+                        <div key={j} style={{
+                          padding: "7px 10px", border: "1px solid #e4ece8", borderRadius: 6,
+                          background: "#fafcfb", fontSize: 9, color: "#638078",
+                        }}>
+                          <b style={{ color: "#18796d", fontSize: 8 }}>⚡ {tc.tool}</b>
+                          <span style={{ marginLeft: 8, color: "#8a9793" }}>{tc.result.slice(0, 120)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {loading && (
+                <div style={{ display: "flex", gap: 9 }}>
+                  <span style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(145deg,#16a98f,#0d6b64)", display: "grid", placeItems: "center", color: "white", fontSize: 9 }}>AI</span>
+                  <div className="thinking" style={{ margin: 0 }}>
+                    <span/><span/><span/> 正在巡检知识库…
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <footer style={{ padding: "14px 24px 18px", borderTop: "1px solid #e5ebe8" }}>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              aria-label="向 Agent 下达治理指令"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") send(); }}
+              placeholder="例如：巡检产品研发部知识质量，找出过期和重复内容…"
+              style={{
+                flex: 1, border: "1px solid #dce4e1", borderRadius: 8, padding: "10px 13px",
+                fontSize: 10, outline: 0, color: "#263733",
+              }}
+            />
+            <button
+              className="primary-action"
+              onClick={send}
+              disabled={!input.trim() || loading}
+            >
+              {loading ? "处理中" : "执行"}
+            </button>
+          </div>
+          <small style={{ display: "block", marginTop: 7, color: "#9aa8a3", textAlign: "center", fontSize: 8 }}>
+            Agent 可搜索、巡检、作废、创建治理任务 · 批量操作前会向你确认
+          </small>
+        </footer>
       </section>
     </div>
   );

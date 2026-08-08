@@ -4,7 +4,7 @@
 >
 > **Not just talking about AI — I built one, shipping real features on a real LLM.**
 
-[在线演示](https://zhiyu-knowledge-hub-public.yangshan-ai-flow.workers.dev) · [49 commits](https://github.com/seaninggit/zhiyu-enterprise-kb/commits/main) · 全栈独立开发 · Vibe Coding 实操
+[在线演示](https://zhiyu-kb.xyz) · [49 commits](https://github.com/seaninggit/zhiyu-enterprise-kb/commits/main) · 全栈独立开发 · Vibe Coding 实操
 
 ---
 
@@ -396,7 +396,7 @@ npm run build      # 生产构建
 
 ## 相关资源
 
-- [在线演示](https://zhiyu-knowledge-hub-public.yangshan-ai-flow.workers.dev)（每个浏览器自动分配独立测试账号）
+- [在线演示](https://zhiyu-kb.xyz)（每个浏览器自动分配独立测试账号）
 - [部署说明](docs/DEPLOYMENT.md)
 - [权限模型](docs/PERMISSIONS.md)
 - [API 契约](docs/API-CONTRACTS.md)

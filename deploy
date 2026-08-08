@@ -1,0 +1,28 @@
+#!/bin/bash
+set -e
+cd "$(dirname "$0")"
+
+echo ">> 构建..."
+npm run build
+
+echo ">> 配置..."
+rm -f .wrangler/deploy/config.json
+python3 << 'PYEOF'
+import json
+p = 'dist/server/wrangler.json'
+with open(p) as f: c = json.load(f)
+c['name'] = 'zhiyu-enterprise-kb-prod'
+c['routes'] = [{'pattern': 'zhiyu-kb.xyz', 'custom_domain': True}, {'pattern': 'www.zhiyu-kb.xyz', 'custom_domain': True}]
+c['d1_databases'] = [{'binding': 'DB', 'database_name': 'zhiyu-kb-prod', 'database_id': 'e8ecf08a-f694-49a5-b8b4-91a75ea3f491'}]
+if 'r2_buckets' in c: del c['r2_buckets']
+c['triggers'] = {'crons': ['0 18 * * *']}
+with open(p, 'w') as f: json.dump(c, f)
+PYEOF
+
+echo ">> 部署..."
+cd dist/server
+# Remove conflicting deploy config if it exists
+rm -f ../../.wrangler/deploy/config.json
+npx wrangler deploy
+
+echo ">> 完成！新版本已上线，强制刷新页面（Cmd+Shift+R）后测试"

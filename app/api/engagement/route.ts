@@ -1,3 +1,4 @@
+import { env } from "cloudflare:workers";
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../lib/api";
 import { enforceRateLimit, requireApiUser } from "../../../lib/authz";
@@ -28,6 +29,11 @@ export async function POST(request: Request) {
         db.prepare("INSERT INTO ai_answer_feedback(query_log_id,user_id,helpful,reason) VALUES(?,?,?,?) ON CONFLICT(query_log_id,user_id) DO UPDATE SET helpful=excluded.helpful,reason=excluded.reason,create_time=CURRENT_TIMESTAMP").bind(payload.queryLogId, ctx.userId, payload.helpful ? 1 : 0, [reason, detail].filter(Boolean).join("：")),
         ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,source_message_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',?,?,?,?,?,?,?)").bind(ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId,Number(owner?.owner_user_id||owner?.create_user_id)||null, reason, detail)] : []),
       ]);
+      // 没解决：发邮件给管理员
+      if(!payload.helpful){
+        const rk=(env as unknown as Record<string,string>).RESEND_API_KEY;
+        if(rk){const h=`<p>收到用户AI问答反馈——<b>${reason}</b></p><p>${detail||""}</p><hr><small>知域企业知识中台</small>`;await fetch("https://api.resend.com/emails",{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${rk}`},body:JSON.stringify({from:"知域知识库 <onboarding@resend.dev>",to:["yangshanpm@163.com"],subject:`[知域] AI质量反馈：${reason}`,html:h})}).catch(()=>{})}
+      }
       return ok({ recorded: true, governanceTaskCreated: !payload.helpful }, rid, 201);
     }
     if (payload.action === "NOTIFICATION_READ") {

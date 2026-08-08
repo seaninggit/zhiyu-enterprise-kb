@@ -5,18 +5,23 @@ import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } fr
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../../lib/document-access";
 import { correctEnterpriseQuery } from "../../../../lib/query-correction";
-import { deterministicGroundedSummary, validatedGroundedAnswer } from "../../../../lib/answer-quality";
+import { areSourcesRelevant, deterministicGroundedSummary, validatedGroundedAnswer } from "../../../../lib/answer-quality";
+import { classifyIntent } from "../../../../lib/intent-classifier";
 import { runAgent, type AgentMessage } from "../../../../lib/agent";
 
-function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程)/.test(compact)||compact.length<=6;}
+function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程|根据以上|根据当前|基于以上|基于当前|请根据|按照以上|按照当前|根据上述|生成|办理|以上)/.test(compact)||compact.length<=6;}
 function platformIntent(question:string,displayName:string,role:string,publicViewer=false){
-  const normalized=question.trim().replace(/[？?。！!，,\s]/g,"").toLowerCase();
-  if(/^(你是谁|你叫什么|你叫什么名字|介绍一下你自己|自我介绍)$/.test(normalized))return{mode:"assistant_identity",answer:publicViewer?"我是问问小知，知域企业知识库的智能问答助手。你当前通过外部员工账号访问，可以上传和维护自己创建的资料、提交部门审核、搜索知识并使用带引用的 AI 问答；审批和全局治理仍由相应管理员负责。":"我是问问小知，知域企业知识库的智能问答助手。我会基于你当前账号有权访问且已经生效的企业资料回答问题，并标注引用来源；也可以结合上下文继续追问、生成办理清单、打开原文和提交纠错反馈。我不会绕过部门权限，也不会把没有知识依据的内容当作公司制度。"};
-  if(/^(你能做什么|你会什么|你能干什么|怎么使用你|怎么用你|帮助|help)$/.test(normalized))return{mode:"assistant_capabilities",answer:"你可以直接问我企业制度、业务流程、岗位规范和办事材料。我会先按你的账号权限检索已生效资料，再给出带引用的答案。你还可以继续追问、生成办理清单、打开引用原文、收藏或订阅资料；如果答案不准确，可点“没解决”进入知识治理待办。"};
-  if(/^(我是谁|我的账号是什么|我的身份是什么)$/.test(normalized)){const roleName=publicViewer?"外部普通员工":role==="SUPER_ADMIN"?"超级管理员":role==="DEPT_ADMIN"?"部门管理员":"普通员工";return{mode:"assistant_account",answer:`你当前身份是${roleName}。知识检索、资料创建和维护操作都会按照你的部门与角色权限执行。`};}
-  if(/^(你好|您好|嗨|哈喽|hello|hi|在吗|早上好|下午好|晚上好)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
-  if(/^(谢谢|感谢|明白了|知道了|好的|好)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。如果还需要核对制度原文、继续追问或生成办理清单，直接告诉我即可。"};
-  if(/^(再见|拜拜|回见|下次见|结束|结束对话|结束会话|关闭对话|关闭会话|先这样|先这样吧|就这样|就这样吧|没事了|不用了|不聊了)$/.test(normalized)||/^(那)?(你)?(可以|先|就|请)?(退下|下去|休息)(了|吧|去吧)?$/.test(normalized))return{mode:"assistant_farewell",answer:"好的，我先结束本轮问答。之后需要查询企业制度、业务流程或办事材料时，随时叫我。"};
+  const raw=question.trim();const normalized=raw.replace(/[？?。！!，,\s]/g,"").toLowerCase();
+  // 正则仅保留3条核心快速路径，其余全部走语义分类
+  if(/^(你好|您好|hi|hello|在吗)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
+  if(/^(谢谢|感谢|好的谢谢|多谢|好的|好|ok|收到)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。有其他问题随时问我。"};
+  if(/^(再见|拜拜|bye|Bye|结束|先这样|就这样|不聊了|晚安)$/.test(normalized))return{mode:"assistant_farewell",answer:"好的，我先结束本轮问答。之后需要查询企业制度、业务流程或办事材料时，随时叫我。"};
+  const crisisWords=["不想活","想死","自杀","自残","活不下去","绝望","没希望","想不开","结束生命","死了算了","活着没意义"];
+  if(crisisWords.some(w=>raw.includes(w)))return{mode:"assistant_redirect",answer:"如果你正在经历困难时刻，请立即拨打心理援助热线：400-161-9995（24小时），或联系身边信任的人。作为企业知识助手，我无法提供心理咨询，但我真心希望你得到帮助。"};
+  // 极短（≤3字）且不含问号、不含"什么/怎么/如何" → 引导
+  const strippedLen=raw.replace(/[？?。！!，,、：:；;""''（）()【】{}《》\s\.…～~]+/g,"").length;
+  const hasQuestionWord=/什么|怎么|如何|哪些|是否|为什么|怎么办/.test(raw);
+  if(strippedLen<=1&&!/[？?]/.test(raw))return{mode:"assistant_redirect",answer:`你好，${displayName}。我是企业知识库的智能助手，专注帮你查询制度和流程。有什么想了解的企业知识吗？比如差旅报销、入职流程、合同审批。`};
   return null;
 }
 const QUESTION_TERMS = new Set(["哪些", "什么", "怎么", "如何", "需要", "是否", "可以", "相关", "信息", "内容", "要求", "流程"]);
@@ -45,12 +50,13 @@ export async function POST(request: Request) {
   const rid = requestId(request);const started=Date.now();
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "ai-question", 30, 60);
-    const payload = await request.json() as { question?: string; conversationId?: number; queryEmbedding?: unknown }; const question = safeText(payload.question, 500);
+    const payload = await request.json() as { question?: string; conversationId?: number; queryEmbedding?: unknown; mode?: string; agent?: boolean }; const question = safeText(payload.question, 500);
     if (question.length < 2) throw new ApiError(400, "VALIDATION_ERROR", "请输入完整问题");
     const db = getD1(); let conversationId = Number(payload.conversationId || 0);
     // --- Agent mode ---
     const agentMode = payload.mode === "agent" || payload.agent === true;
     if (agentMode && ctx.role !== "EMPLOYEE") {
+      // Agent 模式：跳过意图识别，直接走 tool-use loop
       await enforceRateLimit(ctx, "agent-operation", 15, 60);
       const agentHistory: AgentMessage[] = [];
       if (conversationId) {
@@ -106,7 +112,32 @@ export async function POST(request: Request) {
     } else {
       const created = await db.prepare("INSERT INTO ai_conversations(user_id,title) VALUES(?,?)").bind(ctx.userId, question.slice(0, 32)).run(); conversationId = Number(created.meta.last_row_id);
     }
-    const direct=platformIntent(question,ctx.displayName,ctx.role,ctx.isPublicViewer);
+    const hasContext=Boolean(payload.conversationId);
+    let aiWasAsking=false;
+    if(hasContext){
+      const lastMsg=await db.prepare("SELECT content FROM ai_messages WHERE conversation_id=? AND role='assistant' ORDER BY sequence_no DESC LIMIT 1").bind(conversationId).first<{content:string}>();
+      aiWasAsking=lastMsg?/吗[？?]|\?$|是否需要|是否还需要|还需要|想了解/.test(lastMsg.content):false;
+    }
+    let direct=platformIntent(question,ctx.displayName,ctx.role,ctx.isPublicViewer);
+    // AI 刚问过"需要吗？"→ "需要""不用"是回应，不是独立意图
+    if(aiWasAsking){
+      const n=question.replace(/[？?。！!，,\s]/g,"").toLowerCase();
+      if(/^(需要|要|是的|对|对的|没错|可以|行|好|好的|ok|嗯|想|想知道)$/.test(n))direct={mode:"assistant_acknowledgement",answer:"好的，我继续为你整理："};
+      else if(/^(不需要|不用|不了|不要|算了|没事|不用了|不需要了|没有了|够了|不必|不)$/.test(n))direct={mode:"assistant_farewell",answer:"好的，之后需要查询企业制度或业务流程时，随时叫我。"};
+    }
+    if(!direct){
+      const {label}=await classifyIntent(question);
+      const g="你可以直接说出想了解的制度、流程或规范名称，比如差旅报销标准、新员工入职流程、合同审批权限。";
+      if(label==="identity")direct={mode:"assistant_identity",answer:ctx.isPublicViewer?"我是问问小知，知域企业知识库的智能问答助手。你当前通过外部员工账号访问。":"我是问问小知，知域企业知识库的智能问答助手。我会基于你当前账号有权访问且已经生效的企业资料回答问题，并标注引用来源。"};
+      else if(label==="capability")direct={mode:"assistant_capabilities",answer:"你可以直接问我企业制度、业务流程、岗位规范和办事材料。我会按权限检索已生效资料，再给出带引用的答案。"};
+      else if(label==="greeting")direct={mode:"assistant_greeting",answer:`你好，${ctx.displayName}。我是问问小知，企业知识库的智能问答助手。${g}`};
+      else if(label==="farewell")direct={mode:"assistant_farewell",answer:"好的，之后需要查询企业制度或业务流程时，随时叫我。"};
+      else if(label==="gratitude")direct={mode:"assistant_acknowledgement",answer:hasContext?"不客气。还有其他问题可以继续问我。":`不客气，不过我还没帮上什么忙呢。${g}`};
+      else if(label==="acknowledge")direct={mode:"assistant_acknowledgement",answer:hasContext?"还有其他需要了解的吗？":`你好，${ctx.displayName}。有什么企业制度或流程需要帮你查询吗？${g}`};
+      else if(label==="account"){const rn=ctx.isPublicViewer?"外部普通员工":ctx.role==="SUPER_ADMIN"?"超级管理员":ctx.role==="DEPT_ADMIN"?"部门管理员":"普通员工";direct={mode:"assistant_account",answer:`你当前身份是${rn}。知识检索、资料创建和维护操作都会按照你的部门与角色权限执行。`};}
+      else if(label==="chat")direct={mode:"assistant_redirect",answer:`你好，${ctx.displayName}。我是企业知识库的智能助手，专注帮你查询制度和流程。有什么想了解的企业知识吗？`};
+      else if(label==="insult")direct={mode:"assistant_redirect",answer:"我理解你可能对回答不满意。我是企业知识助手，专注帮你查询制度和流程。如果有具体问题，直接告诉我关键词。"};
+    }
     if(direct){
       const inputTokens=Math.ceil(question.length/4),outputTokens=Math.ceil(direct.answer.length/4),model="platform-intent";
       const log=await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,'[]',?,?,?,?,?,0)").bind(ctx.userId,ctx.primaryDeptId,question,direct.answer,direct.mode,rid,Date.now()-started,inputTokens,outputTokens,model).run();
@@ -124,10 +155,13 @@ export async function POST(request: Request) {
     const contextualFollowUp=isContextualFollowUp(question)&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:question;const retrievalQuestion=contextualFollowUp?`${safeText(previousUserMessage?.content,500)}\n${correctedQuestion}\n原始输入：${question}`:`${correctedQuestion}\n原始输入：${question}`;
     const previousAssistant=historyRows.results.find(item=>item.role==="assistant");const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(previousAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
     const access=publishedDocumentScope(ctx,"d");const scope=access.sql;const binds:unknown[]=[...access.binds];
+    const useContextFilter=contextualFollowUp&&contextDocumentIds.size>0;
+    const chunkScope=useContextFilter?scope+` AND d.id IN (${[...contextDocumentIds].map(()=>"?").join(",")})`:scope;
+    const chunkBinds=useContextFilter?[...binds,...contextDocumentIds]:binds;
     const settings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>();const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(10,Number(config["rag.top_k"]||5)));
     const loadChunks = () => db.prepare(`SELECT c.id,c.content,c.embedding,c.chunk_index,d.id AS document_id,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.title ELSE COALESCE(d.published_title,d.title) END title,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.version ELSE COALESCE(d.published_version,d.version) END version,d.update_time,dep.name AS department_name
       FROM document_chunks c JOIN documents d ON d.id=c.document_id JOIN departments dep ON dep.id=d.dept_id
-      WHERE c.is_active=1 AND ${scope} ORDER BY d.update_time DESC LIMIT 800`).bind(...binds).all<Record<string, unknown>>();
+      WHERE c.is_active=1 AND ${chunkScope} ORDER BY d.update_time DESC LIMIT 800`).bind(...chunkBinds).all<Record<string, unknown>>();
     let result = await loadChunks();
     const candidates = await db.prepare(`SELECT d.id FROM documents d WHERE ${scope} AND NOT EXISTS(SELECT 1 FROM document_chunks c WHERE c.document_id=d.id AND c.is_active=1) ORDER BY d.update_time DESC LIMIT 30`).bind(...binds).all<{ id: number }>();
     if (candidates.results.length) {
@@ -140,8 +174,11 @@ export async function POST(request: Request) {
     const ranked:typeof scored=[];const seenDocuments=new Set<number>();for(const item of scored){const documentId=Number(item.document_id);if(seenDocuments.has(documentId))continue;seenDocuments.add(documentId);ranked.push(item);if(ranked.length>=topK)break;}
     const relevant = ranked.filter(item => item.score >= (item.hasComparableVector ? .18 : .15));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
-    let answer = "当前知识库中没有足够依据。请尝试补充关键词，或联系知识管理员完善相关资料。"; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
-    if (sources.length) {
+    const relevantChecked=sources.length&&(contextualFollowUp||areSourcesRelevant(correctedQuestion,sources));
+    const looksLikeKnowledge=contextualFollowUp||question.length>=4||/[？?]/.test(question);
+    const shortAmbiguous=!contextualFollowUp&&question.length<=4&&!/[？?]/.test(question); let noEvidenceAnswer=shortAmbiguous?"不确定你想了解什么，可以说具体一点吗？":looksLikeKnowledge?"抱歉，知识库里暂时没有找到跟这个问题直接相关的内容。试试换个关键词，或者问问其他方面？":`你好，${ctx.displayName}。我是企业知识库的智能助手，有什么想了解的企业知识吗？`;
+    let answer = noEvidenceAnswer; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
+    if (sources.length && relevantChecked) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
       const correctionContext=correction.applied&&correction.corrected!==question?`用户原始输入：${question}\n系统识别意图：${correctedQuestion}\n请自然地按识别后的意图回答，不要先否定原始词。`:"";
@@ -159,6 +196,12 @@ export async function POST(request: Request) {
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
     const assistantMessageId=Number(messageResults[1].meta.last_row_id);
+    // 只保留答案中实际引用了的文档
+    if(sources.length>0){
+      const cited=new Set([...answer.matchAll(/\[(\d+)\]/g)].map(m=>Number(m[1])));
+      if(cited.size>0)for(let i=sources.length-1;i>=0;i--){if(!cited.has(sources[i].citation))sources.splice(i,1);}
+    }
+    if(mode==="no_evidence"||/没有足够依据|没有找到.*相关|没有.*直接相关|未能找到/.test(answer))sources.length=0;
     return ok({ answer, sources, mode, provider:generated?.provider||"local",model,correction, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

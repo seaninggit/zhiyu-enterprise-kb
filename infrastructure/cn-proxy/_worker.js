@@ -5,7 +5,7 @@
  * 保持与原 public-access gateway 相同的会话隔离和头清理逻辑。
  */
 
-const UPSTREAM = "https://zhiyu-enterprise-knowledge-hub.yangshan-ai-flow.workers.dev";
+const UPSTREAM = "https://zhiyu-enterprise-kb.yangshanpm.chatgpt.site";
 const SESSION_COOKIE = "zhiyu_cn_session";
 
 // 国内入口会剥离外网身份信息，统一由上游重新鉴权

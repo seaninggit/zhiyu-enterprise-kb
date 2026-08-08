@@ -29,8 +29,15 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   const rid = requestId(request);
   try {
-    const ctx = await requireApiUser(); const id = Number(new URL(request.url).searchParams.get("id") || 0); if (!id) throw new ApiError(400, "VALIDATION_ERROR", "会话不能为空");
-    const result = await getD1().prepare("UPDATE ai_conversations SET status='DELETED',update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(id, ctx.userId).run();
+    const ctx = await requireApiUser(); const url=new URL(request.url);const id=Number(url.searchParams.get("id")||0);const all=url.searchParams.get("all")==="true";
+    const db=getD1();
+    if(all){
+      await db.prepare("UPDATE ai_conversations SET status='DELETED',update_time=CURRENT_TIMESTAMP WHERE user_id=? AND status='ACTIVE'").bind(ctx.userId).run();
+      await db.prepare("INSERT INTO audit_logs(dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,'CLEAR_ALL_CONVERSATIONS',?,?,?,?)").bind(ctx.primaryDeptId,ctx.userId,ctx.displayName,`清空 ${ctx.displayName} 全部AI会话`,rid).run();
+      return ok({deleted:true,all:true},rid);
+    }
+    if (!id) throw new ApiError(400, "VALIDATION_ERROR", "会话不能为空");
+    const result = await db.prepare("UPDATE ai_conversations SET status='DELETED',update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(id, ctx.userId).run();
     if (!result.meta.changes) throw new ApiError(404, "CONVERSATION_NOT_FOUND", "会话不存在");
     return ok({ deleted: true }, rid);
   } catch (error) { return fail(error, rid); }

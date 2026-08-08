@@ -3,14 +3,25 @@ import { getD1 } from "../db";
 import { generateChat } from "./ai-provider";
 import { chunkText, documentIndexText } from "./text-chunks";
 
-type AiEnv = { OPENAI_API_KEY?: string; OPENAI_CHAT_MODEL?: string; OPENAI_EMBEDDING_MODEL?: string; KNOWLEDGE_FILES?: R2Bucket };
+type AiEnv = { OPENAI_API_KEY?: string; OPENAI_CHAT_MODEL?: string; OPENAI_EMBEDDING_MODEL?: string; DASHSCOPE_API_KEY?: string; KNOWLEDGE_FILES?: R2Bucket };
 type EmbeddingResponse = { data?: Array<{ embedding: number[] }> };
 
 function aiEnv() { return env as unknown as AiEnv; }
 export async function embedTexts(inputs: string[]) {
   const cfg = aiEnv();
-  if (!cfg.OPENAI_API_KEY || !inputs.length) return [];
-  const response = await fetch("https://api.openai.com/v1/embeddings", { method: "POST", headers: { authorization: `Bearer ${cfg.OPENAI_API_KEY}`, "content-type": "application/json" }, body: JSON.stringify({ model: cfg.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small", input: inputs, dimensions: 512 }) });
+  if (!inputs.length) return [];
+  const dashscope = cfg.DASHSCOPE_API_KEY;
+  const openai = cfg.OPENAI_API_KEY;
+  if (!dashscope && !openai) return [];
+
+  // 优先阿里云百炼（免费额度，国内秒级），回退 OpenAI
+  const endpoint = dashscope
+    ? "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+    : "https://api.openai.com/v1/embeddings";
+  const auth = dashscope || openai!;
+  const model = dashscope ? "qwen3.7-text-embedding" : (cfg.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small");
+
+  const response = await fetch(endpoint, { method: "POST", headers: { authorization: `Bearer ${auth}`, "content-type": "application/json" }, body: JSON.stringify({ model, input: inputs, dimensions: dashscope ? 1024 : 512 }) });
   if (!response.ok) throw new Error(`Embedding request failed: ${response.status}`);
   const payload = await response.json() as EmbeddingResponse;
   return payload.data?.map(item => item.embedding) ?? [];

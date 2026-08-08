@@ -6,6 +6,8 @@ import { isValidEmbedding } from "../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../lib/document-access";
 import { correctEnterpriseQuery } from "../../../lib/query-correction";
 
+const TITLE_BOOST_PER_HIT = 0.06, TITLE_BOOST_BASE = 0.08, KEYWORD_WEIGHT = 0.55, KEYWORD_W_SEMANTIC = 0.28, SEMANTIC_WEIGHT = 0.42, AUTHORITY_BOOST = 0.06, PHRASE_MATCH_BOOST = 0.12, MIN_RELEVANCE = 0.08;
+
 function terms(query: string) {
   return Array.from(new Set(query.toLowerCase().split(/[\s，。！？、,.!?：:；;]+/).flatMap(term => term.length > 2 ? [term, ...Array.from({ length: term.length - 1 }, (_, i) => term.slice(i, i + 2))] : [term]).filter(Boolean)));
 }
@@ -31,13 +33,13 @@ export async function POST(request: Request) {
       const corpus = `${row.title} ${row.summary} ${row.content ?? ""}`.toLowerCase();
       const keyword = queryTerms.reduce((sum, term) => sum + (corpus.includes(term) ? 1 : 0), 0) / Math.max(1, queryTerms.length);
       let semantic = 0; try { if (vector && row.embedding) semantic = cosine(vector, JSON.parse(String(row.embedding))); } catch { /* ignore malformed legacy embedding */ }
-      const authority = row.verification_status === "VERIFIED" ? .06 : 0; const titleBoost = queryTerms.some(term => String(row.title).toLowerCase().includes(term)) ? .16 : 0;const phraseBoost=corpus.includes(correction.corrected.toLowerCase()) ? .12 : 0;
-      const score = Math.min(1, keyword * (vector ? .32 : .72) + semantic * (vector ? .42 : 0) + authority + titleBoost+phraseBoost);
+      const titleLower=String(row.title).toLowerCase();const titleHits=queryTerms.filter(t=>titleLower.includes(t)).length;const titleBoost=titleHits>0?TITLE_BOOST_BASE+titleHits*TITLE_BOOST_PER_HIT:0;const authority=row.verification_status==="VERIFIED"?AUTHORITY_BOOST:0;const phraseBoost=corpus.includes(correction.corrected.toLowerCase())?PHRASE_MATCH_BOOST:0;const score=Math.min(1,keyword*(vector?KEYWORD_W_SEMANTIC:KEYWORD_WEIGHT)+semantic*(vector?SEMANTIC_WEIGHT:0)+authority+titleBoost+phraseBoost);
       const relevance=vector?Math.max(keyword,semantic):keyword;const id = Number(row.id); const previous = byDocument.get(id);
       if (!previous || score > previous.score) byDocument.set(id, { ...row, score, relevance, excerpt: String(row.content || row.summary || "").slice(0, 220) });
     }
-    const ranked = [...byDocument.values()].filter(row => row.relevance > (vector ? .08 : 0)).sort((a, b) => b.score - a.score).slice(0, 50);
+    const ranked = [...byDocument.values()].filter(row=>row.relevance>(vector?MIN_RELEVANCE:0)).sort((a, b) => b.score - a.score).slice(0, 50);
     const mode = localVector ? "HYBRID_LOCAL" : vector ? "HYBRID_API" : "KEYWORD"; const log = await db.prepare("INSERT INTO search_logs(user_id,dept_id,query,corrected_query,correction_reason,result_count,mode) VALUES(?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, query,correction.corrected!==query?correction.corrected:null,correction.reason||null, ranked.length, mode).run();
+    if(ranked.length>0){const prev=await db.prepare("SELECT query,result_count FROM search_logs WHERE user_id=? AND id<? ORDER BY id DESC LIMIT 1").bind(ctx.userId,log.meta.last_row_id).first();if(prev&&prev.result_count===0&&prev.query.length===query.length&&prev.query!==query)await db.prepare("INSERT OR IGNORE INTO search_corrections(source_term,target_term,pinyin,kind) VALUES(?,?,?,'HOMOPHONE')").bind(prev.query,query,'').run();}
     return ok({ searchLogId: log.meta.last_row_id, results: ranked.map(row => ({ id:row.id,title:row.title,summary:row.summary,category:row.category,owner:row.owner,version:row.version,mime_type:row.mime_type,update_time:row.update_time,verification_status:row.verification_status,space_name:row.space_name,department_name:row.department_name,excerpt:row.excerpt,score:Number(row.score.toFixed(3)) })), mode,correction, suggestions: ranked.length ? [] : ["尝试更换关键词", "选择其他知识空间", "提交知识缺口"] }, rid);
   } catch (error) { return fail(error, rid); }
 }

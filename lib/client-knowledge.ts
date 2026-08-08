@@ -129,7 +129,10 @@ export async function extractKnowledgeFile(file: File, onProgress?: (progress: E
 async function getExtractor(onProgress?: (progress: ExtractionProgress) => void) {
   extractorPromise ??= (async () => {
     onProgress?.({ stage: "EMBED", percent: 5, message: "首次加载本地中文语义模型" });
-    const { pipeline } = await import("@huggingface/transformers");
+    const { pipeline, env } = await import("@huggingface/transformers");
+    // 使用国内可访问的 HuggingFace 镜像源，避免从 huggingface.co 下载超时
+    env.remoteHost = "https://hf-mirror.com/";
+    env.remotePathTemplate = "{model}/resolve/{revision}/";
     const extractor = await pipeline("feature-extraction", LOCAL_EMBEDDING_MODEL, { dtype: "q8", progress_callback: event => {
       const progress = "progress" in event && typeof event.progress === "number" ? Math.round(event.progress) : 30;
       onProgress?.({ stage: "EMBED", percent: Math.min(95, progress), message: "正在加载本地中文语义模型" });

@@ -76,6 +76,18 @@ export async function POST(request: Request) {
     const tagNames = safeText(value("tags"), 500).split(",").map(t => t.trim()).filter(Boolean).slice(0, 20);
     for (const name of tagNames) { await db.prepare("INSERT OR IGNORE INTO tags(name,dept_id) VALUES(?,?)").bind(name, deptId).run(); await db.prepare("INSERT OR IGNORE INTO document_tags(document_id,tag_id) SELECT ?,id FROM tags WHERE name=? AND dept_id=?").bind(id, name, deptId).run(); }
     if(sourceKey||extractedContent){const {processDocument}=await import("../../../lib/ingestion");await processDocument(id).catch(()=>undefined);}
+    let dupWarning="";
+    try{
+      const titles=await db.prepare("SELECT id,title FROM documents WHERE is_deleted=0 AND dept_id=? AND id!=? ORDER BY update_time DESC LIMIT 100").bind(deptId,id).all<{id:number;title:string}>();
+      for(const t of titles.results){
+        const clean1=title.replace(/V\d+(\.\d+)*/gi,"").replace(/[（(].*[）)]/g,"").trim();
+        const clean2=(t.title||"").replace(/V\d+(\.\d+)*/gi,"").replace(/[（(].*[）)]/g,"").trim();
+        if(clean1.length>2&&clean2.length>2){
+          const common=clean1.split("").filter((c:string)=>clean2.includes(c)).length;
+          if(common/Math.max(clean1.length,clean2.length)>.6){dupWarning=`已发现高度相似文档《${t.title}》，可能存在重复。`;break;}
+        }
+      }
+    }catch{/* 降级 */}
     let readinessWarning="";let document = await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
     if(wantsReview&&document){
       try{
@@ -88,7 +100,7 @@ export async function POST(request: Request) {
         document=await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
       }catch(error){readinessWarning=error instanceof Error?error.message:"资料尚未达到发布条件，已保存为草稿";}
     }
-    return ok({ document, readinessWarning }, rid, 201);
+    return ok({ document, readinessWarning, dupWarning }, rid, 201);
   } catch (error) {
     if (sourceKey) await (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES?.delete(sourceKey).catch(() => undefined);
     return fail(error, rid);

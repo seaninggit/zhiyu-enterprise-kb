@@ -349,7 +349,6 @@ export default function Home() {
     useState<QueryCorrection | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
-  const [agentOpen, setAgentOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(false);
@@ -390,7 +389,6 @@ export default function Home() {
   });
   const hasOpenOverlay =
     aiOpen ||
-    agentOpen ||
     uploadOpen ||
     feedbackOpen ||
     demoLoginOpen ||
@@ -1069,7 +1067,7 @@ export default function Home() {
             onResolve={setGovernanceDialog}
           />
         ) : view === "platform" ? (
-          <PlatformView role={currentUser.role} notify={notify} onOpenAgent={() => setAgentOpen(true)} />
+          <PlatformView role={currentUser.role} notify={notify} />
         ) : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? (
           <AccountAdminView notify={notify} />
         ) : view === "audit" ? (
@@ -1382,22 +1380,6 @@ export default function Home() {
           }}
         />
       )}
-      {agentOpen && (
-        <AgentPanel
-          notify={notify}
-          onClose={() => setAgentOpen(false)}
-          onGovernanceCreated={() =>
-            refreshGovernanceTasks().catch(() => undefined)
-          }
-          onOpen={async (documentId) => {
-            try {
-              await openDocument(documentId);
-            } catch (error) {
-              notify(error instanceof Error ? error.message : "资料加载失败");
-            }
-          }}
-        />
-      )}
       {demoLoginOpen && (
         <div
           className="modal-backdrop demo-login-backdrop"
@@ -1485,6 +1467,9 @@ function LibraryView({
   onSelect: (doc: KnowledgeDocument) => void;
   favoriteMode: boolean;
 }) {
+  const [decisionTrees, setDecisionTrees] = useState<Array<{id:number;title:string;description:string;category:string}>>([]);
+  const [decisionDialog, setDecisionDialog] = useState<{treeId:number;title:string}|null>(null);
+  useEffect(()=>{fetch("/api/decisions").then(r=>r.json()).then(d=>{if(d.success)setDecisionTrees(d.data.trees)}).catch(()=>{})},[]);
   return (
     <main className="workspace">
       <section className="welcome">
@@ -1546,6 +1531,8 @@ function LibraryView({
             )}
         </>
       )}
+      {decisionTrees.length>0&&<section style={{marginTop:24,marginBottom:24}}><div className="section-title"><div><span className="page-kicker">DECISION GUIDES</span><h2 style={{fontSize:18}}>流程指引</h2></div></div><div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12}}>{decisionTrees.map(t=><button key={t.id} onClick={()=>setDecisionDialog({treeId:t.id,title:t.title})} style={{textAlign:"left",padding:18,border:"1px solid #dce8e4",borderRadius:11,background:"white",cursor:"pointer"}}><b style={{fontSize:12,display:"block",marginBottom:4}}>{t.title}</b><span style={{fontSize:9,color:"#8b9d98"}}>{t.description}</span><br/><small style={{display:"inline-block",marginTop:6,padding:"3px 7px",background:"#e8f4ef",borderRadius:4,fontSize:8,color:"#2b746a"}}>{t.category}</small></button>)}</div></section>}
+      {decisionDialog&&<DecisionDialog treeId={decisionDialog.treeId} title={decisionDialog.title} onClose={()=>setDecisionDialog(null)}/>}
       <section className="library-section">
         <div className="section-title">
           <div>
@@ -1811,11 +1798,9 @@ function AdminView({
 function PlatformView({
   role,
   notify,
-  onOpenAgent,
 }: {
   role: string;
   notify: (message: string) => void;
-  onOpenAgent: () => void;
 }) {
   type PlatformData = {
     metrics: Record<string, number>;
@@ -1827,9 +1812,17 @@ function PlatformView({
     approvals: Record<string, unknown>[];
     settings: Record<string, unknown>[];
   };
+  type ScanResult = { expired:Array<Record<string,unknown>>;duplicates:Array<{docs:Array<Record<string,unknown>>;reason:string}>;parseFails:Array<Record<string,unknown>>;empty:Array<Record<string,unknown>>;pending:Array<Record<string,unknown>>;zeroSearch:Array<Record<string,unknown>> };
   const [data, setData] = useState<PlatformData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scanResult, setScanResult] = useState<ScanResult|null>(null);
+  const [scanLoading, setScanLoading] = useState(false);
   const [semanticProgress, setSemanticProgress] = useState("");
+  const [agentResult, setAgentResult] = useState<{trace:Array<{tool:string;args:unknown;result:string}>;summary:string}|null>(null);
+  const [agentLoading, setAgentLoading] = useState(false);
+  async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(e:any){notify(e.message)}finally{setScanLoading(false)}}
+  async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(e:any){notify(e.message)}finally{setAgentLoading(false)}}
+  async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
   async function load() {
     setLoading(true);
     try {
@@ -1909,11 +1902,8 @@ function PlatformView({
           <p>解析流水线、搜索缺口、空间目录、审批轨迹和 AI 参数统一管理。</p>
         </div>
         <div className="member-actions">
-          <button
-            className="primary-action"
-            onClick={onOpenAgent}
-          >
-            ✦ AI 治理 Agent
+          <button className="primary-action" onClick={()=>{runScan();runAgentAnalysis();}} disabled={scanLoading||agentLoading}>
+            {scanLoading||agentLoading?"巡检中…":"🔍 智能巡检"}
           </button>
           <button
             className="outline-action"
@@ -1949,6 +1939,18 @@ function PlatformView({
           <small>支持重试</small>
         </div>
       </div>
+      {scanResult&&<div className="scan-dashboard">
+        <section className="platform-card wide-card">
+          <header><h2>🔍 智能巡检报告</h2><span>{scanResult.expired.length}过期 {scanResult.duplicates.length}重复 {scanResult.parseFails.length}解析失败 {scanResult.empty.length}空内容</span></header>
+          {agentResult&&<div className="agent-trace"><details><summary>🤖 Agent 自主规划了 {agentResult.trace.length} 步推理（点击展开链路）</summary><div className="trace-list">{agentResult.trace.map((t:any,i:number)=><div key={i} className="trace-step"><span className="trace-num">{i+1}</span><div><b>{t.tool}</b></div></div>)}</div></details></div>}
+          {agentResult?.summary&&<div className="agent-summary"><b>🤖 Agent 分析结论</b><p style={{whiteSpace:"pre-wrap",maxHeight:300,overflow:"auto"}}>{agentResult.summary}</p></div>}
+          {scanResult.expired.length>0&&<div className="scan-group"><h3>📌 过期文档（{scanResult.expired.length}）</h3>{scanResult.expired.map((d:any)=><div key={d.id} className="scan-item expired"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner} · 复核日：{d.review_due_at?.slice(0,10)}</small></div>{d.status==='EXPIRED_VOID'?<span className="scan-done">已作废</span>:<button onClick={()=>handleScanAction('ARCHIVE',d.id,d.title)}>作废</button>}</div>)}</div>}
+          {scanResult.duplicates.length>0&&<div className="scan-group"><h3>🔄 疑似重复（{scanResult.duplicates.length} 组）</h3>{scanResult.duplicates.map((g:any,i:number)=><div key={i} className="scan-item duplicate"><div><b>{g.reason}</b><small>{g.docs.map((d:any)=>`《${d.title}》V${d.version}.0`).join(' vs ')}</small></div><button onClick={()=>handleScanAction('MARK_DUP',g.docs[0].id,g.docs[0].title)}>标记重复</button></div>)}</div>}
+          {scanResult.parseFails.length>0&&<div className="scan-group"><h3>⚠️ 解析失败（{scanResult.parseFails.length}）</h3>{scanResult.parseFails.map((d:any)=><div key={d.id} className="scan-item fail"><div><b>{d.title}</b><small>{d.dept_name} · {d.source_name||'未知文件'} · 状态：{d.parse_status}</small></div><button onClick={()=>handleScanAction('REPROCESS',d.id,d.title)}>重新解析</button></div>)}</div>}
+          {scanResult.empty.length>0&&<div className="scan-group"><h3>📝 空内容草稿（{scanResult.empty.length}）</h3>{scanResult.empty.map((d:any)=><div key={d.id} className="scan-item empty-draft"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner}</small></div><button onClick={()=>handleScanAction('DELETE',d.id,d.title)}>删除</button></div>)}</div>}
+          {scanResult.zeroSearch.length>0&&<div className="scan-group"><h3>🔎 搜索无结果（{scanResult.zeroSearch.length} 次）</h3>{scanResult.zeroSearch.slice(0,5).map((s:any,i:number)=><div key={i} className="scan-item zero"><div><b>&ldquo;{s.query}&rdquo;</b><small>出现 {s.cnt} 次 · 最近：{s.last_time?.slice(0,10)}</small></div><button onClick={()=>handleScanAction('CREATE_GAP_TASK',0,s.query)}>补充知识</button></div>)}</div>}
+        </section>
+      </div>}
       <div className="platform-grid">
         <section className="platform-card">
           <header>
@@ -3380,6 +3382,8 @@ function AiPanel({
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [agentMode, setAgentMode] = useState(false);
+  const [checklistGenerated, setChecklistGenerated] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -3499,6 +3503,8 @@ function AiPanel({
     if (!nextQuestion.trim() || loading) return;
     keepAtBottomRef.current = true;
     const userText = nextQuestion.trim();
+    // 追踪办理清单：如果用户输入了新的追问（非清单模板），允许再次生成
+    if(!userText.includes("生成结构化办理清单")) setChecklistGenerated(false);
     const optimisticId = -Date.now();
     setMessages((current) => [
       ...current,
@@ -3525,6 +3531,8 @@ function AiPanel({
           question: userText,
           conversationId,
           queryEmbedding,
+          agent: agentMode,
+          mode: agentMode ? "agent" : undefined,
         }),
       });
       const payload = await response.json();
@@ -3617,7 +3625,10 @@ function AiPanel({
           </button>
           <div className="history-title">
             <span>历史会话</span>
-            <small>{conversations.length}</small>
+            <div>
+              <small>{conversations.length}</small>
+              {conversations.length>0&&<button style={{marginLeft:10,border:"1px solid rgba(255,255,255,.2)",borderRadius:5,background:"transparent",color:"#d99e8e",fontSize:8,padding:"3px 7px",cursor:"pointer"}} onClick={async()=>{if(!confirm("确定清空全部历史会话？此操作不可恢复。"))return;await fetch("/api/ai/conversations?all=true",{method:"DELETE"});newConversation();await loadConversations(false);}}>清空全部</button>}
+            </div>
           </div>
           <div className="conversation-list">
             {conversations.map((item) => (
@@ -3690,8 +3701,10 @@ function AiPanel({
                       <div className="answer-meta">
                         <span>AI</span>
                         <small>
-                          {message.mode?.startsWith("assistant_")
-                            ? "平台助手 · 无需知识检索"
+                          {message.mode?.startsWith("assistant_redirect")
+                            ? ""
+                            : message.mode?.startsWith("assistant_")
+                              ? "平台助手 · 无需知识检索"
                             : message.mode?.startsWith("rag")
                               ? message.mode.includes("local_vector")
                                 ? "已检索企业知识 · 语义匹配"
@@ -3702,7 +3715,7 @@ function AiPanel({
                                 ? message.mode.includes("keyword_fallback")
                                   ? "已核验企业知识 · 引用摘要"
                                   : "已核验企业知识 · 语义摘要"
-                                : "暂未找到可靠依据"}
+                                : "暂未找到相关内容"}
                         </small>
                       </div>
                       {message.correction?.applied &&
@@ -3735,17 +3748,14 @@ function AiPanel({
                       {message.queryLogId &&
                         !message.mode?.startsWith("assistant_") && (
                           <div className="ai-followups">
-                            {message.sources.length > 0 && (
-                              <button
-                                onClick={() =>
-                                  ask(
-                                    "请根据当前问题和以上引用，生成结构化办理清单，包含步骤、所需材料、责任角色和注意事项",
-                                  )
-                                }
+                            {message.sources.length > 0 && !checklistGenerated ? <button
+                                onClick={() => {
+                                  ask("请根据当前问题和以上引用，生成结构化办理清单，包含步骤、所需材料、责任角色和注意事项");
+                                  setChecklistGenerated(true);
+                                }}
                               >
                                 生成办理清单
-                              </button>
-                            )}
+                              </button> : null}
                             {message.sources.length > 0 && (
                               <button
                                 className={
@@ -3842,15 +3852,12 @@ function AiPanel({
                     <b>差旅报销需要哪些材料？</b>
                     <span>→</span>
                   </button>
-                  <button
-                    onClick={() => setQuestion("新员工第一周需要完成什么？")}
-                  >
+                  <button onClick={() => setQuestion("新员工第一周需要完成什么？")}>
                     <i>入职指南</i>
                     <b>新员工第一周需要完成什么？</b>
                     <span>→</span>
                   </button>
-                  <button
-                    onClick={() => setQuestion("生产环境发布需要哪些审批？")}
+                  <button onClick={() => setQuestion("生产环境发布需要哪些审批？")}
                   >
                     <i>研发规范</i>
                     <b>生产环境发布需要哪些审批？</b>
@@ -3869,7 +3876,7 @@ function AiPanel({
             {error && <p className="ai-error">{error}</p>}
             <div className="chat-scroll-anchor" aria-hidden="true" />
           </section>
-          <footer className="ai-compose">
+          <footer className="ai-compose"><div style={{display:"flex",alignItems:"center",gap:6,padding:"0 26px 6px"}}><label style={{fontSize:9,color:"#8b9d98",cursor:"pointer",display:"flex",alignItems:"center",gap:3}}><input type="checkbox" checked={agentMode} onChange={e=>setAgentMode(e.target.checked)} style={{accentColor:"#16796d"}}/>Agent模式</label>{agentMode&&<small style={{fontSize:8,color:"#d9a64a"}}>可执行治理操作</small>}</div>
             <div className="ai-input">
               <span>✦</span>
               <input
@@ -3900,175 +3907,23 @@ function AiPanel({
   );
 }
 
-function AgentPanel({
-  onClose,
-  onOpen,
-  onGovernanceCreated,
-  notify,
-}: {
-  onClose: () => void;
-  onOpen: (documentId: number) => void;
-  onGovernanceCreated: () => void;
-  notify: (message: string) => void;
-}) {
-  const [input, setInput] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [messages, setMessages] = useState<Array<{ role: string; content: string; toolCalls?: Array<{ tool: string; result: string }> }>>([]);
 
-  async function send() {
-    if (!input.trim() || loading) return;
-    const cmd = input.trim();
-    setInput("");
-    setMessages((m) => [...m, { role: "user", content: cmd }]);
-    setLoading(true);
-    try {
-      const res = await fetch("/api/ai/ask", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ question: cmd, mode: "agent", agent: true }),
-      });
-      const p = await res.json();
-      if (!res.ok) throw new Error(p.error?.message ?? "Agent 执行失败");
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: p.data.answer,
-          toolCalls: (p.data.sources || []).map((s: Record<string, unknown>) => ({
-            tool: String(s.title || ""),
-            result: String(s.excerpt || ""),
-          })),
-        },
-      ]);
-      if (p.data.agentToolCalls > 0) notify(`Agent 执行了 ${p.data.agentToolCalls} 次工具调用`);
-      onGovernanceCreated();
-    } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${e instanceof Error ? e.message : "执行失败"}` }]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <section
-        className="upload-modal"
-        onMouseDown={(e) => e.stopPropagation()}
-        style={{ width: "min(720px,94vw)", padding: 0, display: "flex", flexDirection: "column", maxHeight: "min(640px,88vh)" }}
-      >
-        <header style={{ padding: "22px 24px 14px", display: "flex", justifyContent: "space-between", alignItems: "start" }}>
-          <div>
-            <span className="page-kicker">KNOWLEDGE OPS AGENT</span>
-            <h2 style={{ margin: "6px 0 4px", fontFamily: "Georgia,'Songti SC',serif", fontSize: 23, fontWeight: 500 }}>
-              ✦ AI 治理智能助手
-            </h2>
-            <p style={{ color: "#81908c", fontSize: 10, margin: 0 }}>
-              我能巡检知识质量、检测重复内容、批量作废过期文档、创建治理任务。告诉我你想做什么。
-            </p>
-          </div>
-          <button onClick={onClose} style={{ border: 0, background: "transparent", fontSize: 22, color: "#778580" }}>×</button>
-        </header>
-
-        <div style={{ flex: 1, overflow: "auto", padding: "8px 24px", minHeight: 180, maxHeight: 420 }}>
-          {messages.length === 0 ? (
-            <div style={{ padding: "30px 0", display: "grid", gap: 9 }}>
-              {[
-                { icon: "🔍", label: "巡检知识质量", cmd: "帮我巡检产品研发部的知识质量，检查有没有过期、重复或解析失败的文档" },
-                { icon: "🗑️", label: "批量清理过期文档", cmd: "列出所有已过期和即将过期的文档，建议我作废哪些" },
-                { icon: "📋", label: "创建治理任务", cmd: "找出所有解析失败的文档，为每份创建治理任务" },
-              ].map((item) => (
-                <button
-                  key={item.label}
-                  onClick={() => setInput(item.cmd)}
-                  style={{
-                    textAlign: "left", padding: "13px 16px", border: "1px solid #dce8e4", borderRadius: 9,
-                    background: "white", color: "#38534c", fontSize: 11, display: "flex", alignItems: "center", gap: 10,
-                  }}
-                >
-                  <span style={{ fontSize: 16 }}>{item.icon}</span>
-                  <div>
-                    <b style={{ fontSize: 10 }}>{item.label}</b>
-                    <small style={{ display: "block", color: "#93a29f", fontSize: 8, marginTop: 2 }}>{item.cmd.slice(0, 60)}…</small>
-                  </div>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 16 }}>
-              {messages.map((msg, i) => (
-                <div key={i}>
-                  <div style={{
-                    display: "flex", gap: 9, alignItems: "flex-start",
-                    flexDirection: msg.role === "user" ? "row-reverse" : "row",
-                  }}>
-                    <span style={{
-                      width: 26, height: 26, borderRadius: 7, display: "grid", placeItems: "center",
-                      background: msg.role === "user" ? "#e4ece8" : "linear-gradient(145deg,#16a98f,#0d6b64)",
-                      color: msg.role === "user" ? "#3d6057" : "white", fontSize: 9, fontWeight: 700, flexShrink: 0,
-                    }}>
-                      {msg.role === "user" ? "你" : "AI"}
-                    </span>
-                    <div style={{
-                      maxWidth: "78%", padding: "10px 14px", borderRadius: msg.role === "user" ? "11px 3px 11px 11px" : "11px",
-                      background: msg.role === "user" ? "#f0f4f2" : "#f7fbf9", border: msg.role === "user" ? "none" : "1px solid #dce8e4",
-                      fontSize: 10, lineHeight: 1.7, color: "#38534c", whiteSpace: "pre-wrap",
-                    }}>
-                      {msg.content}
-                    </div>
-                  </div>
-                  {msg.toolCalls && msg.toolCalls.length > 0 && (
-                    <div style={{ marginLeft: 35, marginTop: 8, display: "grid", gap: 5 }}>
-                      {msg.toolCalls.map((tc, j) => (
-                        <div key={j} style={{
-                          padding: "7px 10px", border: "1px solid #e4ece8", borderRadius: 6,
-                          background: "#fafcfb", fontSize: 9, color: "#638078",
-                        }}>
-                          <b style={{ color: "#18796d", fontSize: 8 }}>⚡ {tc.tool}</b>
-                          <span style={{ marginLeft: 8, color: "#8a9793" }}>{tc.result.slice(0, 120)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-              {loading && (
-                <div style={{ display: "flex", gap: 9 }}>
-                  <span style={{ width: 26, height: 26, borderRadius: 7, background: "linear-gradient(145deg,#16a98f,#0d6b64)", display: "grid", placeItems: "center", color: "white", fontSize: 9 }}>AI</span>
-                  <div className="thinking" style={{ margin: 0 }}>
-                    <span/><span/><span/> 正在巡检知识库…
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        <footer style={{ padding: "14px 24px 18px", borderTop: "1px solid #e5ebe8" }}>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              aria-label="向 Agent 下达治理指令"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") send(); }}
-              placeholder="例如：巡检产品研发部知识质量，找出过期和重复内容…"
-              style={{
-                flex: 1, border: "1px solid #dce4e1", borderRadius: 8, padding: "10px 13px",
-                fontSize: 10, outline: 0, color: "#263733",
-              }}
-            />
-            <button
-              className="primary-action"
-              onClick={send}
-              disabled={!input.trim() || loading}
-            >
-              {loading ? "处理中" : "执行"}
-            </button>
-          </div>
-          <small style={{ display: "block", marginTop: 7, color: "#9aa8a3", textAlign: "center", fontSize: 8 }}>
-            Agent 可搜索、巡检、作废、创建治理任务 · 批量操作前会向你确认
-          </small>
-        </footer>
-      </section>
-    </div>
-  );
+function DecisionDialog({treeId,title,onClose}:{treeId:number;title:string;onClose:()=>void}){
+  const [nodes,setNodes]=useState<Array<{id:number;question:string;options:string;result:string;parent_id:number|null}>>([]);
+  const [currentId,setCurrentId]=useState<number|null>(null);
+  const [history,setHistory]=useState<number[]>([]);
+  const [error,setError]=useState("");
+  type NodeType={id:number;question:string;options:string;result:string;parent_id:number|null};
+  useEffect(()=>{fetch('/api/decisions?id='+treeId).then(r=>r.json()).then(d=>{if(d.success){const all=d.data.allNodes as NodeType[];setNodes(all);const roots=all.filter((n:NodeType)=>!n.parent_id);if(roots.length)setCurrentId(roots[0].id);else setError("该决策树没有根节点")}else{setError(d.error?.message||"加载失败")}}).catch(()=>setError("加载决策树失败"))},[treeId]);
+  const node=nodes.find(n=>n.id===currentId);
+  const opts: Array<{label:string;next:number}> = node ? JSON.parse(node.options||'[]') : [];
+  const isEnd=!opts.length;
+  function goBack(){if(history.length>0){const prev=[...history];const lastId=prev[prev.length-1];prev.length=prev.length-1;setCurrentId(lastId);setHistory(prev)}}
+  function navigateTo(nextId:number){const cur=currentId;if(cur!=null){setHistory([...history,cur]);setCurrentId(nextId)}}
+  return <div className="modal-backdrop" onMouseDown={onClose}><div className="upload-modal decision-dialog" onMouseDown={e=>e.stopPropagation()} style={{width:'min(520px,94vw)',maxHeight:'80vh',overflow:'auto'}}><header style={{display:'flex',justifyContent:'space-between',alignItems:'start'}}><div><span className="page-kicker">DECISION GUIDE</span><h2 style={{fontFamily:"Georgia,'Songti SC',serif",fontSize:21,margin:'6px 0 4px'}}>{title}</h2></div><button onClick={onClose} style={{border:0,background:'transparent',fontSize:22,color:'#778580'}}>×</button></header>
+  {error?<p style={{color:'#c75b5b',fontSize:10,padding:20}}>{error}</p>
+  :node?<div style={{marginTop:20}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:16}}>{history.length>0&&<button onClick={goBack} style={{border:'1px solid #dce4e1',borderRadius:6,background:'white',padding:'5px 10px',fontSize:9,cursor:'pointer'}}>← 返回</button>}<span style={{fontSize:9,color:'#8b9d98'}}>步骤 {history.length+1}</span></div><h3 style={{fontSize:15,margin:'0 0 16px',color:'#1c2926'}}>{node.question}</h3>
+  {isEnd?<div style={{padding:16,background:'#f5faf7',border:'1px solid #d0e8dd',borderRadius:9}}><b style={{fontSize:11,color:'#1a6b5e',display:'block',marginBottom:8}}>指引结果</b><p style={{fontSize:10,color:'#38534c',lineHeight:1.7,whiteSpace:'pre-wrap',margin:0}}>{node.result||'暂无详细指引，请参考相关制度文档'}</p></div>
+  :<div style={{display:'grid',gap:8}}>{opts.map((opt)=><button key={opt.label} onClick={()=>navigateTo(opt.next)} style={{textAlign:'left',padding:'12px 16px',border:'1px solid #dce8e4',borderRadius:9,background:'white',fontSize:11,color:'#38534c',cursor:'pointer'}}>{opt.label} →</button>)}</div>}</div>
+  :<p style={{color:'#8b9d98',fontSize:10,padding:20}}>加载中...</p>}</div></div>;
 }

@@ -4,11 +4,14 @@
  * 给 DeepSeek 配上 6 个企业知识操作工具，让它能从"回答问题"升级为"执行治理任务"。
  * 核心：tool-use loop — AI 调用工具 → 系统执行 → AI 分析结果 → 决定下一步 → 最终回复。
  */
+import { env } from "cloudflare:workers";
 import { getD1 } from "../db";
 import { safeText } from "./api";
 import { type AuthContext } from "./authz";
 import { publishedDocumentScope } from "./document-access";
-import { cosine } from "./rag";
+
+type RuntimeEnv = { AI_PROVIDER?: string; AI_CHAT_MODEL?: string; AI_BASE_URL?: string; DEEPSEEK_API_KEY?: string; OPENAI_API_KEY?: string; };
+function runtime() { return env as unknown as RuntimeEnv; }
 
 // ---- Agent Request/Response Types ----
 
@@ -133,6 +136,23 @@ const TOOLS = [
           document_id: { type: "number", description: "关联的文档ID（可选）" },
         },
         required: ["type", "reason"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "send_email",
+      description: "发送邮件通知。可指定用户ID或直接填写邮箱地址。",
+      parameters: {
+        type: "object",
+        properties: {
+          user_id: { type: "number", description: "接收通知的用户ID（可选，与email二选一）" },
+          email: { type: "string", description: "接收邮箱地址（可选，如yangshanpm@163.com）" },
+          subject: { type: "string", description: "邮件主题" },
+          body: { type: "string", description: "邮件正文" },
+        },
+        required: ["subject", "body"],
       },
     },
   },
@@ -418,6 +438,10 @@ async function runCreateGovernanceTask(args: Record<string, unknown>, ctx: AuthC
     .bind(type, ctx.primaryDeptId, documentId, ctx.userId, reason, detail)
     .run();
 
+  // 发送通知给任务创建人
+  await db.prepare("INSERT INTO notifications(user_id, type, title, content, document_id) VALUES(?, 'GOVERNANCE', ?, ?, ?)")
+    .bind(ctx.userId, `治理任务：${reason}`, detail, documentId).run();
+
   await db
     .prepare(
       "INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?, 'AGENT_GOVERNANCE_TASK', ?, ?, ?, ?)",
@@ -433,6 +457,50 @@ async function runCreateGovernanceTask(args: Record<string, unknown>, ctx: AuthC
   });
 }
 
+async function runSendEmail(args: Record<string, unknown>, ctx: AuthContext) {
+  const db = getD1();
+  const userId = Number(args.user_id) || 0;
+  const directEmail = safeText(args.email, 200);
+  const subject = safeText(args.subject, 200);
+  const body = safeText(args.body, 2000);
+  if (!subject || !body) return JSON.stringify({ error: "邮件主题和正文不能为空" });
+
+  let toEmail = directEmail;
+  if (userId > 0) {
+    const u = await db.prepare("SELECT email,display_name FROM users WHERE id=? AND status='ACTIVE'").bind(userId).first<{email:string;display_name:string}>();
+    if (u) { toEmail = u.email; }
+  }
+  if (!toEmail) return JSON.stringify({ error: "未指定收件人（user_id 或 email 至少填一个）" });
+
+  // 站内通知
+  if (userId > 0) {
+    await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(?,'EMAIL',?,?)").bind(userId, subject, body).run();
+  }
+  await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?,'AGENT_SEND_EMAIL',?,'Agent',?,?)").bind(ctx.primaryDeptId, ctx.userId, `${toEmail}: ${subject}`, `agent-${Date.now()}`).run();
+
+  // Resend API 发送
+  const apiKey = (env as unknown as Record<string,string>).RESEND_API_KEY;
+  let actuallySent = false;
+  if (apiKey) {
+    try {
+      const res = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          from: "知域知识库 <onboarding@resend.dev>",
+          to: [toEmail],
+          subject: `[知域] ${subject}`,
+          html: `<h3>${subject}</h3><p>${body.replace(/\n/g,"<br>")}</p><hr><small>此邮件由知域企业知识中台 Agent 自动发送</small>`,
+        }),
+      });
+      actuallySent = res.ok;
+      if(!res.ok){ const errBody=await res.text().catch(()=>""); return JSON.stringify({sent:false,error:`Resend HTTP ${res.status}: ${errBody.slice(0,200)}`,to:toEmail}) }
+    } catch(e) { return JSON.stringify({ sent:false, error: e instanceof Error ? e.message : "网络错误", to:toEmail }); }
+  }
+
+  return JSON.stringify({ sent: actuallySent, to: toEmail, subject });
+}
+
 // ---- Tool Dispatch ----
 
 const TOOL_EXECUTORS: Record<
@@ -445,6 +513,7 @@ const TOOL_EXECUTORS: Record<
   find_similar: runFindSimilar,
   batch_archive: runBatchArchive,
   create_governance_task: runCreateGovernanceTask,
+  send_email: runSendEmail,
 };
 
 // ---- Agent Loop ----
@@ -460,8 +529,9 @@ const SYSTEM_PROMPT = `你是知域企业知识中台的治理智能助手。你
 
 工作模式：
 - 巡检：用 list_documents 查看各状态文档 → 分析 → 给出治理建议
+- 通知：发现问题后用 send_email 发送邮件给管理员（邮箱 yangshanpm@163.com）
 - 诊断：用 inspect_document + find_similar 深入分析问题文档
-- 执行：用 batch_archive 作废、create_governance_task 建待办
+- 执行：用 batch_archive 作废、create_governance_task 建待办、send_email 发邮件通知
 - 问答：用 search_knowledge 查找相关制度`;
 
 const MAX_ITERATIONS = 5;
@@ -489,14 +559,10 @@ export async function runAgent(
   while (iterations < MAX_ITERATIONS) {
     iterations++;
 
-    const apiKey =
-      typeof process !== "undefined"
-        ? undefined
-        : undefined;
-    // Read from global env — same pattern as ai-provider.ts
-    const baseUrl = getEnv("AI_BASE_URL") || "https://api.deepseek.com";
-    const apiKeyEnv = getEnv("DEEPSEEK_API_KEY") || "";
-    const model = getEnv("AI_CHAT_MODEL") || "deepseek-v4-flash";
+    const c = runtime();
+    const baseUrl = (c.AI_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
+    const apiKeyEnv = c.DEEPSEEK_API_KEY || "";
+    const model = c.AI_CHAT_MODEL || "deepseek-v4-flash";
 
     if (!apiKeyEnv) {
       return {
@@ -523,7 +589,7 @@ export async function runAgent(
     });
 
     if (!response.ok) {
-      const errorText = await response.text().catch(() => "");
+      await response.text().catch(() => "");
       return {
         answer: `AI 服务调用失败（HTTP ${response.status}），请稍后重试。`,
         toolCalls: toolCallLog,
@@ -607,19 +673,20 @@ export async function runAgent(
       content: "请根据以上工具执行结果，用中文给出简洁的总结和建议。",
     });
 
-    const apiKeyEnv = getEnv("DEEPSEEK_API_KEY") || "";
-    const baseUrl = getEnv("AI_BASE_URL") || "https://api.deepseek.com";
-    const model = getEnv("AI_CHAT_MODEL") || "deepseek-v4-flash";
+    const c2 = runtime();
+    const baseUrl2 = (c2.AI_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
+    const apiKey2 = c2.DEEPSEEK_API_KEY || "";
+    const model2 = c2.AI_CHAT_MODEL || "deepseek-v4-flash";
 
     try {
-      const summary = await fetch(`${baseUrl}/chat/completions`, {
+      const summary = await fetch(`${baseUrl2}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKeyEnv}`,
+          Authorization: `Bearer ${apiKey2}`,
         },
         body: JSON.stringify({
-          model,
+          model: model2,
           messages: messages.filter((m) => m.role !== "tool" || m.tool_call_id).slice(-15),
           temperature: 0.5,
           max_tokens: 1500,
@@ -635,20 +702,3 @@ export async function runAgent(
   return { answer: finalAnswer, toolCalls: toolCallLog, iterations };
 }
 
-/** Helper: read env var from global/wrangler context */
-function getEnv(key: string): string | undefined {
-  try {
-    if (typeof (globalThis as unknown as Record<string, unknown>)[key] === "string") {
-      return (globalThis as unknown as Record<string, string>)[key];
-    }
-  } catch {
-    // not available
-  }
-  try {
-    const env = (globalThis as unknown as { env?: Record<string, string> }).env;
-    if (env?.[key]) return env[key];
-  } catch {
-    // not available
-  }
-  return undefined;
-}

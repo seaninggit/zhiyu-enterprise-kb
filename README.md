@@ -4,7 +4,7 @@
 >
 > **Not just talking about AI — I built one, shipping real features on a real LLM.**
 
-[在线演示](https://zhiyu-kb.xyz) · [49 commits](https://github.com/seaninggit/zhiyu-enterprise-kb/commits/main) · 全栈独立开发 · Vibe Coding 实操
+[在线演示](https://zhiyu-kb.xyz) · [51 commits](https://github.com/seaninggit/zhiyu-enterprise-kb/commits/main) · 全栈独立开发 · Vibe Coding 实操
 
 ---
 
@@ -299,7 +299,7 @@ npm run build      # 生产构建
 
 ## MVP 功能清单
 
-### ✅ 已交付（49 commits）
+### ✅ 已交付（51 commits）
 
 | 模块 | 功能 | 状态 |
 |------|------|------|
@@ -410,4 +410,4 @@ npm run build      # 生产构建
 
 ---
 
-*Built with VS Code + Codex Computer Use + DeepSeek-v4-pro · 49 commits · 1 developer · 0 to 1*
+*Built with VS Code + Codex Computer Use + DeepSeek-v4-pro · 51 commits · 1 developer · 0 to 1*

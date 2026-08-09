@@ -422,6 +422,12 @@ export default function Home() {
     const timer = window.setTimeout(() => setAiGuideVisible(false), 6500);
     return () => window.clearTimeout(timer);
   }, []);
+  // 兜底：页面加载后确保弹窗出现
+  useEffect(() => {
+    if (currentUser.email && currentUser.demoMode && !hasDemoRole()) {
+      setDemoLoginOpen(true);
+    }
+  }, [currentUser.email, currentUser.demoMode]);
 
   useEffect(() => {
     fetch("/api/documents", { cache: "no-store" })

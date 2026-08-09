@@ -288,6 +288,18 @@ export async function POST(request: Request) {
         rid,
       );
     }
+    if (action === "AUTO_RESOLVE_TASKS") {
+      const docId = Number(payload.documentId);
+      if (!docId) throw new ApiError(400, "VALIDATION_ERROR", "文档ID不能为空");
+      const tasks = await db.prepare("SELECT id, reporter_user_id, reason FROM knowledge_governance_tasks WHERE (source_document_id=? OR target_document_id=?) AND status IN ('OPEN','IN_PROGRESS')").bind(docId, docId).all<{id:number;reporter_user_id:number|null;reason:string}>();
+      for (const t of tasks.results) {
+        await db.batch([
+          db.prepare("UPDATE knowledge_governance_tasks SET status='RESOLVED',resolution='文档已审核通过，自动闭环',resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(ctx.userId, t.id),
+          db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'GOVERNANCE_RESOLVED','你的知识反馈已处理',?,?)").bind(t.reporter_user_id || 1, `关联文档已审核通过，「${t.reason}」自动闭环。`, docId),
+        ]);
+      }
+      return ok({ resolved: tasks.results.length }, rid);
+    }
     if (action === "CREATE_SPACE") {
       if (ctx.role !== "SUPER_ADMIN")
         throw new ApiError(

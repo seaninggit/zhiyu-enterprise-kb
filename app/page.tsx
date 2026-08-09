@@ -69,8 +69,6 @@ type KnowledgeDocument = {
   acl?: PermissionGrant[];
   spacePermissions?: PermissionGrant[];
   permissionPrincipals?: PermissionPrincipals | null;
-  deptId?: number;
-  shareScope?: string;
 };
 type DocumentVersion = {
   id: number;
@@ -220,8 +218,6 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
     aiIndexStatus: String(row.ai_index_status ?? "PENDING"),
     spaceId: row.space_id ? Number(row.space_id) : null,
     folderId: row.folder_id ? Number(row.folder_id) : null,
-    deptId: row.dept_id ? Number(row.dept_id) : undefined,
-    shareScope: String(row.share_scope ?? ""),
   };
 }
 
@@ -649,10 +645,6 @@ export default function Home() {
     action: "submit" | "approve" | "reject" | "archive",
     providedComment = "",
   ) {
-    if (currentUser.demoMode && (action === "approve" || action === "reject" || action === "archive")) {
-      notify("演示环境下该操作已模拟执行，实际不会落库");
-      return;
-    }
     const next: DocumentStatus =
       action === "submit"
         ? "review"
@@ -696,6 +688,12 @@ export default function Home() {
               ? "已驳回至草稿，原因已通知上传人"
               : "已作废并退出检索范围",
       );
+      // 审批通过时自动关闭关联的治理任务
+      if (action === "approve") {
+        try {
+          await fetch("/api/platform", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "AUTO_RESOLVE_TASKS", documentId: id }) });
+        } catch { /* 非关键路径，静默失败 */ }
+      }
       setWorkflowDialog(null);
     } catch (error) {
       notify(error instanceof Error ? error.message : "操作失败");
@@ -1098,7 +1096,7 @@ export default function Home() {
             onResolve={setGovernanceDialog}
           />
         ) : view === "platform" && hasPerm("governance:platform") ? (
-          <PlatformView role={currentUser.role} notify={notify} demoMode={currentUser.demoMode||false} />
+          <PlatformView role={currentUser.role} notify={notify} />
         ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
         ) : view === "settings" && hasPerm("system:accounts") ? (
@@ -1111,7 +1109,6 @@ export default function Home() {
             metrics={metrics}
             documents={visible}
             allCount={published.length}
-            primaryDeptId={currentUser.primaryDeptId}
             query={query}
             correction={searchCorrection}
             category={category}
@@ -1452,8 +1449,8 @@ export default function Home() {
               ))}
             </div>
             <footer>
-              <button onClick={() => setDemoLoginOpen(false)} style={{color:"#8899a0",fontSize:9}}>
-                跳过，直接进入
+              <button onClick={() => setDemoLoginOpen(false)}>
+                以外部访客身份继续
               </button>
             </footer>
           </section>
@@ -1500,7 +1497,6 @@ function LibraryView({
   toggleFavorite: (id: number) => void;
   onSelect: (doc: KnowledgeDocument) => void;
   favoriteMode: boolean;
-  primaryDeptId?: number;
 }) {
   const [decisionTrees, setDecisionTrees] = useState<Array<{id:number;title:string;description:string;category:string}>>([]);
   const [decisionDialog, setDecisionDialog] = useState<{treeId:number;title:string}|null>(null);
@@ -1516,7 +1512,7 @@ function LibraryView({
           <p>
             {favoriteMode
               ? "集中查看你持续关注的知识资产。"
-              : allCount === 0 ? `正在加载知识库…` : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}
+              : `组织已沉淀 ${allCount} 份核心知识，今天从哪里开始？`}
           </p>
         </div>
         <div className="governance-chip">
@@ -1632,9 +1628,6 @@ function LibraryView({
                     </small>
                   </div>
                   <span>{doc.category}</span>
-                  {primaryDeptId && doc.deptId && doc.deptId !== primaryDeptId && (
-                    <span style={{fontSize:7,padding:"1px 5px",background:"#f0f4f8",borderRadius:3,color:"#5a7a9a"}}>跨部门</span>
-                  )}
                 </div>
               </article>
             ))}
@@ -1740,7 +1733,23 @@ function AdminView({
                   {task.assignee ? ` · ${task.assignee} 负责` : ""} · {task.createdAt}
                 </small>
               </div>
-              <button onClick={() => onResolve(task)}>处理并闭环</button>
+              {task.status === "IN_PROGRESS" ? (
+                task.sourceDocumentId ? (
+                  <button onClick={() => onSelect({id: task.sourceDocumentId!} as KnowledgeDocument)}>编辑文档</button>
+                ) : (
+                  <button onClick={() => onResolve(task)}>处理</button>
+                )
+              ) : (
+                <button onClick={async () => {
+                  try {
+                    const r = await fetch("/api/platform", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"START_GOVERNANCE",taskId:task.id})});
+                    const p = await r.json();
+                    if (!r.ok) throw new Error(p.error?.message ?? "操作失败");
+                    notify("已标记为处理中，请编辑关联文档后提交审核");
+                    if (typeof window !== "undefined") window.location.reload();
+                  } catch(e: any) { notify(e.message); }
+                }}>开始处理</button>
+              )}
             </div>
           ))}
         </section>
@@ -1834,11 +1843,11 @@ function AdminView({
 }
 
 function PlatformView({
-  role, notify, demoMode
+  role,
+  notify,
 }: {
   role: string;
   notify: (message: string) => void;
-  demoMode: boolean;
 }) {
   type PlatformData = {
     metrics: Record<string, number>;
@@ -1874,7 +1883,7 @@ function PlatformView({
   }
   async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(e:any){notify(e.message)}finally{setScanLoading(false)}}
   async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(e:any){notify(e.message)}finally{setAgentLoading(false)}}
-  async function handleScanAction(action:string,id:number,title:string=""){if(demoMode&&(action==="ARCHIVE"||action==="DELETE")){notify("演示环境下该操作已模拟执行");return}const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
+  async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
   async function load() {
     setLoading(true);
     try {

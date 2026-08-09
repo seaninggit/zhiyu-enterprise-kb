@@ -1844,6 +1844,21 @@ function PlatformView({
   const [scanLoading, setScanLoading] = useState(false);
   const [agentResult, setAgentResult] = useState<{trace:Array<{tool:string;args:unknown;result:string}>;summary:string}|null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
+  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
+  const [agentQuestion, setAgentQuestion] = useState("");
+  async function runAgentChat(question?:string) {
+    const q = question || agentQuestion.trim();
+    if(!q || agentLoading) return;
+    setAgentLoading(true); setAgentResult(null);
+    try {
+      const r = await fetch("/api/ai/ask",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({question:q,agent:true,mode:"agent"})});
+      const p = await r.json();
+      if(!r.ok) throw new Error(p.error?.message??"Agent执行失败");
+      setAgentResult({trace:p.data?.toolCalls||[],summary:p.data?.answer||""});
+      setAgentQuestion("");
+    } catch(e:any) { notify(e.message); }
+    finally { setAgentLoading(false); }
+  }
   async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(e:any){notify(e.message)}finally{setScanLoading(false)}}
   async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(e:any){notify(e.message)}finally{setAgentLoading(false)}}
   async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
@@ -2057,6 +2072,29 @@ function PlatformView({
           ))}
         </section>
       )}
+      <section className="platform-card wide-card" style={{marginTop:18}}>
+        <header>
+          <h2>🤖 Agent 诊断</h2>
+          <span>AI 自主巡检知识库</span>
+        </header>
+        <div style={{padding:"0 18px 12px"}}>
+          <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
+            {["巡检知识库质量：列出过期、重复、解析失败文档并给出治理建议","扫描本月即将到期的高频文档","检测所有部门的重复内容并建治理任务"].map(q=>(
+              <button key={q} onClick={()=>runAgentChat(q)} disabled={agentLoading} style={{fontSize:9,padding:"6px 12px",border:"1px solid #dce8e4",borderRadius:6,background:"white",cursor:"pointer",textAlign:"left",whiteSpace:"nowrap"}}>{q.slice(0,24)}…</button>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <input value={agentQuestion} onChange={e=>setAgentQuestion(e.target.value)} placeholder="或输入自定义巡检指令…" onKeyDown={e=>{if(e.key==="Enter")runAgentChat()}} style={{flex:1,padding:"8px 12px",border:"1px solid #dce4e1",borderRadius:6,fontSize:10,outline:0}} />
+            <button onClick={()=>runAgentChat()} disabled={agentLoading||!agentQuestion.trim()} style={{padding:"8px 16px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:10,cursor:"pointer",whiteSpace:"nowrap"}}>{agentLoading?"分析中…":"执行"}</button>
+          </div>
+        </div>
+        {agentResult&&(
+          <div style={{margin:"0 18px 12px"}}>
+            {agentResult.trace.length>0&&<details style={{marginBottom:8}}><summary style={{fontSize:10,color:"#1a6b5e",cursor:"pointer"}}>推理链路（{agentResult.trace.length} 步）</summary><div style={{marginTop:6,display:"grid",gap:3}}>{agentResult.trace.map((t:any,i:number)=><div key={i} style={{display:"flex",gap:6,padding:"5px 8px",background:"#f8faf9",borderRadius:4,fontSize:9}}><span style={{color:"#16796d",fontWeight:700}}>{i+1}.</span><b style={{color:"#1a5c55"}}>{t.tool}</b></div>)}</div></details>}
+            <div style={{padding:10,background:"#f0f7fa",borderRadius:6,fontSize:10,color:"#4a6878",whiteSpace:"pre-wrap",maxHeight:260,overflow:"auto"}}>{agentResult.summary}</div>
+          </div>
+        )}
+      </section>
     </main>
   );
 }
@@ -3571,7 +3609,6 @@ function AiPanel({
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [agentMode, setAgentMode] = useState(false);
   const [checklistGenerated, setChecklistGenerated] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<number | null>(null);
@@ -3720,8 +3757,6 @@ function AiPanel({
           question: userText,
           conversationId,
           queryEmbedding,
-          agent: agentMode,
-          mode: agentMode ? "agent" : undefined,
         }),
       });
       const payload = await response.json();
@@ -4065,7 +4100,7 @@ function AiPanel({
             {error && <p className="ai-error">{error}</p>}
             <div className="chat-scroll-anchor" aria-hidden="true" />
           </section>
-          <footer className="ai-compose"><div style={{display:"flex",alignItems:"center",gap:6,padding:"0 26px 6px"}}><label style={{fontSize:9,color:"#8b9d98",cursor:"pointer",display:"flex",alignItems:"center",gap:3}}><input type="checkbox" checked={agentMode} onChange={e=>setAgentMode(e.target.checked)} style={{accentColor:"#16796d"}}/>Agent模式</label>{agentMode&&<small style={{fontSize:8,color:"#d9a64a"}}>可执行治理操作</small>}</div>
+          <footer className="ai-compose">
             <div className="ai-input">
               <span>✦</span>
               <input

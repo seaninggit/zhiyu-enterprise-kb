@@ -7,6 +7,7 @@
 
 const UPSTREAM = "https://zhiyu-enterprise-kb.yangshanpm.chatgpt.site";
 const SESSION_COOKIE = "zhiyu_cn_session";
+const UPSTREAM_SESSION_COOKIE = "zhiyu_public_session";
 
 // 国内入口会剥离外网身份信息，统一由上游重新鉴权
 const DROP_REQUEST_HEADERS = [
@@ -48,7 +49,7 @@ export default {
     const sid = sessionId(cookie);
     headers.set(
       "cookie",
-      `${cookie ? `${cookie}; ` : ""}${SESSION_COOKIE}=${sid}`,
+      `${cookie ? `${cookie}; ` : ""}${SESSION_COOKIE}=${sid}; ${UPSTREAM_SESSION_COOKIE}=${sid}`,
     );
     headers.set("x-forwarded-host", incomingUrl.host);
     headers.set("x-forwarded-proto", "https");

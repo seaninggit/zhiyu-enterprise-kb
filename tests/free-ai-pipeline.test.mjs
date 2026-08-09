@@ -5,10 +5,10 @@ import test from "node:test";
 const read = path => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 
 test("free local OCR and semantic retrieval are wired end to end", async () => {
-  const [client, index, search, ask, migration, page,access] = await Promise.all([
+  const [client, index, search, ask, migration, page,access,intents] = await Promise.all([
     read("lib/client-knowledge.ts"), read("app/api/semantic-index/route.ts"),
     read("app/api/search/route.ts"), read("app/api/ai/ask/route.ts"),
-    read("drizzle/0009_free_local_ai_pipeline.sql"), read("app/page.tsx"),read("lib/document-access.ts"),
+    read("drizzle/0009_free_local_ai_pipeline.sql"), read("app/page.tsx"),read("lib/document-access.ts"),read("lib/intent-classifier.ts"),
   ]);
   assert.match(client, /tesseract\.js/);
   assert.match(client, /paraphrase-multilingual-MiniLM-L12-v2|LOCAL_EMBEDDING_MODEL/);
@@ -16,7 +16,7 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(index, /DOCUMENT_NOT_PARSED/);
   assert.match(index, /INDEXED_LOCAL/);
   assert.match(search, /HYBRID_LOCAL/);
-  assert.match(search, /row\.relevance > \(vector \? \.08 : 0\)/);
+  assert.match(search, /row\.relevance>\(vector\?MIN_RELEVANCE:0\)/);
   assert.match(search, /publishedDocumentScope/);
   assert.match(access, /document_acl/);
   assert.match(access, /space_permissions/);
@@ -31,11 +31,13 @@ test("free local OCR and semantic retrieval are wired end to end", async () => {
   assert.match(ask, /assistant_capabilities/);
   assert.match(ask, /assistant_account/);
   assert.match(ask, /assistant_farewell/);
-  assert.match(ask, /退下\|下去\|休息/);
+  assert.match(intents, /"退下"/);
+  assert.match(intents, /"下去"/);
+  assert.match(intents, /"休息吧"/);
   assert.match(ask, /source_document_ids,request_id[\s\S]*VALUES\(\?,\?,\?,\?,\?,'\[\]'/);
   assert.match(migration, /extraction_method/);
   assert.match(migration, /ocr_status/);
-  assert.match(page, /重建本地语义索引/);
+  assert.match(page, /buildLocalSemanticIndex/);
   assert.match(page, /已检索企业知识 · 语义匹配/);
   assert.match(page, /平台助手 · 无需知识检索/);
   assert.match(page, /returnToAi=\{documentReturnTarget === "ai"\}/);

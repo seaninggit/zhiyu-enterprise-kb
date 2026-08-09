@@ -171,7 +171,6 @@ type QueryCorrection = {
 };
 
 const DEFAULT_CATEGORIES = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
-const SYSTEM_CATEGORY_CODES = new Set(["PRODUCT", "PEOPLE", "SALES", "FINANCE"]);
 const statusLabel: Record<DocumentStatus, string> = {
   draft: "草稿",
   review: "待审核",
@@ -2182,8 +2181,9 @@ function EnterprisePanels({
 }) {
   const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
-  const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string}|null>(null);
+  const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string;code?:string;deptId?:number|null;references?:number;targetId?:number}|null>(null);
   const [editingGroup,setEditingGroup]=useState<Record<string,unknown>|null>(null);
+  const [editingCategory,setEditingCategory]=useState<Record<string,unknown>|null>(null);
   const [data, setData] = useState<Record<
     string,
     Record<string, unknown>[]
@@ -2247,7 +2247,7 @@ function EnterprisePanels({
                   {String(item.code)} · {item.dept_id ? "部门级" : "全局"}
                 </small>
               </div>
-              {SYSTEM_CATEGORY_CODES.has(String(item.code))?<span className="status-pill">内置分类</span>:<button onClick={()=>setPendingTaxonomyDelete({type:"CATEGORY",id:Number(item.id),name:String(item.name)})}>删除</button>}
+              {String(item.code)==="UNCLASSIFIED"?<span className="status-pill">系统兜底</span>:<><button onClick={()=>setEditingCategory(item)}>重命名</button><button onClick={()=>setPendingTaxonomyDelete({type:"CATEGORY",id:Number(item.id),name:String(item.name),code:String(item.code),deptId:item.dept_id?Number(item.dept_id):null,references:Number(item.document_count)||0})}>{Number(item.document_count)?"迁移/停用":"删除"}</button></>}
             </div>
           ))}
           <form
@@ -2592,8 +2592,9 @@ function EnterprisePanels({
           </form>
         ))}
       </section>
-      {pendingTaxonomyDelete&&<div className="modal-backdrop" onMouseDown={()=>setPendingTaxonomyDelete(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>×</button><span>配置删除确认</span><h2>确认删除“{pendingTaxonomyDelete.name}”？</h2><p>{pendingTaxonomyDelete.type==="CATEGORY"?"未使用的分类将直接删除；已有资料使用时会安全停用，并保留历史资料分类。":pendingTaxonomyDelete.type==="GROUP"?"未被权限引用的用户组将删除成员关系；已有权限引用时会安全停用，避免现有访问权限失效。":"未使用标签可直接删除；仍有关联资料时系统会阻止删除，避免历史标签静默丢失。"}</p><div><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>取消</button><button className="primary-action" onClick={async()=>{const target=pendingTaxonomyDelete;const actions={CATEGORY:"DELETE_CATEGORY",GROUP:"DELETE_GROUP",TAG:"DELETE_TAG"} as const;const saved=await act({action:actions[target.type],id:target.id});if(saved)setPendingTaxonomyDelete(null);}}>确认删除</button></div></section></div>}
+      {pendingTaxonomyDelete&&<div className="modal-backdrop" onMouseDown={()=>setPendingTaxonomyDelete(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>×</button><span>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?"分类迁移":"配置删除确认"}</span><h2>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?`迁移“${pendingTaxonomyDelete.name}”下的资料`:`确认删除“${pendingTaxonomyDelete.name}”？`}</h2><p>{pendingTaxonomyDelete.type==="CATEGORY"?(pendingTaxonomyDelete.references?`当前关联 ${pendingTaxonomyDelete.references} 份有效资料。选择目标分类后，系统将批量迁移资料并停用原分类，全程记录审计。`:"该分类没有关联有效资料，可以直接删除。") :pendingTaxonomyDelete.type==="GROUP"?"未被权限引用的用户组将删除成员关系；已有权限引用时会安全停用，避免现有访问权限失效。":"未使用标签可直接删除；仍有关联资料时系统会阻止删除，避免历史标签静默丢失。"}</p>{pendingTaxonomyDelete.type==="CATEGORY"&&Boolean(pendingTaxonomyDelete.references)&&<label style={{display:"grid",gap:6,textAlign:"left"}}>迁移到<select value={pendingTaxonomyDelete.targetId??""} onChange={e=>setPendingTaxonomyDelete(current=>current?{...current,targetId:Number(e.target.value)}:null)}><option value="">请选择目标分类</option>{categories.filter(item=>Number(item.id)!==pendingTaxonomyDelete.id&&(!pendingTaxonomyDelete.deptId?!item.dept_id:(!item.dept_id||Number(item.dept_id)===pendingTaxonomyDelete.deptId))).map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}{item.dept_id?"（本部门）":"（全局）"}</option>)}</select></label>}<div><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>取消</button><button className="primary-action" disabled={pendingTaxonomyDelete.type==="CATEGORY"&&Boolean(pendingTaxonomyDelete.references)&&!pendingTaxonomyDelete.targetId} onClick={async()=>{const target=pendingTaxonomyDelete;const actionName=target.type==="CATEGORY"&&target.references?"MIGRATE_CATEGORY":target.type==="CATEGORY"?"DELETE_CATEGORY":target.type==="GROUP"?"DELETE_GROUP":"DELETE_TAG";const saved=await act({action:actionName,id:target.id,targetId:target.targetId});if(saved)setPendingTaxonomyDelete(null);}}>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?"迁移并停用":"确认删除"}</button></div></section></div>}
       {editingGroup&&<div className="modal-backdrop" onMouseDown={()=>setEditingGroup(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={async e=>{e.preventDefault();const fd=new FormData(e.currentTarget);const saved=await act({action:"SAVE_GROUP",id:editingGroup.id,name:editingGroup.name,code:editingGroup.code,deptId:editingGroup.dept_id??"",userIds:fd.getAll("userIds").map(Number)});if(saved)setEditingGroup(null);}}><button type="button" onClick={()=>setEditingGroup(null)}>×</button><span>用户组成员</span><h2>{String(editingGroup.name)}</h2><p>成员变化会立即影响该用户组后续授权；既有文档权限无需重复配置。</p><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,maxHeight:260,overflow:"auto",textAlign:"left"}}>{(data.users??[]).filter(user=>!editingGroup.dept_id||Number(user.dept_id)===Number(editingGroup.dept_id)).map(user=><label key={`${user.id}-${user.dept_id}`} style={{display:"flex",alignItems:"center",gap:6}}><input type="checkbox" name="userIds" value={String(user.id)} defaultChecked={String(editingGroup.member_ids??"").split(",").includes(String(user.id))}/>{String(user.display_name)}</label>)}</div><div><button type="button" onClick={()=>setEditingGroup(null)}>取消</button><button className="primary-action">保存成员</button></div></form></div>}
+      {editingCategory&&<div className="modal-backdrop" onMouseDown={()=>setEditingCategory(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={async e=>{e.preventDefault();const name=String(new FormData(e.currentTarget).get("name")||"");const saved=await act({action:"RENAME_CATEGORY",id:editingCategory.id,name});if(saved)setEditingCategory(null);}}><button type="button" onClick={()=>setEditingCategory(null)}>×</button><span>分类重命名</span><h2>{String(editingCategory.name)}</h2><p>名称变更会同步到该分类下所有文档、目录筛选和上传表单，并写入审计日志。</p><input name="name" required defaultValue={String(editingCategory.name)} maxLength={60}/><div><button type="button" onClick={()=>setEditingCategory(null)}>取消</button><button className="primary-action">保存新名称</button></div></form></div>}
     </>
   );
 }

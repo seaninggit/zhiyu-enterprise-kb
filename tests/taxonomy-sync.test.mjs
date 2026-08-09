@@ -20,9 +20,13 @@ test("custom categories and groups persist and refresh every consuming interface
   assert.match(enterprise,/DELETE_TAG/);
   assert.match(enterprise,/mode:\"DEACTIVATED\"/);
   assert.match(page,/配置删除确认/);
-  assert.match(page,/已有资料使用时会安全停用/);
-  assert.match(enterprise,/SYSTEM_CATEGORY_PROTECTED/);
-  assert.match(page,/SYSTEM_CATEGORY_CODES/);
+  assert.match(page,/当前关联.*份有效资料/);
+  assert.match(enterprise,/MIGRATE_CATEGORY/);
+  assert.match(enterprise,/RENAME_CATEGORY/);
+  assert.match(enterprise,/CATEGORY_IN_USE/);
+  assert.match(enterprise,/UNCLASSIFIED/);
+  assert.match(page,/迁移并停用/);
+  assert.match(page,/分类重命名/);
 });
 
 test("platform-managed values are consumed by business workflows",()=>{

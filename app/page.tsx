@@ -2640,12 +2640,15 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
   }
   async function saveRole() {
     if (!editingRole) return;
+    if (!editingRole.name.trim() || !editingRole.code.trim()) { notify("角色名称和编码不能为空"); return; }
     try {
       const method = editingRole.id ? "PATCH" : "POST";
+      const body: Record<string,unknown> = { id: editingRole.id, code: editingRole.code.trim(), name: editingRole.name.trim(), description: editingRole.description, scope: editingRole.scope, permissionIds: editingRole.permissionIds };
+      if (!editingRole.id) delete body.id;
       const r = await fetch("/api/admin/roles", {
         method,
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(editingRole),
+        body: JSON.stringify(body),
       });
       const p = await r.json();
       if (!r.ok) throw new Error(p.error?.message ?? "保存失败");

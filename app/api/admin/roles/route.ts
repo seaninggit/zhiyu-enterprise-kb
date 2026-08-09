@@ -99,7 +99,10 @@ export async function PATCH(request: Request) {
     const description = safeText(p.description, 200);
     const scope = ["global", "department"].includes(String(p.scope)) ? String(p.scope) : undefined;
 
-    if (name) await db.prepare("UPDATE roles SET name=?, description=?, scope=COALESCE(?, scope) WHERE id=?").bind(name, description, scope, id).run();
+    if (name) {
+      if (scope) await db.prepare("UPDATE roles SET name=?, description=?, scope=? WHERE id=?").bind(name, description, scope, id).run();
+      else await db.prepare("UPDATE roles SET name=?, description=? WHERE id=?").bind(name, description, id).run();
+    }
 
     if (Array.isArray(p.permissionIds)) {
       await db.prepare("DELETE FROM role_permissions WHERE role_id=?").bind(id).run();

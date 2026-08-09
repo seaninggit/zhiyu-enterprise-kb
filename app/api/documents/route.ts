@@ -34,19 +34,23 @@ export async function GET(request: Request) {
       WHERE u.status='ACTIVE' AND ud.dept_id IN (${placeholders(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)}) ORDER BY u.display_name`)
       .bind(...(ctx.role === "SUPER_ADMIN" ? (departments.results as { id: number }[]).map(d => Number(d.id)) : ctx.deptIds)).all();
     const categoryOptions=await db.prepare(`SELECT id,dept_id,name,code,sort_order FROM knowledge_categories WHERE is_active=1 AND (${ctx.role === "SUPER_ADMIN" ? "1=1" : `dept_id IS NULL OR dept_id IN (${placeholders(ctx.deptIds)})`}) ORDER BY sort_order,name`).bind(...(ctx.role === "SUPER_ADMIN"?[]:ctx.deptIds)).all();
+    const tagOptions=await db.prepare(`SELECT id,dept_id,name FROM tags WHERE ${ctx.role === "SUPER_ADMIN" ? "1=1" : `dept_id IS NULL OR dept_id IN (${placeholders(ctx.deptIds)})`} ORDER BY name`).bind(...(ctx.role === "SUPER_ADMIN"?[]:ctx.deptIds)).all();
+    const uploadSettings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('governance.review_days','retention.default_days','security.max_file_bytes','security.allowed_mime')").all<{key:string,value:string}>();
+    const uploadConfig=Object.fromEntries(uploadSettings.results.map(item=>[item.key,item.value]));
     const favorites=await db.prepare("SELECT document_id FROM user_favorites WHERE user_id=?").bind(ctx.userId).all<{document_id:number}>();
     const notifications=await db.prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY create_time DESC LIMIT 30").bind(ctx.userId).all();
     const spaces=await db.prepare(`SELECT s.*,f.id folder_id,f.name folder_name,f.parent_id,f.sort_order,(SELECT COUNT(*) FROM documents d WHERE d.space_id=s.id AND d.is_deleted=0) document_count FROM knowledge_spaces s LEFT JOIN knowledge_folders f ON f.space_id=s.id WHERE s.is_active=1 AND (${ctx.role === "SUPER_ADMIN" ? "1=1" : `s.dept_id IS NULL OR s.dept_id IN (${placeholders(ctx.deptIds)})`}) ORDER BY s.id,f.sort_order`).bind(...(ctx.role === "SUPER_ADMIN"?[]:ctx.deptIds)).all();
     const metricScope=ctx.role==="SUPER_ADMIN"?"1=1":`dept_id IN (${placeholders(ctx.deptIds)})`;
     const metrics=await db.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN status='PENDING_DEPT_REVIEW' THEN 1 ELSE 0 END) pending,SUM(CASE WHEN parse_status IN ('FAILED','OCR_FAILED','NEEDS_CONTENT') THEN 1 ELSE 0 END) parse_failed,SUM(CASE WHEN review_due_at IS NOT NULL AND review_due_at<=date('now','+30 day') AND status='ARCHIVED_ACTIVE' THEN 1 ELSE 0 END) due_soon,SUM(CASE WHEN verification_status='VERIFIED' THEN 1 ELSE 0 END) verified FROM documents WHERE is_deleted=0 AND ${metricScope}`).bind(...(ctx.role==="SUPER_ADMIN"?[]:ctx.deptIds)).first();
-    return ok({ documents: visibleDocuments, logs: logs.results, governanceTasks: governanceTasks.results, currentUser: ctx, favorites:favorites.results.map(row=>Number(row.document_id)), notifications:notifications.results, spaces:spaces.results, metrics, categoryOptions:categoryOptions.results, uploadOptions: { departments: departments.results, members: members.results } }, rid);
+    return ok({ documents: visibleDocuments, logs: logs.results, governanceTasks: governanceTasks.results, currentUser: ctx, favorites:favorites.results.map(row=>Number(row.document_id)), notifications:notifications.results, spaces:spaces.results, metrics, categoryOptions:categoryOptions.results, tagOptions:tagOptions.results, uploadConfig, uploadOptions: { departments: departments.results, members: members.results } }, rid);
   } catch (error) { return fail(error, rid); }
 }
 
 export async function POST(request: Request) {
   const rid = requestId(request); let sourceKey: string | null = null;
   try {
-    const ctx = await requireApiUser(); await enforceRateLimit(ctx, "upload", 20, 60);
+    const ctx = await requireApiUser(); await enforceRateLimit(ctx, "upload", 20, 60);const db=getD1();
+    const settingRows=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('retention.default_days','security.max_file_bytes','security.allowed_mime')").all<{key:string,value:string}>();const settings=Object.fromEntries(settingRows.results.map(item=>[item.key,item.value]));
     const contentType = request.headers.get("content-type") || "";
     const input = contentType.includes("application/json") ? await request.json() as Record<string, unknown> : Object.fromEntries(await request.formData());
     const value = (key: string) => input[key] ?? null;
@@ -60,15 +64,16 @@ export async function POST(request: Request) {
     if (sourceKey && !sourceKey.startsWith(`documents/${deptId}/`)) throw new ApiError(403, "FILE_SCOPE_MISMATCH", "文件与归属部门不匹配");
     if (file instanceof File && file.size > 0) {
       sourceName = file.name; mimeType = file.type || "application/octet-stream"; size = file.size; sourceKey = `documents/${deptId}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+      const maxBytes=Number(settings['security.max_file_bytes']||0),allowed=String(settings['security.allowed_mime']||'').split(',').map(item=>item.trim()).filter(Boolean);if(maxBytes>0&&file.size>maxBytes)throw new ApiError(413,"FILE_TOO_LARGE",`文件超过平台配置的 ${maxBytes} 字节限制`);if(allowed.length&&file.type&&!allowed.includes(file.type))throw new ApiError(415,"FILE_TYPE_NOT_ALLOWED","该文件类型未被平台安全策略允许");
       if (!hasKnowledgeFileStorage()) throw new ApiError(503, "STORAGE_UNAVAILABLE", "文件存储服务暂不可用");
       await putKnowledgeFile(sourceKey, file.stream(), { contentType: mimeType, size: file.size });
     }
     const extractedContent = safeText(value("content"), 500000); const extractionMethod = safeText(value("extractionMethod") || (extractedContent ? "MANUAL" : "NONE"), 40); const extractionDetail = safeText(value("extractionDetail"), 500); const ocrStatus = safeText(value("ocrStatus") || "NOT_REQUIRED", 40);
     const initialParseStatus = extractedContent ? "COMPLETED" : (ocrStatus === "FAILED" ? "OCR_FAILED" : sourceKey ? "PENDING" : "NEEDS_CONTENT");
-    const db = getD1(); const id = crypto.getRandomValues(new Uint32Array(1))[0];const ownerUser=await db.prepare("SELECT u.id FROM users u JOIN user_departments ud ON ud.user_id=u.id WHERE u.status='ACTIVE' AND ud.dept_id=? AND u.display_name=? LIMIT 1").bind(deptId,owner).first<{id:number}>();
+    const id = crypto.getRandomValues(new Uint32Array(1))[0];const ownerUser=await db.prepare("SELECT u.id FROM users u JOIN user_departments ud ON ud.user_id=u.id WHERE u.status='ACTIVE' AND ud.dept_id=? AND u.display_name=? LIMIT 1").bind(deptId,owner).first<{id:number}>();const retentionDays=Math.max(1,Math.min(36500,Number(settings['retention.default_days']||1095)));
     await db.batch([
       db.prepare(`INSERT INTO documents(id,dept_id,space_id,folder_id,create_user_id,update_user_id,owner_user_id,title,summary,content,category,status,share_scope,security_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,retention_until,is_deleted,parse_status,extraction_method,extraction_detail,ocr_status)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,date('now','+1095 day'),0,?,?,?,?)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, ownerUser?.id||ctx.userId, title, safeText(value("summary"), 1000), extractedContent, category, status, shareScope, safeText(value("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null, initialParseStatus, extractionMethod, extractionDetail, ocrStatus),
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,date('now',?),0,?,?,?,?)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, ownerUser?.id||ctx.userId, title, safeText(value("summary"), 1000), extractedContent, category, status, shareScope, safeText(value("securityLevel") || "INTERNAL", 30), owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null,`+${retentionDays} day`, initialParseStatus, extractionMethod, extractionDetail, ocrStatus),
       db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,1,?,?,?,?,?)").bind(id, title, extractedContent, "上传并创建知识", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'CREATE',?,?,?,?)").bind(id, deptId, ctx.userId, ctx.displayName, sourceName ? `上传文件 ${sourceName}` : "创建在线文档", rid),
       db.prepare("INSERT INTO ingestion_jobs(document_id,document_version,status,stage) VALUES(?,1,'QUEUED','EXTRACT')").bind(id),

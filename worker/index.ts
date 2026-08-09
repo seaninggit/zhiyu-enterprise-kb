@@ -47,14 +47,19 @@ const worker = {
 export default worker;
 
 // 定时治理巡检：读取 DB 配置的任务列表，按开关状态执行
-export async function scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
+function cronFieldMatches(field:string,value:number){return field==="*"||field.split(",").some(part=>Number(part)===value);}
+function isCronDue(expression:string,date:Date){const [minute,hour,day,month,weekday]=expression.trim().split(/\s+/);if(!weekday)return false;return cronFieldMatches(minute,date.getUTCMinutes())&&cronFieldMatches(hour,date.getUTCHours())&&cronFieldMatches(day,date.getUTCDate())&&cronFieldMatches(month,date.getUTCMonth()+1)&&cronFieldMatches(weekday,date.getUTCDay());}
+
+export async function scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
   const db = env.DB;
   const now = new Date().toISOString().slice(0, 19).replace("T", " ");
   const rid = `cron-${Date.now()}`;
   const runTs = new Date().toISOString();
 
-  const tasks = await db.prepare("SELECT code FROM scheduled_tasks WHERE enabled=1").all<{code:string}>();
-  const enabled = new Set(tasks.results.map(t => t.code));
+  const tasks = await db.prepare("SELECT code,cron_expr FROM scheduled_tasks WHERE enabled=1").all<{code:string;cron_expr:string}>();
+  const beijingTime=new Date(controller.scheduledTime+8*60*60*1000);
+  const enabled = new Set(tasks.results.filter(task=>isCronDue(task.cron_expr,beijingTime)).map(t => t.code));
+  if(!enabled.size)return;
 
   let archived = 0, duplicates = 0, corrections = 0, reminded = 0;
   const alerts: string[] = [];

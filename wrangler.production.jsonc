@@ -27,5 +27,5 @@
     { "pattern": "zhiyu-kb.xyz", "custom_domain": true },
     { "pattern": "www.zhiyu-kb.xyz", "custom_domain": true }
   ]
-  ,"triggers": { "crons": ["0 18 * * *"] }
+  ,"triggers": { "crons": ["0 * * * *"] }
 }

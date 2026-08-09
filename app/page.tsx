@@ -121,6 +121,8 @@ type UploadOptions = {
   departments: UploadDepartment[];
   members: UploadMember[];
 };
+type TaxonomyOption = { id: number; dept_id?: number | null; name: string; code?: string; sort_order?: number };
+type UploadSpace = { id:number;dept_id?:number|null;name:string;folder_id?:number|null;folder_name?:string|null;parent_id?:number|null };
 type CurrentUser = {
   userId?: number;
   email: string;
@@ -333,6 +335,10 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [knowledgeCategories, setKnowledgeCategories] = useState(DEFAULT_CATEGORIES);
+  const [categoryOptions, setCategoryOptions] = useState<TaxonomyOption[]>(DEFAULT_CATEGORIES.filter(item=>item!=="全部").map((name,index)=>({id:-(index+1),dept_id:null,name})));
+  const [tagOptions, setTagOptions] = useState<TaxonomyOption[]>([]);
+  const [knowledgeSpaces,setKnowledgeSpaces]=useState<UploadSpace[]>([]);
+  const [uploadConfig,setUploadConfig]=useState<Record<string,string>>({});
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
   const [favorites, setFavorites] = useState<number[]>([]);
   const [metrics, setMetrics] = useState<Metrics>({
@@ -455,8 +461,14 @@ export default function Home() {
         }
         if (data.data?.uploadOptions?.departments?.length)
           setUploadOptions(data.data.uploadOptions);
-        if (Array.isArray(data.data?.categoryOptions))
-          setKnowledgeCategories(["全部", ...Array.from(new Set(data.data.categoryOptions.map((item:Record<string,unknown>)=>String(item.name)).filter(Boolean)))]);
+        if (Array.isArray(data.data?.categoryOptions)) {
+          const options=data.data.categoryOptions.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),code:String(item.code??""),sort_order:Number(item.sort_order)||0}));
+          setCategoryOptions(options);
+          setKnowledgeCategories(["全部", ...Array.from(new Set(options.map((item:TaxonomyOption)=>item.name).filter(Boolean)))]);
+        }
+        if(Array.isArray(data.data?.tagOptions))setTagOptions(data.data.tagOptions.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name)})));
+        if(Array.isArray(data.data?.spaces))setKnowledgeSpaces(data.data.spaces.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),folder_id:item.folder_id?Number(item.folder_id):null,folder_name:item.folder_name?String(item.folder_name):null,parent_id:item.parent_id?Number(item.parent_id):null})));
+        if(data.data?.uploadConfig)setUploadConfig(data.data.uploadConfig);
         setFavorites(data.data?.favorites ?? []);
         setNotifications(data.data?.notifications ?? []);
         if (data.data?.metrics) setMetrics(data.data.metrics);
@@ -497,6 +509,16 @@ export default function Home() {
   function notify(message: string) {
     setToast(message);
     window.setTimeout(() => setToast(""), 2300);
+  }
+  async function openUpload(){
+    try{
+      const response=await fetch("/api/documents",{cache:"no-store"}),payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"上传配置加载失败");const data=payload.data??{};
+      if(data.uploadOptions?.departments?.length)setUploadOptions(data.uploadOptions);
+      if(Array.isArray(data.categoryOptions)){const options=data.categoryOptions.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),code:String(item.code??""),sort_order:Number(item.sort_order)||0}));setCategoryOptions(options);setKnowledgeCategories(["全部",...Array.from(new Set(options.map((item:TaxonomyOption)=>item.name).filter(Boolean)))]);}
+      if(Array.isArray(data.tagOptions))setTagOptions(data.tagOptions.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name)})));
+      if(Array.isArray(data.spaces))setKnowledgeSpaces(data.spaces.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),folder_id:item.folder_id?Number(item.folder_id):null,folder_name:item.folder_name?String(item.folder_name):null,parent_id:item.parent_id?Number(item.parent_id):null})));
+      if(data.uploadConfig)setUploadConfig(data.uploadConfig);setUploadOpen(true);
+    }catch(error){notify(error instanceof Error?error.message:"上传配置加载失败");}
   }
   async function refreshGovernanceTasks() {
     const response = await fetch("/api/documents", { cache: "no-store" });
@@ -1078,7 +1100,7 @@ export default function Home() {
           )}
           <button
             className="primary-action"
-            onClick={() => setUploadOpen(true)}
+            onClick={openUpload}
           >
             ＋ 上传资料
           </button>
@@ -1090,7 +1112,7 @@ export default function Home() {
             metrics={metrics}
             governanceTasks={governanceTasks}
             role={currentUser.role}
-            onUpload={() => setUploadOpen(true)}
+            onUpload={openUpload}
             onSelect={(doc) =>
               openDocument(doc).catch((error) =>
                 notify(error instanceof Error ? error.message : "资料加载失败"),
@@ -1104,7 +1126,7 @@ export default function Home() {
         ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
         ) : view === "settings" && hasPerm("system:accounts") ? (
-          <SettingsView role={currentUser.role} notify={notify} onTaxonomyChange={(items)=>setKnowledgeCategories(["全部",...Array.from(new Set(items.map(item=>String(item.name)).filter(Boolean)))])} />
+          <SettingsView role={currentUser.role} notify={notify} onConfigurationChange={(data)=>{const categories=(data.categories??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),code:String(item.code??""),sort_order:Number(item.sort_order)||0}));setCategoryOptions(categories);setKnowledgeCategories(["全部",...Array.from(new Set(categories.map(item=>item.name).filter(Boolean)))]);setTagOptions((data.tags??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name)})));}} />
         ) : view === "audit" && hasPerm("governance:audit") ? (
           <AuditView logs={logs} documents={documents} />
         ) : (
@@ -1229,7 +1251,10 @@ export default function Home() {
           progress={pipelineProgress}
           currentUser={currentUser}
           options={uploadOptions}
-          categories={knowledgeCategories}
+          categories={categoryOptions}
+          tags={tagOptions}
+          spaces={knowledgeSpaces}
+          config={uploadConfig}
           onSubmit={submitUpload}
           onClose={() => setUploadOpen(false)}
         />
@@ -1906,6 +1931,16 @@ function PlatformView({
       setLoading(false);
     }
   }
+  async function action(body:Record<string,unknown>){
+    try{
+      const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)});
+      const payload=await response.json();
+      if(!response.ok)throw new Error(payload.error?.message??"操作失败");
+      await load();
+      notify("操作已生效，运营数据已刷新");
+      return true;
+    }catch(error){notify(error instanceof Error?error.message:"操作失败");return false;}
+  }
   useEffect(() => {
     const timer = window.setTimeout(() => load(), 0);
     return () => window.clearTimeout(timer);
@@ -1918,6 +1953,7 @@ function PlatformView({
     );
   const m = data.metrics ?? {},
     s = data.searches ?? {};
+  const platformSpaces=Array.from(new Map(data.spaces.map(item=>[Number(item.id),item])).values());
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2037,11 +2073,11 @@ function PlatformView({
         {role === "SUPER_ADMIN" && (
           <form
             className="inline-governance"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
+              const form=e.currentTarget;
               const values = Object.fromEntries(new FormData(e.currentTarget));
-              action({ action: "CREATE_SPACE", ...values });
-              e.currentTarget.reset();
+              if(await action({ action: "CREATE_SPACE", ...values }))form.reset();
             }}
           >
             <input name="name" required placeholder="新空间名称" />
@@ -2049,6 +2085,11 @@ function PlatformView({
             <button>创建空间</button>
           </form>
         )}
+        {!!platformSpaces.length&&<form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const values=Object.fromEntries(new FormData(form));if(await action({action:"CREATE_FOLDER",...values}))form.reset();}}>
+          <select name="spaceId" required defaultValue={String(platformSpaces[0]?.id??"")}>{platformSpaces.map(space=><option key={String(space.id)} value={String(space.id)}>{String(space.name)}</option>)}</select>
+          <input name="name" required placeholder="新目录名称" />
+          <button>创建目录</button>
+        </form>}
       </section>
       <section className="platform-card wide-card">
         <header>
@@ -2072,10 +2113,10 @@ function PlatformView({
       {role === "SUPER_ADMIN" && (
         <section className="platform-card wide-card">
           <header>
-            <h2>AI 检索参数</h2>
-            <span>生产配置</span>
+            <h2>系统运行参数</h2>
+            <span>AI 权重请在平台管理中成组调整</span>
           </header>
-          {data.settings.map((setting) => (
+          {data.settings.filter(setting=>!["hybrid.vector_weight","hybrid.keyword_weight","rag.top_k"].includes(String(setting.key))).map((setting) => (
             <form
               className="setting-row"
               key={String(setting.key)}
@@ -2132,14 +2173,16 @@ function PlatformView({
 function EnterprisePanels({
   role,
   notify,
-  onTaxonomyChange,
+  onConfigurationChange,
 }: {
   role: string;
   notify: (message: string) => void;
-  onTaxonomyChange: (categories:Record<string,unknown>[])=>void;
+  onConfigurationChange: (data:Record<string,Record<string,unknown>[]>)=>void;
 }) {
   const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
+  const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string}|null>(null);
+  const [editingGroup,setEditingGroup]=useState<Record<string,unknown>|null>(null);
   const [data, setData] = useState<Record<
     string,
     Record<string, unknown>[]
@@ -2150,7 +2193,7 @@ function EnterprisePanels({
     if (!response.ok)
       return notify(payload.error?.message ?? "企业治理数据加载失败");
     setData(payload.data);
-    onTaxonomyChange(payload.data?.categories??[]);
+    onConfigurationChange(payload.data);
     return payload.data as Record<string,Record<string,unknown>[]>;
   }
   useEffect(() => {
@@ -2166,7 +2209,7 @@ function EnterprisePanels({
       payload = await response.json();
     if (!response.ok) return notify(payload.error?.message ?? "操作失败");
     await load();
-    notify("操作已生效，当前页面及业务表单已同步更新");
+    notify(String(payload.data?.message||"操作已生效，当前页面及业务表单已同步更新"));
     return true;
   }
   if (!data)
@@ -2195,7 +2238,7 @@ function EnterprisePanels({
               {categories.length} 个分类
             </span>
           </header>
-          {categories.slice(0, 8).map((item) => (
+          {categories.map((item) => (
             <div className="platform-row" key={String(item.id)}>
               <div>
                 <b>{String(item.name)}</b>
@@ -2203,6 +2246,7 @@ function EnterprisePanels({
                   {String(item.code)} · {item.dept_id ? "部门级" : "全局"}
                 </small>
               </div>
+              <button onClick={()=>setPendingTaxonomyDelete({type:"CATEGORY",id:Number(item.id),name:String(item.name)})}>删除</button>
             </div>
           ))}
           <form
@@ -2219,18 +2263,29 @@ function EnterprisePanels({
           >
             <input name="name" required placeholder="分类名称" />
             <input name="code" required placeholder="分类编码" />
+            <select name="deptId" defaultValue=""><option value="">全局分类</option>{departments.map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}</option>)}</select>
             <button>新增分类</button>
           </form>
         </section>
         <section className="platform-card">
           <header><h2>用户组</h2><span>{groups.length} 个组</span></header>
-          {groups.slice(0,8).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.code)} · {item.dept_id?"部门级":"全局"} · {Number(item.member_count)||0} 人</small></div></div>)}
+          {groups.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.code)} · {item.dept_id?"部门级":"全局"} · {Number(item.member_count)||0} 人</small></div><button onClick={()=>setEditingGroup(item)}>成员</button><button onClick={()=>setPendingTaxonomyDelete({type:"GROUP",id:Number(item.id),name:String(item.name)})}>删除</button></div>)}
           {!groups.length&&<p className="platform-empty">尚未配置用户组</p>}
           <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const saved=await act({action:"SAVE_GROUP",...Object.fromEntries(new FormData(form))});if(saved)form.reset();}}>
             <input name="name" required placeholder="用户组名称" />
             <input name="code" required placeholder="用户组编码" />
             <select name="deptId" defaultValue=""><option value="">全局用户组</option>{departments.map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}</option>)}</select>
             <button>新增用户组</button>
+          </form>
+        </section>
+        <section className="platform-card">
+          <header><h2>业务标签</h2><span>{(data.tags??[]).length} 个标签</span></header>
+          {(data.tags??[]).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.department??"全局")} · 上传资料时自动联动</small></div><button onClick={()=>setPendingTaxonomyDelete({type:"TAG",id:Number(item.id),name:String(item.name)})}>删除</button></div>)}
+          {!(data.tags??[]).length&&<p className="platform-empty">尚未配置业务标签</p>}
+          <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const saved=await act({action:"SAVE_TAG",...Object.fromEntries(new FormData(form))});if(saved)form.reset();}}>
+            <input name="name" required placeholder="标签名称" />
+            <select name="deptId" required defaultValue={String(departments[0]?.id??"")}>{departments.map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}</option>)}</select>
+            <button>新增标签</button>
           </form>
         </section>
         <section className="platform-card">
@@ -2370,7 +2425,7 @@ function EnterprisePanels({
             <section className="platform-card">
               <header>
                 <h2>外部知识连接器</h2>
-                <span>{connectors.length} 个 · 规划中</span>
+            <span>{connectors.length} 个 · 可连接并测试</span>
               </header>
               {connectors.map((item) => (
                 <div className="platform-row" key={String(item.id)}>
@@ -2447,7 +2502,7 @@ function EnterprisePanels({
           <section className="platform-card wide-card">
             <header>
               <h2>Webhook 事件投递</h2>
-              <span>{webhooks.length} 个端点 · 规划中</span>
+            <span>{webhooks.length} 个端点 · 支持签名投递与测试</span>
             </header>
             {webhooks.map((item) => (
               <div className="platform-row" key={String(item.id)}>
@@ -2536,14 +2591,18 @@ function EnterprisePanels({
           </form>
         ))}
       </section>
+      {pendingTaxonomyDelete&&<div className="modal-backdrop" onMouseDown={()=>setPendingTaxonomyDelete(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>×</button><span>配置删除确认</span><h2>确认删除“{pendingTaxonomyDelete.name}”？</h2><p>{pendingTaxonomyDelete.type==="CATEGORY"?"未使用的分类将直接删除；已有资料使用时会安全停用，并保留历史资料分类。":pendingTaxonomyDelete.type==="GROUP"?"未被权限引用的用户组将删除成员关系；已有权限引用时会安全停用，避免现有访问权限失效。":"未使用标签可直接删除；仍有关联资料时系统会阻止删除，避免历史标签静默丢失。"}</p><div><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>取消</button><button className="primary-action" onClick={async()=>{const target=pendingTaxonomyDelete;const actions={CATEGORY:"DELETE_CATEGORY",GROUP:"DELETE_GROUP",TAG:"DELETE_TAG"} as const;const saved=await act({action:actions[target.type],id:target.id});if(saved)setPendingTaxonomyDelete(null);}}>确认删除</button></div></section></div>}
+      {editingGroup&&<div className="modal-backdrop" onMouseDown={()=>setEditingGroup(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={async e=>{e.preventDefault();const fd=new FormData(e.currentTarget);const saved=await act({action:"SAVE_GROUP",id:editingGroup.id,name:editingGroup.name,code:editingGroup.code,deptId:editingGroup.dept_id??"",userIds:fd.getAll("userIds").map(Number)});if(saved)setEditingGroup(null);}}><button type="button" onClick={()=>setEditingGroup(null)}>×</button><span>用户组成员</span><h2>{String(editingGroup.name)}</h2><p>成员变化会立即影响该用户组后续授权；既有文档权限无需重复配置。</p><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,maxHeight:260,overflow:"auto",textAlign:"left"}}>{(data.users??[]).filter(user=>!editingGroup.dept_id||Number(user.dept_id)===Number(editingGroup.dept_id)).map(user=><label key={`${user.id}-${user.dept_id}`} style={{display:"flex",alignItems:"center",gap:6}}><input type="checkbox" name="userIds" value={String(user.id)} defaultChecked={String(editingGroup.member_ids??"").split(",").includes(String(user.id))}/>{String(user.display_name)}</label>)}</div><div><button type="button" onClick={()=>setEditingGroup(null)}>取消</button><button className="primary-action">保存成员</button></div></form></div>}
     </>
   );
 }
 
-function SettingsView({ role, notify,onTaxonomyChange }: { role: string; notify: (m: string) => void;onTaxonomyChange:(items:Record<string,unknown>[])=>void }) {
+function SettingsView({ role, notify,onConfigurationChange }: { role: string; notify: (m: string) => void;onConfigurationChange:(data:Record<string,Record<string,unknown>[]>)=>void }) {
   const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
+  const [aiSettings,setAiSettings]=useState<Record<string,string>>({});
   const [semanticProgress, setSemanticProgress] = useState("");
   async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
+  async function loadSettings(){try{const r=await fetch("/api/platform",{cache:"no-store"});const p=await r.json();if(r.ok)setAiSettings(Object.fromEntries((p.data.settings??[]).map((item:Record<string,unknown>)=>[String(item.key),String(item.value)])));}catch{}}
   async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(e:any){notify(e.message)}}
   async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(e:any){notify(e.message)}}
   async function rebuildSemantic() {
@@ -2566,9 +2625,10 @@ function SettingsView({ role, notify,onTaxonomyChange }: { role: string; notify:
     const r = await fetch("/api/platform", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const p = await r.json();
     if (!r.ok) return notify(p.error?.message ?? "操作失败");
-    notify("已保存");
+    await loadSettings();
+    notify("已保存并同步到检索服务");
   }
-  useEffect(() => { loadTasks(); }, []);
+  useEffect(() => { loadTasks();loadSettings(); }, []);
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2594,6 +2654,7 @@ function SettingsView({ role, notify,onTaxonomyChange }: { role: string; notify:
             </div>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <select value={t.cron_expr} onChange={e=>updateTaskSchedule(t.id,e.target.value)} style={{fontSize:8,padding:"3px 6px",border:"1px solid #d4dde2",borderRadius:4}}>
+                {!['0 8 * * *','0 18 * * *','0 19 * * *','0 20 * * *','0 8 * * 1','0 8 1 * *'].includes(t.cron_expr)&&<option value={t.cron_expr}>自定义：{t.cron_expr}</option>}
                 <option value="0 8 * * *">每天8:00</option><option value="0 18 * * *">每天18:00</option><option value="0 19 * * *">每天19:00</option><option value="0 20 * * *">每天20:00</option><option value="0 8 * * 1">每周一8:00</option><option value="0 8 1 * *">每月1日8:00</option>
               </select>
               <label style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"#637a84",cursor:"pointer"}}>
@@ -2609,14 +2670,14 @@ function SettingsView({ role, notify,onTaxonomyChange }: { role: string; notify:
             <header><h2>AI 检索参数</h2></header>
             <form onSubmit={e=>{e.preventDefault();const fd=new FormData(e.currentTarget);action({action:"UPDATE_SETTINGS",settings:Object.fromEntries(fd)})}}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:12}}>
-                <label style={{fontSize:9}}>向量权重<input name="hybrid.vector_weight" defaultValue="0.72" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
-                <label style={{fontSize:9}}>关键词权重<input name="hybrid.keyword_weight" defaultValue="0.28" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
-                <label style={{fontSize:9}}>Top-K<input name="rag.top_k" defaultValue="5" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>向量权重<input name="hybrid.vector_weight" value={aiSettings['hybrid.vector_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.vector_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>关键词权重<input name="hybrid.keyword_weight" value={aiSettings['hybrid.keyword_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.keyword_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>Top-K<input name="rag.top_k" value={aiSettings['rag.top_k']??''} onChange={e=>setAiSettings(current=>({...current,'rag.top_k':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
               </div>
               <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
             </form>
           </section>
-          <EnterprisePanels role={role} notify={notify} onTaxonomyChange={onTaxonomyChange} />
+          <EnterprisePanels role={role} notify={notify} onConfigurationChange={onConfigurationChange} />
         </>
       )}
     </main>
@@ -2992,9 +3053,8 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
           <div>
             <b>批量导入成员</b>
             <p>
-              每行格式：姓名,企业邮箱,部门编码,角色。角色支持
-              EMPLOYEE、DEPT_ADMIN、SUPER_ADMIN；单次最多 500
-              人，整批校验通过后写入。
+              每行格式：姓名,企业邮箱,部门编码,角色编码。当前可用角色：
+              {allRoles.map(item=>item.code).join("、")}；单次最多 500 人，整批校验通过后写入。
             </p>
           </div>
           <textarea
@@ -3063,9 +3123,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
                     account.role === "UNASSIGNED" ? "EMPLOYEE" : account.role
                   }
                 >
-                  <option value="EMPLOYEE">普通员工</option>
-                  <option value="DEPT_ADMIN">部门管理员</option>
-                  <option value="SUPER_ADMIN">超级管理员</option>
+                  {allRoles.map(role=><option key={role.id} value={role.code}>{role.name}{role.scope==='global'?'（全局）':''}</option>)}
                 </select>
                 <small>{roleLabel(account.role)}</small>
               </label>
@@ -3355,6 +3413,9 @@ function UploadModal({
   currentUser,
   options,
   categories,
+  tags,
+  spaces,
+  config,
   onSubmit,
   onClose,
 }: {
@@ -3362,15 +3423,19 @@ function UploadModal({
   progress: ExtractionProgress | null;
   currentUser: { displayName: string; role: string; primaryDeptId: number };
   options: UploadOptions;
-  categories: string[];
+  categories: TaxonomyOption[];
+  tags: TaxonomyOption[];
+  spaces: UploadSpace[];
+  config: Record<string,string>;
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onClose: () => void;
 }) {
   const [fileName, setFileName] = useState("");
   const [title, setTitle] = useState("");
   const [deptId, setDeptId] = useState(currentUser.primaryDeptId);
+  const [spaceId,setSpaceId]=useState(0);
   const [reviewDate] = useState(() =>
-    new Date(Date.now() + 180 * 86400000).toISOString().slice(0, 10),
+    new Date(Date.now() + Math.max(1,Number(config['governance.review_days']||180)) * 86400000).toISOString().slice(0, 10),
   );
   const department =
     options.departments.find((item) => item.id === deptId) ??
@@ -3378,16 +3443,13 @@ function UploadModal({
   const departmentMembers = options.members.filter(
     (item) => item.dept_id === deptId,
   );
-  const categoryByDepartment: Record<string, string> = {
-    PRODUCT: "产品研发",
-    HR: "组织人事",
-    SALES: "销售市场",
-    FINANCE: "财务法务",
-    GENERAL: "组织人事",
-  };
-  const mappedCategory=categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
-  const availableCategories=categories.filter(item=>item!=="全部");
-  const defaultCategory = availableCategories.includes(mappedCategory)?mappedCategory:(availableCategories[0]??mappedCategory);
+  const availableCategories=categories.filter(item=>!item.dept_id||item.dept_id===deptId);
+  const availableTags=tags.filter(item=>!item.dept_id||item.dept_id===deptId);
+  const availableSpaces=spaces.filter(item=>!item.dept_id||item.dept_id===deptId);
+  const uniqueSpaces=Array.from(new Map(availableSpaces.map(item=>[item.id,item])).values());
+  const activeSpaceId=uniqueSpaces.some(item=>item.id===spaceId)?spaceId:(uniqueSpaces[0]?.id??0);
+  const availableFolders=availableSpaces.filter(item=>item.id===activeSpaceId&&item.folder_id);
+  const defaultCategory = (availableCategories.find(item=>item.dept_id===deptId)??availableCategories[0])?.name??"未分类";
   const defaultOwner =
     departmentMembers.find(
       (item) => item.display_name === currentUser.displayName,
@@ -3449,7 +3511,7 @@ function UploadModal({
               defaultValue={defaultCategory}
             >
               {availableCategories.map((c) => (
-                <option key={c}>{c}</option>
+                <option key={c.id} value={c.name}>{c.name}</option>
               ))}
             </select>
           </label>
@@ -3489,6 +3551,20 @@ function UploadModal({
             </select>
           </label>
           <label>
+            <span>知识空间</span>
+            <select name="spaceId" value={activeSpaceId||""} onChange={e=>setSpaceId(Number(e.target.value))}>
+              {!uniqueSpaces.length&&<option value="">暂无可用空间</option>}
+              {uniqueSpaces.map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>目录</span>
+            <select key={activeSpaceId} name="folderId" defaultValue={String(availableFolders[0]?.folder_id??"")}>
+              <option value="">空间根目录</option>
+              {availableFolders.map(item=><option key={item.folder_id} value={String(item.folder_id)}>{item.folder_name}</option>)}
+            </select>
+          </label>
+          <label>
             <span>上传人（系统带出）</span>
             <input value={currentUser.displayName} readOnly />
           </label>
@@ -3523,7 +3599,8 @@ function UploadModal({
           </label>
           <label>
             <span>标签</span>
-            <input name="tags" placeholder="逗号分隔，如：差旅,报销" />
+            <input name="tags" list="knowledge-tag-options" placeholder="可选已有标签，也可逗号分隔新增" />
+            <datalist id="knowledge-tag-options">{availableTags.map(item=><option key={item.id} value={item.name}/>)}</datalist>
           </label>
           <label>
             <span>下次复核日</span>

@@ -62,8 +62,9 @@ export async function GET(request: Request) {
         .all(),
       db
         .prepare(
-          `SELECT s.*,f.id folder_id,f.name folder_name,f.parent_id,f.sort_order,COUNT(DISTINCT d.id) document_count FROM knowledge_spaces s LEFT JOIN knowledge_folders f ON f.space_id=s.id LEFT JOIN documents d ON d.folder_id=f.id AND d.is_deleted=0 GROUP BY s.id,f.id ORDER BY s.id,f.sort_order`,
+          `SELECT s.*,f.id folder_id,f.name folder_name,f.parent_id,f.sort_order,COUNT(DISTINCT d.id) document_count FROM knowledge_spaces s LEFT JOIN knowledge_folders f ON f.space_id=s.id LEFT JOIN documents d ON d.folder_id=f.id AND d.is_deleted=0 WHERE s.is_active=1 AND (${ctx.role==="SUPER_ADMIN"?"1=1":`s.dept_id IS NULL OR s.dept_id IN (${placeholders(ctx.deptIds)})`}) GROUP BY s.id,f.id ORDER BY s.id,f.sort_order`,
         )
+        .bind(...(ctx.role==="SUPER_ADMIN"?[]:ctx.deptIds))
         .all(),
       db
         .prepare(
@@ -460,6 +461,14 @@ export async function POST(request: Request) {
         .run();
       return ok({ removed: true }, rid);
     }
+    if (action === "UPDATE_SETTINGS") {
+      if(ctx.role!=="SUPER_ADMIN")throw new ApiError(403,"SUPER_ADMIN_REQUIRED","仅超级管理员可修改系统参数");
+      const values=(payload.settings??{}) as Record<string,unknown>,vector=Number(values['hybrid.vector_weight']),keyword=Number(values['hybrid.keyword_weight']),topK=Number(values['rag.top_k']);
+      if(!Number.isFinite(vector)||!Number.isFinite(keyword)||vector<0||keyword<0||Math.abs(vector+keyword-1)>.001)throw new ApiError(400,"INVALID_WEIGHTS","向量权重与关键词权重必须为非负数，且合计为 1");
+      if(!Number.isInteger(topK)||topK<1||topK>10)throw new ApiError(400,"INVALID_TOP_K","Top-K 必须是 1 到 10 的整数");
+      await db.batch(Object.entries({'hybrid.vector_weight':String(vector),'hybrid.keyword_weight':String(keyword),'rag.top_k':String(topK)}).map(([key,value])=>db.prepare("INSERT INTO system_settings(key,value,update_user_id) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,update_user_id=excluded.update_user_id,update_time=CURRENT_TIMESTAMP").bind(key,value,ctx.userId)));
+      return ok({saved:true},rid);
+    }
     if (action === "UPDATE_SETTING") {
       if (ctx.role !== "SUPER_ADMIN")
         throw new ApiError(
@@ -467,13 +476,15 @@ export async function POST(request: Request) {
           "SUPER_ADMIN_REQUIRED",
           "仅超级管理员可修改系统参数",
         );
+      const key=safeText(payload.key,100),value=safeText(payload.value,500);if(!key)throw new ApiError(400,"VALIDATION_ERROR","参数键不能为空");
+      if(key==='rag.top_k'&&(!Number.isInteger(Number(value))||Number(value)<1||Number(value)>10))throw new ApiError(400,"INVALID_TOP_K","Top-K 必须是 1 到 10 的整数");
       await db
         .prepare(
           "INSERT INTO system_settings(key,value,description,update_user_id) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,update_user_id=excluded.update_user_id,update_time=CURRENT_TIMESTAMP",
         )
         .bind(
-          safeText(payload.key, 100),
-          safeText(payload.value, 500),
+          key,
+          value,
           safeText(payload.description, 300),
           ctx.userId,
         )

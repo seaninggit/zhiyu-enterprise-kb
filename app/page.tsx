@@ -171,6 +171,7 @@ type QueryCorrection = {
 };
 
 const DEFAULT_CATEGORIES = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
+const SYSTEM_CATEGORY_CODES = new Set(["PRODUCT", "PEOPLE", "SALES", "FINANCE"]);
 const statusLabel: Record<DocumentStatus, string> = {
   draft: "草稿",
   review: "待审核",
@@ -2246,7 +2247,7 @@ function EnterprisePanels({
                   {String(item.code)} · {item.dept_id ? "部门级" : "全局"}
                 </small>
               </div>
-              <button onClick={()=>setPendingTaxonomyDelete({type:"CATEGORY",id:Number(item.id),name:String(item.name)})}>删除</button>
+              {SYSTEM_CATEGORY_CODES.has(String(item.code))?<span className="status-pill">内置分类</span>:<button onClick={()=>setPendingTaxonomyDelete({type:"CATEGORY",id:Number(item.id),name:String(item.name)})}>删除</button>}
             </div>
           ))}
           <form

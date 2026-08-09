@@ -21,6 +21,8 @@ test("custom categories and groups persist and refresh every consuming interface
   assert.match(enterprise,/mode:\"DEACTIVATED\"/);
   assert.match(page,/配置删除确认/);
   assert.match(page,/已有资料使用时会安全停用/);
+  assert.match(enterprise,/SYSTEM_CATEGORY_PROTECTED/);
+  assert.match(page,/SYSTEM_CATEGORY_CODES/);
 });
 
 test("platform-managed values are consumed by business workflows",()=>{

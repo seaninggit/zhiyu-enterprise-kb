@@ -900,27 +900,29 @@ export default function Home() {
           >
             <i>☆</i>我的收藏 <em>{favorites.length}</em>
           </button>
-          <span>知识治理</span>
-          <button
-            className={view === "admin" ? "active" : ""}
-            onClick={() => setView("admin")}
-          >
-            <i>▦</i>维护工作台
-          </button>
           {currentUser.role !== "EMPLOYEE" && (
-            <button
-              className={view === "platform" ? "active" : ""}
-              onClick={() => setView("platform")}
-            >
-              <i>◫</i>治理与洞察
-            </button>
+            <>
+              <span>知识治理</span>
+              <button
+                className={view === "admin" ? "active" : ""}
+                onClick={() => setView("admin")}
+              >
+                <i>▦</i>维护工作台
+              </button>
+              <button
+                className={view === "platform" ? "active" : ""}
+                onClick={() => setView("platform")}
+              >
+                <i>◫</i>治理与洞察
+              </button>
+              <button
+                className={view === "audit" ? "active" : ""}
+                onClick={() => setView("audit")}
+              >
+                <i>≡</i>审计日志
+              </button>
+            </>
           )}
-          <button
-            className={view === "audit" ? "active" : ""}
-            onClick={() => setView("audit")}
-          >
-            <i>≡</i>审计日志
-          </button>
           {currentUser.role === "SUPER_ADMIN" && (
             <button
               className={view === "accounts" ? "active" : ""}
@@ -1051,7 +1053,7 @@ export default function Home() {
           </button>
         </header>
 
-        {view === "admin" ? (
+        {view === "admin" && currentUser.role !== "EMPLOYEE" ? (
           <AdminView
             documents={documents}
             metrics={metrics}
@@ -1066,11 +1068,11 @@ export default function Home() {
             onStatus={updateStatus}
             onResolve={setGovernanceDialog}
           />
-        ) : view === "platform" ? (
+        ) : view === "platform" && currentUser.role !== "EMPLOYEE" ? (
           <PlatformView role={currentUser.role} notify={notify} />
         ) : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? (
           <AccountAdminView notify={notify} />
-        ) : view === "audit" ? (
+        ) : view === "audit" && currentUser.role !== "EMPLOYEE" ? (
           <AuditView logs={logs} documents={documents} />
         ) : (
           <LibraryView

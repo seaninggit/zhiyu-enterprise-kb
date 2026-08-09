@@ -41,21 +41,7 @@ export async function POST(request: Request) {
     const ctx = await requireApiUser();
     if (!hasPermission(ctx, "system:accounts")) throw new ApiError(403, "FORBIDDEN", "无权管理角色");
 
-    const p = await request.json() as { action?: string; code?: string; name?: string; description?: string; scope?: string; permissionIds?: number[] };
-
-    // 添加自定义权限
-    if (p.action === "ADD_PERMISSION") {
-      const db = getD1();
-      const permCode = safeText(p.code, 40).toLowerCase().replace(/[^a-z0-9_:]/g, "_");
-      const permName = safeText(p.name, 60);
-      if (!permCode || !permName) throw new ApiError(400, "VALIDATION_ERROR", "权限编码和名称不能为空");
-      const existing = await db.prepare("SELECT id FROM permissions WHERE code=?").bind(permCode).first();
-      if (existing) throw new ApiError(409, "DUPLICATE", "权限编码已存在");
-      const result = await db.prepare("INSERT INTO permissions(code, name, sort_order) VALUES(?,?,99)").bind(permCode, permName).run();
-      await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?,'ADD_PERMISSION',?,'Admin',?,?)").bind(ctx.primaryDeptId, ctx.userId, `添加自定义权限 ${permName}(${permCode})`, rid).run();
-      return ok({ id: Number(result.meta.last_row_id), code: permCode, name: permName }, rid, 201);
-    }
-
+    const p = await request.json() as { code?: string; name?: string; description?: string; scope?: string; permissionIds?: number[] };
     const code = safeText(p.code, 30).toUpperCase().replace(/[^A-Z0-9_]/g, "_");
     const name = safeText(p.name, 60);
     const description = safeText(p.description, 200);

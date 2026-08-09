@@ -53,15 +53,26 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
   const rid = `cron-${Date.now()}`;
   const runTs = new Date().toISOString();
 
-  // 读取所有启用的定时任务
   const tasks = await db.prepare("SELECT code FROM scheduled_tasks WHERE enabled=1").all<{code:string}>();
   const enabled = new Set(tasks.results.map(t => t.code));
 
   let archived = 0, duplicates = 0, corrections = 0, reminded = 0;
+  const alerts: string[] = [];
 
   if (enabled.has("archive_expired")) {
+    // 查高频引用：过去30天被AI引用的文档
+    const cited = await db.prepare("SELECT source_document_ids FROM ai_query_logs WHERE create_time > date('now','-30 days')").all<{source_document_ids:string}>();
+    const citeCounts: Record<number,number> = {};
+    for (const row of cited.results) { try { const ids=JSON.parse(row.source_document_ids||"[]") as number[]; for(const id of ids) citeCounts[id]=(citeCounts[id]||0)+1; } catch {} }
+    // 作废前检查哪些是高频文档
+    const expiring = await db.prepare("SELECT id,title FROM documents WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' AND review_due_at < date('now')").all<{id:number;title:string}>();
     const r = await db.prepare("UPDATE documents SET status='EXPIRED_VOID', update_time=? WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' AND review_due_at < date('now')").bind(now).run();
     archived = r.meta.changes;
+    for (const doc of expiring.results) {
+      const cnt = citeCounts[doc.id] || 0;
+      if (cnt >= 10) alerts.push(`HIGH：《${doc.title}》已过期，过去30天被AI引用${cnt}次，建议尽快更新`);
+      else if (cnt >= 3) alerts.push(`MID：《${doc.title}》已过期，被引用${cnt}次`);
+    }
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='archive_expired'").bind(runTs).run();
   }
 
@@ -112,5 +123,35 @@ export async function scheduled(_controller: ScheduledController, env: Env, _ctx
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='review_reminders'").bind(runTs).run();
   }
 
-  await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(1,'CRON_GOVERNANCE',1,'系统',?,?)").bind(`定时巡检：作废${archived}，查重${duplicates}，纠错${corrections}，提醒${reminded}`, rid).run();
+  // 巡检完成后推送汇总通知给管理员
+  if (archived > 0 || duplicates > 0 || alerts.length > 0) {
+    const lines = [`本次巡检：作废${archived}份，查重${duplicates}组，纠错${corrections}条，复核提醒${reminded}份`];
+    if (alerts.length > 0) { lines.push(""); lines.push("异常预警："); lines.push(...alerts); }
+    await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(1,'GOVERNANCE','巡检报告',?)").bind(lines.join("\n")).run();
+  }
+
+  // 运营周报（每周一执行）
+  if (enabled.has("agent_weekly_report")) {
+    const [newDocs, searches, zeroResults, feedbacks] = await Promise.all([
+      db.prepare("SELECT COUNT(*) cnt FROM documents WHERE is_deleted=0 AND create_time > date('now','-7 days')").first<{cnt:number}>(),
+      db.prepare("SELECT COUNT(*) cnt FROM search_logs WHERE create_time > date('now','-7 days')").first<{cnt:number}>(),
+      db.prepare("SELECT COUNT(*) cnt FROM search_logs WHERE result_count=0 AND create_time > date('now','-7 days')").first<{cnt:number}>(),
+      db.prepare("SELECT COUNT(*) cnt FROM ai_answer_feedback WHERE create_time > date('now','-7 days') AND helpful=0").first<{cnt:number}>(),
+    ]);
+    const openTasks = await db.prepare("SELECT COUNT(*) cnt FROM knowledge_governance_tasks WHERE status='OPEN'").first<{cnt:number}>();
+    const report = [
+      `知识库运营周报（${new Date().toISOString().slice(0,10)}）`,
+      "",
+      `本周新增文档：${newDocs?.cnt||0} 份`,
+      `搜索次数：${searches?.cnt||0} 次（零结果 ${zeroResults?.cnt||0} 次）`,
+      `AI 回答负面反馈：${feedbacks?.cnt||0} 条`,
+      `治理待办：${openTasks?.cnt||0} 项`,
+      "",
+      `自动处理：作废过期 ${archived} 份，查重 ${duplicates} 组，纠错 ${corrections} 条`,
+    ];
+    await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(1,'GOVERNANCE','运营周报',?)").bind(report.join("\n")).run();
+    await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='agent_weekly_report'").bind(runTs).run();
+  }
+
+  await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(1,'CRON_GOVERNANCE',1,'系统',?,?)").bind(`巡检：作废${archived} 查重${duplicates} 纠错${corrections} 提醒${reminded}`, rid).run();
 }

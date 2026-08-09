@@ -2254,7 +2254,7 @@ function EnterprisePanels({
             <section className="platform-card">
               <header>
                 <h2>外部知识连接器</h2>
-                <span>{connectors.length} 个</span>
+                <span>{connectors.length} 个 · 规划中</span>
               </header>
               {connectors.map((item) => (
                 <div className="platform-row" key={String(item.id)}>
@@ -2288,12 +2288,13 @@ function EnterprisePanels({
               >
                 <input name="name" required placeholder="名称" />
                 <select name="type">
-                  <option>REST</option>
-                  <option>S3</option>
-                  <option>SHAREPOINT</option>
+                  <option>DINGTALK_DOC</option>
+                  <option>FEISHU_KB</option>
+                  <option>WECOM_DRIVE</option>
+                  <option>REST_API</option>
                 </select>
-                <input name="endpoint" placeholder="HTTPS 地址" />
-                <input name="secret" type="password" placeholder="密钥" />
+                <input name="endpoint" placeholder="接口地址（可选）" />
+                <input name="secret" type="password" placeholder="密钥（可选）" />
                 <button>保存</button>
               </form>
             </section>
@@ -2330,7 +2331,7 @@ function EnterprisePanels({
           <section className="platform-card wide-card">
             <header>
               <h2>Webhook 事件投递</h2>
-              <span>{webhooks.length} 个端点</span>
+              <span>{webhooks.length} 个端点 · 规划中</span>
             </header>
             {webhooks.map((item) => (
               <div className="platform-row" key={String(item.id)}>
@@ -2499,6 +2500,7 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
               <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
             </form>
           </section>
+          <EnterprisePanels role={role} notify={notify} />
         </>
       )}
     </main>

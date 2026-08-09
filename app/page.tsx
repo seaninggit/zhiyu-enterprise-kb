@@ -2068,6 +2068,8 @@ function EnterprisePanels({
   role: string;
   notify: (message: string) => void;
 }) {
+  const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
+  const [evalRunning, setEvalRunning] = useState(false);
   const [data, setData] = useState<Record<
     string,
     Record<string, unknown>[]
@@ -2245,10 +2247,37 @@ function EnterprisePanels({
             </form>
             <button
               className="platform-wide-action"
-              onClick={() => act({ action: "RUN_EVAL" })}
+              disabled={evalRunning}
+              onClick={async () => {
+                setEvalRunning(true); setEvalResult(null);
+                try {
+                  const r = await fetch("/api/enterprise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "RUN_EVAL" }) });
+                  const p = await r.json();
+                  if (!r.ok) throw new Error(p.error?.message ?? "评测失败");
+                  setEvalResult(p.data);
+                } catch (e: any) { notify(e.message); }
+                finally { setEvalRunning(false); }
+              }}
             >
-              运行全部 RAG 评测
+              {evalRunning ? "评测中..." : "运行全部 RAG 评测"}
             </button>
+            {evalResult && (
+              <div style={{margin:"8px 12px 12px",padding:12,background:"#f5faf7",border:"1px solid #d0e8dd",borderRadius:8}}>
+                <b style={{fontSize:10}}>评测结果：{evalResult.total} 题，通过 {evalResult.passed}，失败 {evalResult.failed}</b>
+                <div style={{marginTop:8,display:"grid",gap:4}}>
+                  {evalResult.results.map((r,i) => (
+                    <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",background:"white",borderRadius:4,fontSize:9}}>
+                      <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.question}</span>
+                      <span style={{marginLeft:8,display:"flex",gap:8,alignItems:"center"}}>
+                        <span style={{color:"#8b9d98"}}>召回{r.recall}%</span>
+                        <span style={{color:"#8b9d98"}}>关键词{r.keyword}%</span>
+                        <span style={{padding:"1px 6px",borderRadius:3,fontSize:8,background:r.status==="PASSED"?"#d0f0e0":"#f8e0d0",color:r.status==="PASSED"?"#16796d":"#b55a5a"}}>{r.status==="PASSED"?"通过":"失败"}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
           <div className="platform-grid">
             <section className="platform-card">

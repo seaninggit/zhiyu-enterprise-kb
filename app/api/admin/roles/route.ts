@@ -92,9 +92,8 @@ export async function PATCH(request: Request) {
     if (!id) throw new ApiError(400, "VALIDATION_ERROR", "角色ID不能为空");
 
     const db = getD1();
-    const role = await db.prepare("SELECT * FROM roles WHERE id=?").bind(id).first<{ is_system: number }>();
+    const role = await db.prepare("SELECT id FROM roles WHERE id=?").bind(id).first();
     if (!role) throw new ApiError(404, "NOT_FOUND", "角色不存在");
-    if (role.is_system === 1) throw new ApiError(403, "FORBIDDEN", "系统内置角色不可编辑");
 
     const name = safeText(p.name, 60);
     const description = safeText(p.description, 200);
@@ -126,9 +125,8 @@ export async function DELETE(request: Request) {
     if (!id) throw new ApiError(400, "VALIDATION_ERROR", "角色ID不能为空");
 
     const db = getD1();
-    const role = await db.prepare("SELECT id, code, name, is_system FROM roles WHERE id=?").bind(id).first<{ id: number; code: string; name: string; is_system: number }>();
+    const role = await db.prepare("SELECT id, code, name FROM roles WHERE id=?").bind(id).first<{ id: number; code: string; name: string }>();
     if (!role) throw new ApiError(404, "NOT_FOUND", "角色不存在");
-    if (role.is_system === 1) throw new ApiError(403, "FORBIDDEN", "系统内置角色不可删除");
 
     // 检查是否有用户正在使用此角色
     const userCount = await db.prepare("SELECT COUNT(*) cnt FROM user_roles WHERE role_id=?").bind(id).first<{ cnt: number }>();

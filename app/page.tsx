@@ -2537,7 +2537,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showRoleEditor, setShowRoleEditor] = useState(false);
-  const [editingRole, setEditingRole] = useState<{id?:number;code:string;name:string;description:string;scope:string;permissionIds:number[]}|null>(null);
+  const [editingRole, setEditingRole] = useState<{id?:number;code:string;name:string;description:string;scope:string;permissionIds:number[];isSystem?:boolean}|null>(null);
   const [importText, setImportText] = useState("");
   const [permTree, setPermTree] = useState<Array<{id:number;code:string;name:string;parent_code:string|null;sort_order:number}>>([]);
   const [newPermCode, setNewPermCode] = useState("");
@@ -2746,12 +2746,10 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
                 <small style={{fontSize:7,color:"#8b9d98"}}>{r.scope==="global"?"全局":"部门"}</small>
               </div>
               <small style={{fontSize:8,color:"#829992",display:"block",marginTop:3}}>{r.permissions.length} 项权限</small>
-              {!r.isSystem && (
-                <div style={{marginTop:6,display:"flex",gap:4}}>
-                  <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #d4dde2",borderRadius:4,background:"white",cursor:"pointer"}} onClick={async()=>{await loadPermTree();const pids=allRoles.find(x=>x.id===r.id)?.permissions||[];setEditingRole({id:r.id,code:r.code,name:r.name,description:"",scope:r.scope,permissionIds:pids.map(c=>permTree.find(t=>t.code===c)?.id).filter(Boolean) as number[]});setShowRoleEditor(true)}}>编辑</button>
-                  <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #e4cece",borderRadius:4,background:"white",color:"#b55a5a",cursor:"pointer"}} onClick={()=>deleteRole(r.id,r.name)}>删除</button>
-                </div>
-              )}
+              <div style={{marginTop:6,display:"flex",gap:4}}>
+                <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #d4dde2",borderRadius:4,background:"white",cursor:"pointer"}} onClick={async()=>{await loadPermTree();const pids=allRoles.find(x=>x.id===r.id)?.permissions||[];setEditingRole({id:r.id,code:r.code,name:r.name,description:"",scope:r.scope,permissionIds:pids.map(c=>permTree.find(t=>t.code===c)?.id).filter(Boolean) as number[]});setShowRoleEditor(true)}}>编辑</button>
+                <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #e4cece",borderRadius:4,background:"white",color:"#b55a5a",cursor:"pointer"}} onClick={()=>deleteRole(r.id,r.name)}>删除</button>
+              </div>
             </div>
           ))}
         </div>

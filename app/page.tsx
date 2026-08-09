@@ -28,8 +28,7 @@ type View =
   | "favorites"
   | "audit"
   | "accounts"
-  | "settings"
-  | "login";
+  | "settings";
 type DocumentStatus =
   | "draft"
   | "review"
@@ -322,11 +321,6 @@ function selectDemoRole(role: string) {
   document.cookie = `zhiyu_demo_role=${role}; path=/; max-age=2592000; samesite=lax`;
   window.location.reload();
 }
-function loginAsRole(role: string) {
-  window.localStorage.setItem("zhiyu_demo_role", role);
-  document.cookie = `zhiyu_demo_role=${role}; path=/; max-age=2592000; samesite=lax`;
-  window.location.reload();
-}
 
 function exitDemoRole() {
   window.localStorage.removeItem("zhiyu_demo_role");
@@ -376,6 +370,7 @@ export default function Home() {
   });
   const [authError, setAuthError] = useState("");
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [demoLoginOpen, setDemoLoginOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [aiGuideVisible, setAiGuideVisible] = useState(true);
   const [aiUnread, setAiUnread] = useState(false);
@@ -404,6 +399,7 @@ export default function Home() {
     aiOpen ||
     uploadOpen ||
     feedbackOpen ||
+    demoLoginOpen ||
     selected !== null ||
     workflowDialog !== null ||
     governanceDialog !== null;
@@ -457,7 +453,7 @@ export default function Home() {
             data.data.currentUser.demoMode &&
             !hasDemoRole()
           ) {
-            setView("login");
+            setDemoLoginOpen(true);
           }
         }
         if (data.data?.uploadOptions?.departments?.length)
@@ -1086,9 +1082,7 @@ export default function Home() {
           </button>
         </header>
 
-        {view === "login" ? (
-          <LoginView onLogin={(role)=>{loginAsRole(role)}} />
-        ) : view === "admin" && hasPerm("governance:admin") ? (
+        {view === "admin" && hasPerm("governance:admin") ? (
           <AdminView
             documents={documents}
             metrics={metrics}
@@ -1420,47 +1414,33 @@ export default function Home() {
           }}
         />
       )}
+      {demoLoginOpen && (
+        <div className="modal-backdrop demo-login-backdrop" onMouseDown={() => setDemoLoginOpen(false)}>
+          <section className="demo-login" onMouseDown={e => e.stopPropagation()}>
+            <header>
+              <button aria-label="关闭演示身份选择" onClick={() => setDemoLoginOpen(false)}>×</button>
+              <span>公开演示环境</span>
+              <h2>选择演示身份</h2>
+              <p>系统已为三类角色生成账号与权限，选择后按对应角色进入界面。</p>
+            </header>
+            <div className="demo-role-grid">
+              {DEMO_ROLE_OPTIONS.map(role => (
+                <button key={role.code} className={currentUser.role === role.code ? "demo-role-card active" : "demo-role-card"} onClick={() => selectDemoRole(role.code)}>
+                  <b>{role.name}</b>
+                  <span>{role.description}</span>
+                  <i>{currentUser.role === role.code ? "当前身份" : "进入"}</i>
+                </button>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
       {toast && (
         <div className="toast" role="status">
           ✓ {toast}
         </div>
       )}
     </div>
-  );
-}
-
-function LoginView({ onLogin }: { onLogin: (role: string) => void }) {
-  const [selectedRole, setSelectedRole] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  function handleLogin() {
-    if (!selectedRole) { setError("请选择角色"); return; }
-    if (password !== "111111") { setError("密码错误"); return; }
-    onLogin(selectedRole);
-  }
-  return (
-    <main style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:"100vh",background:"#f2f6f9"}}>
-      <div style={{width:"min(400px,90vw)",padding:"40px 32px",background:"white",borderRadius:12,boxShadow:"0 2px 16px rgba(0,0,0,.06)"}}>
-        <div style={{textAlign:"center",marginBottom:32}}>
-          <h1 style={{fontSize:24,fontWeight:700,color:"#1c2926",margin:0}}>知域 · 企业知识中台</h1>
-          <p style={{fontSize:10,color:"#8b9d98",marginTop:6}}>公开演示环境 · 选择身份登录</p>
-        </div>
-        <label style={{display:"block",marginBottom:16}}>
-          <span style={{fontSize:10,color:"#637a84",display:"block",marginBottom:4}}>账号</span>
-          <select value={selectedRole} onChange={e=>{setSelectedRole(e.target.value);setError("")}} style={{width:"100%",padding:"10px 12px",border:"1px solid #d4dde2",borderRadius:8,fontSize:12,outline:0}}>
-            <option value="">请选择登录身份</option>
-            {DEMO_ROLE_OPTIONS.map(r=><option key={r.code} value={r.code}>{r.name} — {r.description}</option>)}
-          </select>
-        </label>
-        <label style={{display:"block",marginBottom:20}}>
-          <span style={{fontSize:10,color:"#637a84",display:"block",marginBottom:4}}>密码</span>
-          <input type="password" value={password} onChange={e=>{setPassword(e.target.value);setError("")}} onKeyDown={e=>{if(e.key==="Enter")handleLogin()}} placeholder="输入演示密码" style={{width:"100%",padding:"10px 12px",border:"1px solid #d4dde2",borderRadius:8,fontSize:12,outline:0}} />
-        </label>
-        {error && <p style={{fontSize:10,color:"#c75b5b",marginBottom:12}}>{error}</p>}
-        <button onClick={handleLogin} disabled={!selectedRole} style={{width:"100%",padding:"12px",border:0,borderRadius:8,background:"#16796d",color:"white",fontSize:13,cursor:"pointer"}}>登录</button>
-        <p style={{textAlign:"center",marginTop:16,fontSize:8,color:"#a0b0aa"}}>演示密码：111111</p>
-      </div>
-    </main>
   );
 }
 

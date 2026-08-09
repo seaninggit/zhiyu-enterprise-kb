@@ -125,6 +125,8 @@ type CurrentUser = {
   email: string;
   displayName: string;
   role: string;
+  permissions?: string[];
+  scope?: string;
   primaryDeptId: number;
   isPublicViewer?: boolean;
   demoMode?: boolean;
@@ -354,6 +356,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [pipelineProgress, setPipelineProgress] =
     useState<ExtractionProgress | null>(null);
+  function hasPerm(perm: string) { return currentUser.scope === "global" || (currentUser.permissions?.includes(perm) ?? false); }
   const [currentUser, setCurrentUser] = useState<CurrentUser>({
     email: "",
     displayName: "正在识别账号",
@@ -900,7 +903,7 @@ export default function Home() {
           >
             <i>☆</i>我的收藏 <em>{favorites.length}</em>
           </button>
-          {currentUser.role !== "EMPLOYEE" && (
+          {hasPerm("governance:admin") && (
             <>
               <span>知识治理</span>
               <button
@@ -909,21 +912,25 @@ export default function Home() {
               >
                 <i>▦</i>维护工作台
               </button>
-              <button
-                className={view === "platform" ? "active" : ""}
-                onClick={() => setView("platform")}
-              >
-                <i>◫</i>治理与洞察
-              </button>
-              <button
-                className={view === "audit" ? "active" : ""}
-                onClick={() => setView("audit")}
-              >
-                <i>≡</i>审计日志
-              </button>
+              {hasPerm("governance:platform") && (
+                <button
+                  className={view === "platform" ? "active" : ""}
+                  onClick={() => setView("platform")}
+                >
+                  <i>◫</i>治理与洞察
+                </button>
+              )}
+              {hasPerm("governance:audit") && (
+                <button
+                  className={view === "audit" ? "active" : ""}
+                  onClick={() => setView("audit")}
+                >
+                  <i>≡</i>审计日志
+                </button>
+              )}
             </>
           )}
-          {currentUser.role === "SUPER_ADMIN" && (
+          {hasPerm("system:accounts") && (
             <button
               className={view === "accounts" ? "active" : ""}
               onClick={() => setView("accounts")}
@@ -1053,7 +1060,7 @@ export default function Home() {
           </button>
         </header>
 
-        {view === "admin" && currentUser.role !== "EMPLOYEE" ? (
+        {view === "admin" && hasPerm("governance:admin") ? (
           <AdminView
             documents={documents}
             metrics={metrics}
@@ -1068,11 +1075,11 @@ export default function Home() {
             onStatus={updateStatus}
             onResolve={setGovernanceDialog}
           />
-        ) : view === "platform" && currentUser.role !== "EMPLOYEE" ? (
+        ) : view === "platform" && hasPerm("governance:platform") ? (
           <PlatformView role={currentUser.role} notify={notify} />
-        ) : view === "accounts" && currentUser.role === "SUPER_ADMIN" ? (
+        ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
-        ) : view === "audit" && currentUser.role !== "EMPLOYEE" ? (
+        ) : view === "audit" && hasPerm("governance:audit") ? (
           <AuditView logs={logs} documents={documents} />
         ) : (
           <LibraryView
@@ -1104,7 +1111,7 @@ export default function Home() {
         <DocumentDrawer
           document={selected}
           returnToAi={documentReturnTarget === "ai"}
-          canRestore={currentUser.role !== "EMPLOYEE"}
+          canRestore={hasPerm("governance:archive")}
           favorite={favorites.includes(selected.id)}
           onClose={() => {
             setSelected(null);
@@ -2525,19 +2532,26 @@ function AuditView({
 function AccountAdminView({ notify }: { notify: (message: string) => void }) {
   const [accounts, setAccounts] = useState<EnterpriseAccount[]>([]);
   const [departments, setDepartments] = useState<UploadDepartment[]>([]);
+  const [allRoles, setAllRoles] = useState<Array<{id:number;code:string;name:string;scope:string;isSystem:boolean;permissions:string[]}>>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showRoleEditor, setShowRoleEditor] = useState(false);
+  const [editingRole, setEditingRole] = useState<{id?:number;code:string;name:string;description:string;scope:string;permissionIds:number[]}|null>(null);
   const [importText, setImportText] = useState("");
+  const [permTree, setPermTree] = useState<Array<{id:number;code:string;name:string;parent_code:string|null;sort_order:number}>>([]);
   async function load() {
     setLoading(true);
     try {
-      const response = await fetch("/api/admin/users", { cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok)
-        throw new Error(payload.error?.message ?? "账号加载失败");
-      setAccounts(payload.data.users);
-      setDepartments(payload.data.departments);
+      const [r1, r2] = await Promise.all([
+        fetch("/api/admin/users", { cache: "no-store" }),
+        fetch("/api/admin/roles", { cache: "no-store" }),
+      ]);
+      const [p1, p2] = await Promise.all([r1.json(), r2.json()]);
+      if (!r1.ok) throw new Error(p1.error?.message ?? "账号加载失败");
+      setAccounts(p1.data.users);
+      setDepartments(p1.data.departments);
+      if (r2.ok) setAllRoles(p2.data.roles || []);
     } catch (error) {
       notify(error instanceof Error ? error.message : "账号加载失败");
     } finally {
@@ -2614,12 +2628,48 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
     DISABLED: "已停用",
     OFFBOARDED: "已离职",
   };
-  const roleLabel: Record<string, string> = {
-    SUPER_ADMIN: "超级管理员",
-    DEPT_ADMIN: "部门管理员",
-    EMPLOYEE: "普通员工",
-    UNASSIGNED: "待分配",
-  };
+  const roleLabel = (code: string) => allRoles.find(r => r.code === code)?.name ?? (code === "UNASSIGNED" ? "待分配" : code);
+  async function loadPermTree() {
+    try {
+      const r = await fetch("/api/admin/roles?tree=true", { cache: "no-store" });
+      const p = await r.json();
+      if (r.ok) setPermTree(p.data.permissions || []);
+    } catch { /* ignore */ }
+  }
+  async function saveRole() {
+    if (!editingRole) return;
+    try {
+      const method = editingRole.id ? "PATCH" : "POST";
+      const r = await fetch("/api/admin/roles", {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(editingRole),
+      });
+      const p = await r.json();
+      if (!r.ok) throw new Error(p.error?.message ?? "保存失败");
+      notify(editingRole.id ? "角色已更新" : "角色已创建");
+      setShowRoleEditor(false);
+      setEditingRole(null);
+      await load();
+    } catch (e: any) { notify(e.message); }
+  }
+  async function deleteRole(id: number, name: string) {
+    if (!confirm(`确认删除角色「${name}」？系统角色不可删除。`)) return;
+    try {
+      const r = await fetch(`/api/admin/roles?id=${id}`, { method: "DELETE" });
+      const p = await r.json();
+      if (!r.ok) throw new Error(p.error?.message ?? "删除失败");
+      notify("角色已删除");
+      await load();
+    } catch (e: any) { notify(e.message); }
+  }
+  function togglePerm(pid: number) {
+    if (!editingRole) return;
+    const ids = editingRole.permissionIds.includes(pid)
+      ? editingRole.permissionIds.filter(i => i !== pid)
+      : [...editingRole.permissionIds, pid];
+    setEditingRole({ ...editingRole, permissionIds: ids });
+  }
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2629,6 +2679,12 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
           <p>统一管理员工加入、部门授权、首次登录、停用及离职权限回收。</p>
         </div>
         <div className="member-actions">
+          <button
+            className="outline-action"
+            onClick={() => { loadPermTree(); setEditingRole({code:"",name:"",description:"",scope:"department",permissionIds:[]}); setShowRoleEditor(true); }}
+          >
+            ＋ 新建角色
+          </button>
           <button
             className="outline-action"
             onClick={() => setShowImport((value) => !value)}
@@ -2677,6 +2733,63 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
           身份由企业统一登录确认；系统按成员目录中的部门和角色授权，不保存员工密码。
         </p>
       </div>
+      <section className="platform-card" style={{marginTop:16,marginBottom:16}}>
+        <header><h2>角色管理</h2><span>{allRoles.length} 个角色</span></header>
+        <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:12}}>
+          {allRoles.map(r => (
+            <div key={r.id} style={{padding:"10px 14px",border:"1px solid #dce8e4",borderRadius:8,background:r.isSystem?"#f8faf9":"white",minWidth:160}}>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <b style={{fontSize:10}}>{r.name}</b>
+                {r.isSystem && <small style={{fontSize:7,padding:"1px 5px",background:"#e0f0ec",borderRadius:4,color:"#16796d"}}>系统</small>}
+                <small style={{fontSize:7,color:"#8b9d98"}}>{r.scope==="global"?"全局":"部门"}</small>
+              </div>
+              <small style={{fontSize:8,color:"#829992",display:"block",marginTop:3}}>{r.permissions.length} 项权限</small>
+              {!r.isSystem && (
+                <div style={{marginTop:6,display:"flex",gap:4}}>
+                  <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #d4dde2",borderRadius:4,background:"white",cursor:"pointer"}} onClick={async()=>{await loadPermTree();const pids=allRoles.find(x=>x.id===r.id)?.permissions||[];setEditingRole({id:r.id,code:r.code,name:r.name,description:"",scope:r.scope,permissionIds:pids.map(c=>permTree.find(t=>t.code===c)?.id).filter(Boolean) as number[]});setShowRoleEditor(true)}}>编辑</button>
+                  <button style={{fontSize:7,padding:"2px 8px",border:"1px solid #e4cece",borderRadius:4,background:"white",color:"#b55a5a",cursor:"pointer"}} onClick={()=>deleteRole(r.id,r.name)}>删除</button>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </section>
+      {showRoleEditor && editingRole && (
+        <div className="modal-backdrop" onMouseDown={()=>{setShowRoleEditor(false);setEditingRole(null)}}>
+          <div className="upload-modal" onMouseDown={e=>e.stopPropagation()} style={{width:"min(500px,94vw)",maxHeight:"80vh",overflow:"auto"}}>
+            <header><h2>{editingRole.id?"编辑角色":"新建角色"}</h2><button onClick={()=>{setShowRoleEditor(false);setEditingRole(null)}} style={{border:0,background:"transparent",fontSize:20,cursor:"pointer"}}>×</button></header>
+            <label style={{display:"block",marginTop:12}}>角色名称<input value={editingRole.name} onChange={e=>setEditingRole({...editingRole,name:e.target.value})} style={{width:"100%",padding:8,border:"1px solid #d4dde2",borderRadius:6,fontSize:10}} /></label>
+            <label style={{display:"block",marginTop:8}}>编码<input value={editingRole.code} onChange={e=>setEditingRole({...editingRole,code:e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g,"_")})} disabled={!!editingRole.id} style={{width:"100%",padding:8,border:"1px solid #d4dde2",borderRadius:6,fontSize:10,background:editingRole.id?"#f5f5f5":"white"}} /></label>
+            <label style={{display:"block",marginTop:8}}>数据范围
+              <select value={editingRole.scope} onChange={e=>setEditingRole({...editingRole,scope:e.target.value})} style={{width:"100%",padding:8,border:"1px solid #d4dde2",borderRadius:6,fontSize:10}}>
+                <option value="department">部门范围（仅查看所属部门数据）</option>
+                <option value="global">全局范围（查看所有部门数据）</option>
+                <option value="personal">个人范围（仅查看自己创建的数据）</option>
+              </select>
+            </label>
+            <div style={{marginTop:12}}>
+              <b style={{fontSize:10}}>功能权限</b>
+              <div style={{maxHeight:260,overflow:"auto",marginTop:6,border:"1px solid #e8edef",borderRadius:6}}>
+                {["knowledge","governance","system","agent"].map(cat => {
+                  const items=permTree.filter(p=>p.code.startsWith(cat+":")||p.code===cat);
+                  if(!items.length)return null;
+                  const catName={knowledge:"知识服务",governance:"知识治理",system:"系统管理",agent:"AI Agent"}[cat]||cat;
+                  return <div key={cat} style={{padding:"6px 10px",borderBottom:"1px solid #f0f4f2"}}>
+                    <b style={{fontSize:9,color:"#38534c"}}>{catName}</b>
+                    <div style={{display:"grid",gap:2,marginTop:3}}>
+                      {items.map(p=><label key={p.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:9,color:"#5a6e68",cursor:"pointer",padding:"2px 0"}}><input type="checkbox" checked={editingRole.permissionIds.includes(p.id)} onChange={()=>togglePerm(p.id)} style={{accentColor:"#16796d"}} />{p.name}</label>)}
+                    </div>
+                  </div>;
+                })}
+              </div>
+            </div>
+            <footer style={{marginTop:16,display:"flex",justifyContent:"flex-end",gap:8}}>
+              <button onClick={()=>{setShowRoleEditor(false);setEditingRole(null)}} style={{border:"1px solid #d4dde2",borderRadius:6,background:"white",padding:"8px 16px",fontSize:10,cursor:"pointer"}}>取消</button>
+              <button onClick={saveRole} disabled={!editingRole.name||!editingRole.code} style={{border:0,borderRadius:6,background:"#16796d",color:"white",padding:"8px 16px",fontSize:10,cursor:"pointer"}}>保存</button>
+            </footer>
+          </div>
+        </div>
+      )}
       {showCreate && (
         <form className="account-create" onSubmit={createAccount}>
           <label>
@@ -2704,10 +2817,8 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
           </label>
           <label>
             角色
-            <select name="role">
-              <option value="EMPLOYEE">普通员工</option>
-              <option value="DEPT_ADMIN">部门管理员</option>
-              <option value="SUPER_ADMIN">超级管理员</option>
+            <select name="role" required>
+              {allRoles.map(r => <option key={r.id} value={r.code}>{r.name}{r.scope==='global'?'（全局数据）':''}</option>)}
             </select>
           </label>
           <button className="primary-action">添加并授权</button>
@@ -2793,7 +2904,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
                   <option value="DEPT_ADMIN">部门管理员</option>
                   <option value="SUPER_ADMIN">超级管理员</option>
                 </select>
-                <small>{roleLabel[account.role]}</small>
+                <small>{roleLabel(account.role)}</small>
               </label>
               <label>
                 账号状态

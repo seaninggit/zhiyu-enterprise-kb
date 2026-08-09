@@ -7,11 +7,25 @@ import {
   type DemoRole,
 } from "../app/chatgpt-auth";
 import { getDb, getD1 } from "../db";
-import { roles, userDepartments, userRoles, users } from "../db/schema";
+import { permissions, rolePermissions, roles, userDepartments, userRoles, users } from "../db/schema";
 import { ApiError } from "./api";
 
-export type RoleCode = "SUPER_ADMIN" | "DEPT_ADMIN" | "EMPLOYEE";
-export type AuthContext = { userId: number; email: string; displayName: string; role: RoleCode; deptIds: number[]; primaryDeptId: number; isPublicViewer: boolean; demoMode: boolean };
+export type AuthContext = {
+  userId: number; email: string; displayName: string;
+  role: string; permissions: string[]; scope: string;
+  deptIds: number[]; primaryDeptId: number;
+  isPublicViewer: boolean; demoMode: boolean;
+};
+
+export function hasPermission(ctx: AuthContext, perm: string): boolean {
+  if (ctx.scope === "global") return true;
+  return ctx.permissions.includes(perm);
+}
+export function hasScope(ctx: AuthContext, level: "global" | "department" | "personal"): boolean {
+  if (ctx.scope === "global") return true;
+  if (ctx.scope === "department" && level === "personal") return true;
+  return ctx.scope === level;
+}
 
 const DEMO_DEPARTMENT: Record<
   DemoRole,
@@ -22,7 +36,7 @@ const DEMO_DEPARTMENT: Record<
   EMPLOYEE: { deptId: 3, code: "HR", name: "组织人事部", isDeptAdmin: 0 },
 };
 
-function demoRoleCode(role: DemoRole): RoleCode {
+function demoRoleCode(role: DemoRole): string {
   return role === "SUPER_ADMIN" ? "SUPER_ADMIN" : role === "DEPT_ADMIN" ? "DEPT_ADMIN" : "EMPLOYEE";
 }
 
@@ -75,17 +89,20 @@ export async function requireApiUser(): Promise<AuthContext> {
   await getD1().prepare("UPDATE users SET display_name=?,last_login_time=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(identity.displayName, account.id).run();
   const [user] = await db.select().from(users).where(and(eq(users.email, identity.email), eq(users.status, "ACTIVE"))).limit(1);
   if (!user) throw new ApiError(403, "ACCOUNT_DISABLED", "账号不可用");
-  const [roleRows, deptRows] = await Promise.all([
-    db.select({ code: roles.code }).from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id)).where(eq(userRoles.userId, user.id)),
+  const [roleRows, deptRows, permRows] = await Promise.all([
+    db.select({ code: roles.code, scope: roles.scope }).from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id)).where(eq(userRoles.userId, user.id)),
     db.select({ deptId: userDepartments.deptId, isPrimary: userDepartments.isPrimary, isDeptAdmin: userDepartments.isDeptAdmin }).from(userDepartments).where(eq(userDepartments.userId, user.id)),
+    db.select({ code: permissions.code }).from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id)).innerJoin(rolePermissions, eq(rolePermissions.roleId, roles.id)).innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id)).where(eq(userRoles.userId, user.id)),
   ]);
-  const role = (roleRows.some(r => r.code === "SUPER_ADMIN") ? "SUPER_ADMIN" : roleRows.some(r => r.code === "DEPT_ADMIN") || deptRows.some(d => d.isDeptAdmin) ? "DEPT_ADMIN" : "EMPLOYEE") as RoleCode;
+  const role = (roleRows.some(r => r.code === "SUPER_ADMIN") ? "SUPER_ADMIN" : roleRows.some(r => r.code === "DEPT_ADMIN") || deptRows.some(d => d.isDeptAdmin) ? "DEPT_ADMIN" : "EMPLOYEE");
+  const scope = roleRows.some(r => r.scope === "global") ? "global" : "department";
+  const userPermissions = [...new Set(permRows.map(r => r.code))];
   const primary = deptRows.find(d => d.isPrimary)?.deptId ?? deptRows[0]?.deptId;
   if (!primary) throw new ApiError(403, "NO_DEPARTMENT", "账号未分配部门");
-  return { userId: user.id, email: user.email, displayName: user.displayName, role, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email), demoMode: demoModeEnabled() };
+  return { userId: user.id, email: user.email, displayName: user.displayName, role, permissions: userPermissions, scope, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email), demoMode: demoModeEnabled() };
 }
 
-export function canManageDepartment(ctx: AuthContext, deptId: number) { return ctx.role === "SUPER_ADMIN" || (ctx.role === "DEPT_ADMIN" && ctx.deptIds.includes(deptId)); }
+export function canManageDepartment(ctx: AuthContext, deptId: number) { return hasScope(ctx, "global") || (hasScope(ctx, "department") && ctx.deptIds.includes(deptId)); }
 export function assertDepartment(ctx: AuthContext, deptId: number) { if (!canManageDepartment(ctx, deptId) && !ctx.deptIds.includes(deptId)) throw new ApiError(403, "DEPARTMENT_FORBIDDEN", "无权访问该部门数据"); }
 
 export async function enforceRateLimit(ctx: AuthContext, action: string, limit: number, seconds: number) {

@@ -1,6 +1,6 @@
 import { getD1 } from "../../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
-import { enforceRateLimit, requireApiUser } from "../../../../lib/authz";
+import { enforceRateLimit, hasPermission, requireApiUser } from "../../../../lib/authz";
 import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } from "../../../../lib/rag";
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../../lib/document-access";
@@ -55,7 +55,7 @@ export async function POST(request: Request) {
     const db = getD1(); let conversationId = Number(payload.conversationId || 0);
     // --- Agent mode ---
     const agentMode = payload.mode === "agent" || payload.agent === true;
-    if (agentMode && ctx.role !== "EMPLOYEE") {
+    if (agentMode && hasPermission(ctx, "agent:use")) {
       // Agent 模式：跳过意图识别，直接走 tool-use loop
       await enforceRateLimit(ctx, "agent-operation", 15, 60);
       const agentHistory: AgentMessage[] = [];

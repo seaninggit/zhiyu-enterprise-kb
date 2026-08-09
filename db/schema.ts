@@ -30,7 +30,20 @@ export const roles = sqliteTable("roles", {
   code: text("code").notNull(),
   name: text("name").notNull(),
   description: text("description").notNull().default(""),
+  scope: text("scope").notNull().default("department"),
+  isSystem: integer("is_system").notNull().default(0),
 }, (table) => [uniqueIndex("roles_code_uidx").on(table.code)]);
+export const permissions = sqliteTable("permissions", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  parentCode: text("parent_code"),
+  sortOrder: integer("sort_order").notNull().default(0),
+}, (table) => [uniqueIndex("permissions_code_uidx").on(table.code)]);
+export const rolePermissions = sqliteTable("role_permissions", {
+  roleId: integer("role_id").notNull().references(() => roles.id),
+  permissionId: integer("permission_id").notNull().references(() => permissions.id),
+}, (table) => [primaryKey({ columns: [table.roleId, table.permissionId] }), index("role_permissions_role_idx").on(table.roleId)]);
 
 export const userRoles = sqliteTable("user_roles", {
   userId: integer("user_id").notNull().references(() => users.id),

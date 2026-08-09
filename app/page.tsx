@@ -422,9 +422,6 @@ export default function Home() {
     const timer = window.setTimeout(() => setAiGuideVisible(false), 6500);
     return () => window.clearTimeout(timer);
   }, []);
-  useEffect(() => {
-    if (!hasDemoRole()) setDemoLoginOpen(true);
-  }, []);
 
   useEffect(() => {
     fetch("/api/documents", { cache: "no-store" })
@@ -1435,6 +1432,11 @@ export default function Home() {
                 </button>
               ))}
             </div>
+            <footer>
+              <button onClick={() => setDemoLoginOpen(false)} style={{color:"#8899a0",fontSize:9}}>
+                跳过，直接进入
+              </button>
+            </footer>
           </section>
         </div>
       )}

@@ -2540,6 +2540,8 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
   const [editingRole, setEditingRole] = useState<{id?:number;code:string;name:string;description:string;scope:string;permissionIds:number[]}|null>(null);
   const [importText, setImportText] = useState("");
   const [permTree, setPermTree] = useState<Array<{id:number;code:string;name:string;parent_code:string|null;sort_order:number}>>([]);
+  const [newPermCode, setNewPermCode] = useState("");
+  const [newPermName, setNewPermName] = useState("");
   async function load() {
     setLoading(true);
     try {
@@ -2780,6 +2782,14 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
                     </div>
                   </div>;
                 })}
+              </div>
+              <div style={{marginTop:10,padding:"8px 10px",background:"#fdfaf5",border:"1px dashed #d9cfb0",borderRadius:6}}>
+                <b style={{fontSize:9,color:"#8b7a4a"}}>＋ 自定义权限</b>
+                <div style={{display:"flex",gap:6,marginTop:6}}>
+                  <input placeholder="编码，如 custom:report" value={newPermCode} onChange={e=>setNewPermCode(e.target.value)} style={{flex:1,padding:"5px 8px",border:"1px solid #d4dde2",borderRadius:4,fontSize:9}} />
+                  <input placeholder="名称，如 查看报表" value={newPermName} onChange={e=>setNewPermName(e.target.value)} style={{flex:1,padding:"5px 8px",border:"1px solid #d4dde2",borderRadius:4,fontSize:9}} />
+                  <button onClick={async()=>{const c=newPermCode.trim(),n=newPermName.trim();if(!c||!n)return;try{const r=await fetch("/api/admin/roles",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"ADD_PERMISSION",code:c,name:n})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"添加失败");setNewPermCode("");setNewPermName("");await loadPermTree();notify("自定义权限已添加")}catch(e:any){notify(e.message)}}} disabled={!newPermCode.trim()||!newPermName.trim()} style={{border:0,borderRadius:4,background:"#16796d",color:"white",padding:"5px 10px",fontSize:9,cursor:"pointer",whiteSpace:"nowrap"}}>添加</button>
+                </div>
               </div>
             </div>
             <footer style={{marginTop:16,display:"flex",justifyContent:"flex-end",gap:8}}>

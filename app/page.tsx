@@ -168,7 +168,7 @@ type QueryCorrection = {
   changes: { from: string; to: string }[];
 };
 
-const categories = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
+const DEFAULT_CATEGORIES = ["全部", "产品研发", "组织人事", "销售市场", "财务法务"];
 const statusLabel: Record<DocumentStatus, string> = {
   draft: "草稿",
   review: "待审核",
@@ -332,6 +332,7 @@ export default function Home() {
   const [governanceTasks, setGovernanceTasks] = useState<GovernanceTask[]>([]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
+  const [knowledgeCategories, setKnowledgeCategories] = useState(DEFAULT_CATEGORIES);
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
   const [favorites, setFavorites] = useState<number[]>([]);
   const [metrics, setMetrics] = useState<Metrics>({
@@ -454,6 +455,8 @@ export default function Home() {
         }
         if (data.data?.uploadOptions?.departments?.length)
           setUploadOptions(data.data.uploadOptions);
+        if (Array.isArray(data.data?.categoryOptions))
+          setKnowledgeCategories(["全部", ...Array.from(new Set(data.data.categoryOptions.map((item:Record<string,unknown>)=>String(item.name)).filter(Boolean)))]);
         setFavorites(data.data?.favorites ?? []);
         setNotifications(data.data?.notifications ?? []);
         if (data.data?.metrics) setMetrics(data.data.metrics);
@@ -1101,7 +1104,7 @@ export default function Home() {
         ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
         ) : view === "settings" && hasPerm("system:accounts") ? (
-          <SettingsView role={currentUser.role} notify={notify} />
+          <SettingsView role={currentUser.role} notify={notify} onTaxonomyChange={(items)=>setKnowledgeCategories(["全部",...Array.from(new Set(items.map(item=>String(item.name)).filter(Boolean)))])} />
         ) : view === "audit" && hasPerm("governance:audit") ? (
           <AuditView logs={logs} documents={documents} />
         ) : (
@@ -1113,6 +1116,7 @@ export default function Home() {
             query={query}
             correction={searchCorrection}
             category={category}
+            categories={knowledgeCategories}
             setCategory={setCategory}
             setQuery={setQuery}
             onSearch={runSearch}
@@ -1225,6 +1229,7 @@ export default function Home() {
           progress={pipelineProgress}
           currentUser={currentUser}
           options={uploadOptions}
+          categories={knowledgeCategories}
           onSubmit={submitUpload}
           onClose={() => setUploadOpen(false)}
         />
@@ -1474,6 +1479,7 @@ function LibraryView({
   query,
   correction,
   category,
+  categories,
   setCategory,
   setQuery,
   onSearch,
@@ -1490,6 +1496,7 @@ function LibraryView({
   query: string;
   correction: QueryCorrection | null;
   category: string;
+  categories: string[];
   setCategory: (v: string) => void;
   setQuery: (v: string) => void;
   onSearch: (useOriginal?: boolean) => void;
@@ -2125,9 +2132,11 @@ function PlatformView({
 function EnterprisePanels({
   role,
   notify,
+  onTaxonomyChange,
 }: {
   role: string;
   notify: (message: string) => void;
+  onTaxonomyChange: (categories:Record<string,unknown>[])=>void;
 }) {
   const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
@@ -2141,6 +2150,8 @@ function EnterprisePanels({
     if (!response.ok)
       return notify(payload.error?.message ?? "企业治理数据加载失败");
     setData(payload.data);
+    onTaxonomyChange(payload.data?.categories??[]);
+    return payload.data as Record<string,Record<string,unknown>[]>;
   }
   useEffect(() => {
     const timer = window.setTimeout(() => load(), 0);
@@ -2154,8 +2165,9 @@ function EnterprisePanels({
       }),
       payload = await response.json();
     if (!response.ok) return notify(payload.error?.message ?? "操作失败");
-    notify("操作已生效、落库并写入审计");
     await load();
+    notify("操作已生效，当前页面及业务表单已同步更新");
+    return true;
   }
   if (!data)
     return (
@@ -2164,6 +2176,8 @@ function EnterprisePanels({
       </section>
     );
   const categories = data.categories ?? [],
+    groups=data.groups??[],
+    departments=data.departments??[],
     security = data.security ?? [],
     prompts = data.prompts ?? [],
     connectors = data.connectors ?? [],
@@ -2178,7 +2192,7 @@ function EnterprisePanels({
           <header>
             <h2>分类与用户组</h2>
             <span>
-              {categories.length} 个分类 · {(data.groups ?? []).length} 个组
+              {categories.length} 个分类
             </span>
           </header>
           {categories.slice(0, 8).map((item) => (
@@ -2193,18 +2207,30 @@ function EnterprisePanels({
           ))}
           <form
             className="inline-governance"
-            onSubmit={(e) => {
+            onSubmit={async (e) => {
               e.preventDefault();
-              act({
+              const form=e.currentTarget;
+              const saved=await act({
                 action: "SAVE_CATEGORY",
-                ...Object.fromEntries(new FormData(e.currentTarget)),
+                ...Object.fromEntries(new FormData(form)),
               });
-              e.currentTarget.reset();
+              if(saved)form.reset();
             }}
           >
             <input name="name" required placeholder="分类名称" />
             <input name="code" required placeholder="分类编码" />
             <button>新增分类</button>
+          </form>
+        </section>
+        <section className="platform-card">
+          <header><h2>用户组</h2><span>{groups.length} 个组</span></header>
+          {groups.slice(0,8).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.code)} · {item.dept_id?"部门级":"全局"} · {Number(item.member_count)||0} 人</small></div></div>)}
+          {!groups.length&&<p className="platform-empty">尚未配置用户组</p>}
+          <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const saved=await act({action:"SAVE_GROUP",...Object.fromEntries(new FormData(form))});if(saved)form.reset();}}>
+            <input name="name" required placeholder="用户组名称" />
+            <input name="code" required placeholder="用户组编码" />
+            <select name="deptId" defaultValue=""><option value="">全局用户组</option>{departments.map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}</option>)}</select>
+            <button>新增用户组</button>
           </form>
         </section>
         <section className="platform-card">
@@ -2514,7 +2540,7 @@ function EnterprisePanels({
   );
 }
 
-function SettingsView({ role, notify }: { role: string; notify: (m: string) => void }) {
+function SettingsView({ role, notify,onTaxonomyChange }: { role: string; notify: (m: string) => void;onTaxonomyChange:(items:Record<string,unknown>[])=>void }) {
   const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
   const [semanticProgress, setSemanticProgress] = useState("");
   async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
@@ -2590,7 +2616,7 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
               <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
             </form>
           </section>
-          <EnterprisePanels role={role} notify={notify} />
+          <EnterprisePanels role={role} notify={notify} onTaxonomyChange={onTaxonomyChange} />
         </>
       )}
     </main>
@@ -3328,6 +3354,7 @@ function UploadModal({
   progress,
   currentUser,
   options,
+  categories,
   onSubmit,
   onClose,
 }: {
@@ -3335,6 +3362,7 @@ function UploadModal({
   progress: ExtractionProgress | null;
   currentUser: { displayName: string; role: string; primaryDeptId: number };
   options: UploadOptions;
+  categories: string[];
   onSubmit: (e: FormEvent<HTMLFormElement>) => void;
   onClose: () => void;
 }) {
@@ -3357,8 +3385,9 @@ function UploadModal({
     FINANCE: "财务法务",
     GENERAL: "组织人事",
   };
-  const defaultCategory =
-    categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
+  const mappedCategory=categoryByDepartment[department?.code ?? "GENERAL"] ?? "组织人事";
+  const availableCategories=categories.filter(item=>item!=="全部");
+  const defaultCategory = availableCategories.includes(mappedCategory)?mappedCategory:(availableCategories[0]??mappedCategory);
   const defaultOwner =
     departmentMembers.find(
       (item) => item.display_name === currentUser.displayName,
@@ -3419,7 +3448,7 @@ function UploadModal({
               required
               defaultValue={defaultCategory}
             >
-              {categories.slice(1).map((c) => (
+              {availableCategories.map((c) => (
                 <option key={c}>{c}</option>
               ))}
             </select>

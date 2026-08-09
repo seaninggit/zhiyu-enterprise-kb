@@ -27,7 +27,8 @@ type View =
   | "platform"
   | "favorites"
   | "audit"
-  | "accounts";
+  | "accounts"
+  | "settings";
 type DocumentStatus =
   | "draft"
   | "review"
@@ -917,7 +918,28 @@ export default function Home() {
                   className={view === "platform" ? "active" : ""}
                   onClick={() => setView("platform")}
                 >
-                  <i>◫</i>治理与洞察
+                  <i>◫</i>运营概览
+                </button>
+              )}
+            </>
+          )}
+          {(hasPerm("system:accounts") || hasPerm("governance:audit")) && (
+            <>
+              <span>系统管理</span>
+              {hasPerm("system:accounts") && (
+                <button
+                  className={view === "accounts" ? "active" : ""}
+                  onClick={() => setView("accounts")}
+                >
+                  <i>♙</i>成员与权限
+                </button>
+              )}
+              {hasPerm("system:accounts") && (
+                <button
+                  className={view === "settings" ? "active" : ""}
+                  onClick={() => setView("settings")}
+                >
+                  <i>⚙</i>系统设置
                 </button>
               )}
               {hasPerm("governance:audit") && (
@@ -929,14 +951,6 @@ export default function Home() {
                 </button>
               )}
             </>
-          )}
-          {hasPerm("system:accounts") && (
-            <button
-              className={view === "accounts" ? "active" : ""}
-              onClick={() => setView("accounts")}
-            >
-              <i>♙</i>成员与权限
-            </button>
           )}
         </nav>
         <button
@@ -1079,6 +1093,8 @@ export default function Home() {
           <PlatformView role={currentUser.role} notify={notify} />
         ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
+        ) : view === "settings" && hasPerm("system:accounts") ? (
+          <SettingsView role={currentUser.role} notify={notify} />
         ) : view === "audit" && hasPerm("governance:audit") ? (
           <AuditView logs={logs} documents={documents} />
         ) : (
@@ -1826,14 +1842,8 @@ function PlatformView({
   const [loading, setLoading] = useState(true);
   const [scanResult, setScanResult] = useState<ScanResult|null>(null);
   const [scanLoading, setScanLoading] = useState(false);
-  const [semanticProgress, setSemanticProgress] = useState("");
   const [agentResult, setAgentResult] = useState<{trace:Array<{tool:string;args:unknown;result:string}>;summary:string}|null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
-  const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
-  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
-  async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(e:any){notify(e.message)}}
-  async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(e:any){notify(e.message)}}
-  useEffect(()=>{loadTasks()},[]);
   async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(e:any){notify(e.message)}finally{setScanLoading(false)}}
   async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(e:any){notify(e.message)}finally{setAgentLoading(false)}}
   async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
@@ -1855,50 +1865,6 @@ function PlatformView({
     const timer = window.setTimeout(() => load(), 0);
     return () => window.clearTimeout(timer);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  async function action(body: Record<string, unknown>) {
-    const response = await fetch("/api/platform", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const payload = await response.json();
-    if (!response.ok) return notify(payload.error?.message ?? "操作失败");
-    notify("操作已执行并写入治理记录");
-    await load();
-  }
-  async function rebuildSemantic() {
-    if (semanticProgress) return;
-    try {
-      const response = await fetch("/api/documents", { cache: "no-store" });
-      const payload = await response.json();
-      if (!response.ok)
-        throw new Error(payload.error?.message ?? "资料列表加载失败");
-      const rows = (payload.data?.documents ?? []) as Record<string, unknown>[];
-      let success = 0,
-        skipped = 0;
-      for (let index = 0; index < rows.length; index++) {
-        const id = Number(rows[index].id);
-        setSemanticProgress(`正在重建 ${index + 1}/${rows.length}`);
-        try {
-          const result = await buildLocalSemanticIndex(id, (progress) =>
-            setSemanticProgress(
-              `${index + 1}/${rows.length} · ${progress.message}`,
-            ),
-          );
-          if (result.indexed) success++;
-          else skipped++;
-        } catch {
-          skipped++;
-        }
-      }
-      notify(`语义索引重建完成：${success} 份成功，${skipped} 份跳过`);
-      await load();
-    } catch (error) {
-      notify(error instanceof Error ? error.message : "语义索引重建失败");
-    } finally {
-      setSemanticProgress("");
-    }
-  }
   if (loading || !data)
     return (
       <main className="workspace">
@@ -1912,19 +1878,12 @@ function PlatformView({
       <section className="admin-heading">
         <div>
           <span className="page-kicker">KNOWLEDGE OPERATIONS</span>
-          <h1>治理与洞察</h1>
-          <p>解析流水线、搜索缺口、空间目录、审批轨迹和 AI 参数统一管理。</p>
+          <h1>运营概览</h1>
+          <p>知识库运行指标与智能巡检。</p>
         </div>
         <div className="member-actions">
           <button className="primary-action" onClick={()=>{runScan();runAgentAnalysis();}} disabled={scanLoading||agentLoading}>
             {scanLoading||agentLoading?"巡检中…":"🔍 智能巡检"}
-          </button>
-          <button
-            className="outline-action"
-            onClick={rebuildSemantic}
-            disabled={Boolean(semanticProgress)}
-          >
-            {semanticProgress || "重建本地语义索引"}
           </button>
           <button className="outline-action" onClick={load}>
             刷新数据
@@ -1965,34 +1924,6 @@ function PlatformView({
           {scanResult.zeroSearch.length>0&&<div className="scan-group"><h3>🔎 搜索无结果（{scanResult.zeroSearch.length} 次）</h3>{scanResult.zeroSearch.slice(0,5).map((s:any,i:number)=><div key={i} className="scan-item zero"><div><b>&ldquo;{s.query}&rdquo;</b><small>出现 {s.cnt} 次 · 最近：{s.last_time?.slice(0,10)}</small></div><button onClick={()=>handleScanAction('CREATE_GAP_TASK',0,s.query)}>补充知识</button></div>)}</div>}
         </section>
       </div>}
-      {tasks.length>0 && (
-        <section className="platform-card wide-card" style={{marginTop:18}}>
-          <header><h2>⏰ 定时任务</h2></header>
-          {tasks.map(t => (
-            <div key={t.id} className="scan-item" style={{margin:"0 18px 8px",borderLeft:`3px solid ${t.enabled?"#16796d":"#ccc"}`}}>
-              <div>
-                <b style={{fontSize:10}}>{t.name}</b>
-                <small style={{fontSize:8,color:"#8b9d98"}}>{t.description}</small>
-                {t.last_run_at && <small style={{fontSize:7,color:"#a0b0aa"}}>上次执行：{t.last_run_at.slice(0,16).replace("T"," ")}</small>}
-              </div>
-              <div style={{display:"flex",alignItems:"center",gap:8}}>
-                <select value={t.cron_expr} onChange={e=>updateTaskSchedule(t.id,e.target.value)} style={{fontSize:8,padding:"3px 6px",border:"1px solid #d4dde2",borderRadius:4}}>
-                  <option value="0 8 * * *">每天8:00</option>
-                  <option value="0 18 * * *">每天18:00</option>
-                  <option value="0 19 * * *">每天19:00</option>
-                  <option value="0 20 * * *">每天20:00</option>
-                  <option value="0 8 * * 1">每周一8:00</option>
-                  <option value="0 8 1 * *">每月1日8:00</option>
-                </select>
-                <label style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"#637a84",cursor:"pointer"}}>
-                  <input type="checkbox" checked={t.enabled===1} onChange={e=>toggleTask(t.id,e.target.checked)} style={{accentColor:"#16796d"}} />
-                  {t.enabled?"开":"关"}
-                </label>
-              </div>
-            </div>
-          ))}
-        </section>
-      )}
       <div className="platform-grid">
         <section className="platform-card">
           <header>
@@ -2126,7 +2057,6 @@ function PlatformView({
           ))}
         </section>
       )}
-      <EnterprisePanels role={role} notify={notify} />
     </main>
   );
 }
@@ -2490,6 +2420,89 @@ function EnterprisePanels({
         ))}
       </section>
     </>
+  );
+}
+
+function SettingsView({ role, notify }: { role: string; notify: (m: string) => void }) {
+  const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
+  const [semanticProgress, setSemanticProgress] = useState("");
+  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
+  async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(e:any){notify(e.message)}}
+  async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(e:any){notify(e.message)}}
+  async function rebuildSemantic() {
+    if (semanticProgress) return;
+    try {
+      const response = await fetch("/api/documents", { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error?.message ?? "资料列表加载失败");
+      const rows = (payload.data?.documents ?? []) as Record<string, unknown>[];
+      let success = 0, skipped = 0;
+      for (let index = 0; index < rows.length; index++) {
+        setSemanticProgress(`正在重建 ${index + 1}/${rows.length}`);
+        try { const r = await buildLocalSemanticIndex(Number(rows[index].id), (p) => setSemanticProgress(`${index + 1}/${rows.length} · ${p.message}`)); if (r.indexed) success++; else skipped++; } catch { skipped++; }
+      }
+      notify(`语义索引重建完成：${success} 成功，${skipped} 跳过`);
+    } catch (error) { notify(error instanceof Error ? error.message : "语义索引重建失败"); }
+    finally { setSemanticProgress(""); }
+  }
+  async function action(body: Record<string, unknown>) {
+    const r = await fetch("/api/platform", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const p = await r.json();
+    if (!r.ok) return notify(p.error?.message ?? "操作失败");
+    notify("已保存");
+  }
+  useEffect(() => { loadTasks(); }, []);
+  return (
+    <main className="workspace">
+      <section className="admin-heading">
+        <div>
+          <span className="page-kicker">SYSTEM SETTINGS</span>
+          <h1>系统设置</h1>
+          <p>定时任务、AI 参数、语义索引与知识空间管理。</p>
+        </div>
+        <div className="member-actions">
+          <button className="outline-action" onClick={rebuildSemantic} disabled={Boolean(semanticProgress)}>
+            {semanticProgress || "重建语义索引"}
+          </button>
+        </div>
+      </section>
+      <section className="platform-card wide-card" style={{marginBottom:18}}>
+        <header><h2>⏰ 定时任务</h2></header>
+        {tasks.map(t => (
+          <div key={t.id} className="scan-item" style={{margin:"0 18px 8px",borderLeft:`3px solid ${t.enabled?"#16796d":"#ccc"}`}}>
+            <div>
+              <b style={{fontSize:10}}>{t.name}</b>
+              <small style={{fontSize:8,color:"#8b9d98"}}>{t.description}</small>
+              {t.last_run_at && <small style={{fontSize:7,color:"#a0b0aa"}}>上次执行：{t.last_run_at.slice(0,16).replace("T"," ")}</small>}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <select value={t.cron_expr} onChange={e=>updateTaskSchedule(t.id,e.target.value)} style={{fontSize:8,padding:"3px 6px",border:"1px solid #d4dde2",borderRadius:4}}>
+                <option value="0 8 * * *">每天8:00</option><option value="0 18 * * *">每天18:00</option><option value="0 19 * * *">每天19:00</option><option value="0 20 * * *">每天20:00</option><option value="0 8 * * 1">每周一8:00</option><option value="0 8 1 * *">每月1日8:00</option>
+              </select>
+              <label style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"#637a84",cursor:"pointer"}}>
+                <input type="checkbox" checked={t.enabled===1} onChange={e=>toggleTask(t.id,e.target.checked)} style={{accentColor:"#16796d"}} />{t.enabled?"开":"关"}
+              </label>
+            </div>
+          </div>
+        ))}
+      </section>
+      {role === "SUPER_ADMIN" && (
+        <>
+          <section className="platform-card wide-card" style={{marginBottom:18}}>
+            <header><h2>AI 检索参数</h2></header>
+            <form onSubmit={e=>{e.preventDefault();const fd=new FormData(e.currentTarget);action({action:"UPDATE_SETTINGS",settings:Object.fromEntries(fd)})}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:12}}>
+                <label style={{fontSize:9}}>向量权重<input name="hybrid.vector_weight" defaultValue="0.72" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>关键词权重<input name="hybrid.keyword_weight" defaultValue="0.28" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>Top-K<input name="rag.top_k" defaultValue="5" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+              </div>
+              <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
+            </form>
+          </section>
+          <EnterprisePanels role={role} notify={notify} />
+        </>
+      )}
+    </main>
   );
 }
 

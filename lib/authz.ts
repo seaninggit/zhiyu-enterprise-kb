@@ -21,9 +21,8 @@ export function hasPermission(ctx: AuthContext, perm: string): boolean {
   if (ctx.scope === "global") return true;
   return ctx.permissions.includes(perm);
 }
-export function hasScope(ctx: AuthContext, level: "global" | "department" | "personal"): boolean {
+export function hasScope(ctx: AuthContext, level: "global" | "department"): boolean {
   if (ctx.scope === "global") return true;
-  if (ctx.scope === "department" && level === "personal") return true;
   return ctx.scope === level;
 }
 

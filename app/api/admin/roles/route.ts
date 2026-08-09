@@ -45,7 +45,7 @@ export async function POST(request: Request) {
     const code = safeText(p.code, 30).toUpperCase().replace(/[^A-Z0-9_]/g, "_");
     const name = safeText(p.name, 60);
     const description = safeText(p.description, 200);
-    const scope = ["global", "department", "personal"].includes(String(p.scope)) ? String(p.scope) : "department";
+    const scope = ["global", "department"].includes(String(p.scope)) ? String(p.scope) : "department";
     if (!code || !name) throw new ApiError(400, "VALIDATION_ERROR", "角色编码和名称不能为空");
 
     const db = getD1();
@@ -84,7 +84,7 @@ export async function PATCH(request: Request) {
 
     const name = safeText(p.name, 60);
     const description = safeText(p.description, 200);
-    const scope = ["global", "department", "personal"].includes(String(p.scope)) ? String(p.scope) : undefined;
+    const scope = ["global", "department"].includes(String(p.scope)) ? String(p.scope) : undefined;
 
     if (name) await db.prepare("UPDATE roles SET name=?, description=?, scope=COALESCE(?, scope) WHERE id=?").bind(name, description, scope, id).run();
 

@@ -2764,7 +2764,6 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
               <select value={editingRole.scope} onChange={e=>setEditingRole({...editingRole,scope:e.target.value})} style={{width:"100%",padding:8,border:"1px solid #d4dde2",borderRadius:6,fontSize:10}}>
                 <option value="department">部门范围（仅查看所属部门数据）</option>
                 <option value="global">全局范围（查看所有部门数据）</option>
-                <option value="personal">个人范围（仅查看自己创建的数据）</option>
               </select>
             </label>
             <div style={{marginTop:12}}>

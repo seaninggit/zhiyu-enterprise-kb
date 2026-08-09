@@ -422,12 +422,6 @@ export default function Home() {
     const timer = window.setTimeout(() => setAiGuideVisible(false), 6500);
     return () => window.clearTimeout(timer);
   }, []);
-  // 兜底：页面加载后确保弹窗出现
-  useEffect(() => {
-    if (currentUser.email && currentUser.demoMode && !hasDemoRole()) {
-      setDemoLoginOpen(true);
-    }
-  }, [currentUser.email, currentUser.demoMode]);
 
   useEffect(() => {
     fetch("/api/documents", { cache: "no-store" })
@@ -1421,17 +1415,36 @@ export default function Home() {
         />
       )}
       {demoLoginOpen && (
-        <div className="modal-backdrop demo-login-backdrop" onMouseDown={() => setDemoLoginOpen(false)}>
-          <section className="demo-login" onMouseDown={e => e.stopPropagation()}>
+        <div
+          className="modal-backdrop demo-login-backdrop"
+          onMouseDown={() => setDemoLoginOpen(false)}
+        >
+          <section
+            className="demo-login"
+            onMouseDown={(e) => e.stopPropagation()}
+          >
             <header>
-              <button aria-label="关闭演示身份选择" onClick={() => setDemoLoginOpen(false)}>×</button>
+              <button
+                aria-label="关闭演示身份选择"
+                onClick={() => setDemoLoginOpen(false)}
+              >
+                ×
+              </button>
               <span>公开演示环境</span>
-              <h2>选择演示身份</h2>
-              <p>系统已为三类角色生成账号与权限，选择后按对应角色进入界面。</p>
+              <h2>选择演示身份登录</h2>
+              <p>
+                系统已为三类角色生成账号与权限，选择后按对应角色进入界面。
+              </p>
             </header>
             <div className="demo-role-grid">
-              {DEMO_ROLE_OPTIONS.map(role => (
-                <button key={role.code} className={currentUser.role === role.code ? "demo-role-card active" : "demo-role-card"} onClick={() => selectDemoRole(role.code)}>
+              {DEMO_ROLE_OPTIONS.map((role) => (
+                <button
+                  key={role.code}
+                  className={
+                    currentUser.role === role.code ? "demo-role-card active" : "demo-role-card"
+                  }
+                  onClick={() => selectDemoRole(role.code)}
+                >
                   <b>{role.name}</b>
                   <span>{role.description}</span>
                   <i>{currentUser.role === role.code ? "当前身份" : "进入"}</i>

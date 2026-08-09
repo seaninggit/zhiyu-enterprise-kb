@@ -939,7 +939,7 @@ export default function Home() {
                   className={view === "settings" ? "active" : ""}
                   onClick={() => setView("settings")}
                 >
-                  <i>⚙</i>系统设置
+                  <i>⚙</i>平台管理
                 </button>
               )}
               {hasPerm("governance:audit") && (
@@ -2425,10 +2425,8 @@ function EnterprisePanels({
 
 function SettingsView({ role, notify }: { role: string; notify: (m: string) => void }) {
   const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
-  const [platformData, setPlatformData] = useState<Record<string,unknown[]>|null>(null);
   const [semanticProgress, setSemanticProgress] = useState("");
   async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
-  async function loadPlatform() { try { const r=await fetch("/api/platform",{cache:"no-store"}); const p=await r.json(); if(r.ok) setPlatformData(p.data); } catch { } }
   async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(e:any){notify(e.message)}}
   async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(e:any){notify(e.message)}}
   async function rebuildSemantic() {
@@ -2453,14 +2451,14 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
     if (!r.ok) return notify(p.error?.message ?? "操作失败");
     notify("已保存");
   }
-  useEffect(() => { loadTasks(); loadPlatform(); }, []);
+  useEffect(() => { loadTasks(); }, []);
   return (
     <main className="workspace">
       <section className="admin-heading">
         <div>
-          <span className="page-kicker">SYSTEM SETTINGS</span>
-          <h1>系统设置</h1>
-          <p>定时任务、AI 参数、语义索引与知识空间管理。</p>
+          <span className="page-kicker">PLATFORM ADMIN</span>
+          <h1>平台管理</h1>
+          <p>定时任务、AI 检索参数与语义索引维护。</p>
         </div>
         <div className="member-actions">
           <button className="outline-action" onClick={rebuildSemantic} disabled={Boolean(semanticProgress)}>
@@ -2501,7 +2499,6 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
               <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
             </form>
           </section>
-          {platformData && <EnterprisePanels role={role} notify={notify} data={platformData} />}
         </>
       )}
     </main>

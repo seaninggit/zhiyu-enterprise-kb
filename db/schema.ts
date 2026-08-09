@@ -40,6 +40,17 @@ export const permissions = sqliteTable("permissions", {
   parentCode: text("parent_code"),
   sortOrder: integer("sort_order").notNull().default(0),
 }, (table) => [uniqueIndex("permissions_code_uidx").on(table.code)]);
+export const scheduledTasks = sqliteTable("scheduled_tasks", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  code: text("code").notNull(),
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  cronExpr: text("cron_expr").notNull().default("0 18 * * *"),
+  enabled: integer("enabled").notNull().default(1),
+  lastRunAt: text("last_run_at"),
+  createTime: text("create_time").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [uniqueIndex("scheduled_tasks_code_uidx").on(table.code)]);
+
 export const rolePermissions = sqliteTable("role_permissions", {
   roleId: integer("role_id").notNull().references(() => roles.id),
   permissionId: integer("permission_id").notNull().references(() => permissions.id),

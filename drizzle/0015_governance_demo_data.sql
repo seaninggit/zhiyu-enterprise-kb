@@ -113,7 +113,7 @@ INSERT OR IGNORE INTO knowledge_governance_tasks(id,type,status,dept_id,source_d
 VALUES(2002,'DUPLICATE','OPEN',3,2005,9001,9003,'新员工入职培训流程存在疑似重复文档','《新员工入职培训流程》(#2005) 与《新员工入职指南与培训安排》(#2006) 内容高度相似（相似度92%）。建议合并或明确差异。','2026-07-20');
 
 INSERT OR IGNORE INTO knowledge_governance_tasks(id,type,status,dept_id,reporter_user_id,assignee_user_id,target_document_id,reason,detail,resolution,status,resolved_by,resolved_at,create_time)
-VALUES(2003,'QUALITY','RESOLVED',5,9003,9005,2021,'员工费用报销标准需更新','2024年差旅住宿标准已上调，需更新《员工费用报销管理制度》','已更新至 V5.0，住宿标准按2024新标准执行','RESOLVED',9005,'2026-07-18','2026-07-10');
+VALUES(2003,'QUALITY','RESOLVED',5,9003,9005,2021,'员工费用报销标准需更新','2024年差旅住宿标准已上调，需更新《员工费用报销管理制度》','已按2026年新标准更新住宿费上限并调整审批流程','RESOLVED',9005,'2026-07-18','2026-07-10');
 
 -- ============================================
 -- 场景 9：搜索零结果记录（知识缺口）

@@ -1,9 +1,9 @@
-import { env } from "cloudflare:workers";
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, requiredText, safeText } from "../../../lib/api";
 import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../lib/authz";
 import { documentListScope } from "../../../lib/document-access";
 import { runGovernanceMaintenance } from "../../../lib/governance";
+import { deleteKnowledgeFile, hasKnowledgeFileStorage, putKnowledgeFile } from "../../../lib/knowledge-files";
 import { assertPublishReady } from "../../../lib/publish-readiness";
 import { resolveDocumentTransition, WorkflowAction, WorkflowStatus } from "../../../lib/workflow";
 
@@ -59,9 +59,8 @@ export async function POST(request: Request) {
     if (sourceKey && !sourceKey.startsWith(`documents/${deptId}/`)) throw new ApiError(403, "FILE_SCOPE_MISMATCH", "文件与归属部门不匹配");
     if (file instanceof File && file.size > 0) {
       sourceName = file.name; mimeType = file.type || "application/octet-stream"; size = file.size; sourceKey = `documents/${deptId}/${crypto.randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-      const bucket = (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES;
-      if (!bucket) throw new ApiError(503, "STORAGE_UNAVAILABLE", "文件存储服务暂不可用");
-      await bucket.put(sourceKey, file.stream(), { httpMetadata: { contentType: mimeType } });
+      if (!hasKnowledgeFileStorage()) throw new ApiError(503, "STORAGE_UNAVAILABLE", "文件存储服务暂不可用");
+      await putKnowledgeFile(sourceKey, file.stream(), { contentType: mimeType, size: file.size });
     }
     const extractedContent = safeText(value("content"), 500000); const extractionMethod = safeText(value("extractionMethod") || (extractedContent ? "MANUAL" : "NONE"), 40); const extractionDetail = safeText(value("extractionDetail"), 500); const ocrStatus = safeText(value("ocrStatus") || "NOT_REQUIRED", 40);
     const initialParseStatus = extractedContent ? "COMPLETED" : (ocrStatus === "FAILED" ? "OCR_FAILED" : sourceKey ? "PENDING" : "NEEDS_CONTENT");
@@ -102,7 +101,7 @@ export async function POST(request: Request) {
     }
     return ok({ document, readinessWarning, dupWarning }, rid, 201);
   } catch (error) {
-    if (sourceKey) await (env as unknown as { KNOWLEDGE_FILES?: R2Bucket }).KNOWLEDGE_FILES?.delete(sourceKey).catch(() => undefined);
+    if (sourceKey) await deleteKnowledgeFile(sourceKey).catch(() => undefined);
     return fail(error, rid);
   }
 }

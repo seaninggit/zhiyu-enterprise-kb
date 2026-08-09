@@ -2,8 +2,9 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "../db";
 import { generateChat } from "./ai-provider";
 import { chunkText, documentIndexText } from "./text-chunks";
+import { getKnowledgeFile } from "./knowledge-files";
 
-type AiEnv = { OPENAI_API_KEY?: string; OPENAI_CHAT_MODEL?: string; OPENAI_EMBEDDING_MODEL?: string; DASHSCOPE_API_KEY?: string; KNOWLEDGE_FILES?: R2Bucket };
+type AiEnv = { OPENAI_API_KEY?: string; OPENAI_CHAT_MODEL?: string; OPENAI_EMBEDDING_MODEL?: string; DASHSCOPE_API_KEY?: string };
 type EmbeddingResponse = { data?: Array<{ embedding: number[] }> };
 
 function aiEnv() { return env as unknown as AiEnv; }
@@ -33,7 +34,7 @@ export async function indexPublishedDocument(documentId: number) {
   if (!doc) return { chunks: 0, embedded: false };
   let attachmentText = "";
   if (String(doc.mime_type || "").startsWith("text/") && doc.source_key && String(doc.extraction_method)!=="MANUAL_EDIT") {
-    const object = await aiEnv().KNOWLEDGE_FILES?.get(String(doc.source_key));
+    const object = await getKnowledgeFile(String(doc.source_key));
     if (object && object.size <= 2_000_000) attachmentText = await object.text();
   }
   const fullText = documentIndexText(doc, attachmentText);

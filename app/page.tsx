@@ -733,6 +733,7 @@ export default function Home() {
           headers: {
             "content-type": file.type || "application/octet-stream",
             "x-file-name": encodeURIComponent(file.name),
+            "x-file-size": String(file.size),
             "x-dept-id": String(
               data.get("deptId") || currentUser.primaryDeptId,
             ),

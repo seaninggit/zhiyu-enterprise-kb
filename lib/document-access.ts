@@ -29,7 +29,7 @@ export function publishedDocumentScope(ctx:AuthContext,alias="d"){
 export function documentListScope(ctx:AuthContext,alias="d"){
   if(hasScope(ctx,"global"))return{sql:`${alias}.is_deleted=0`,binds:[] as unknown[]};
   const access=grantedAccess(ctx,alias,"VIEW");
-  if(hasScope(ctx,"department"))return{sql:`${alias}.is_deleted=0 AND (${alias}.dept_id IN (${placeholders(ctx.deptIds)}) OR (${published(alias)} AND ${access.sql}))`,binds:[...ctx.deptIds,...access.binds]};
+  if(ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))return{sql:`${alias}.is_deleted=0 AND (${alias}.dept_id IN (${placeholders(ctx.deptIds)}) OR (${published(alias)} AND ${access.sql}))`,binds:[...ctx.deptIds,...access.binds]};
   return{sql:`${alias}.is_deleted=0 AND ((${alias}.create_user_id=? AND ${alias}.dept_id IN (${placeholders(ctx.deptIds)})) OR (${published(alias)} AND ${access.sql}))`,binds:[ctx.userId,...ctx.deptIds,...access.binds]};
 }
 
@@ -44,7 +44,7 @@ async function explicitPermission(documentId:number,spaceId:number|null,permissi
 export async function canReadDocument(doc:Record<string,unknown>,ctx:AuthContext){
   if(hasScope(ctx,"global"))return true;
   const ownDept=ctx.deptIds.includes(Number(doc.dept_id)),creator=Number(doc.create_user_id)===ctx.userId;
-  if((hasScope(ctx,"department")&&ownDept)||(creator&&ownDept))return true;
+  if(((ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))&&ownDept)||(creator&&ownDept))return true;
   const hasPublished=String(doc.status)==="ARCHIVED_ACTIVE"||(Number(doc.published_version||0)>0&&["DRAFT","PENDING_DEPT_REVIEW"].includes(String(doc.status)));
   if(!hasPublished)return false;
   if(ownDept||doc.share_scope==="CROSS_DEPT")return true;
@@ -54,6 +54,6 @@ export async function canReadDocument(doc:Record<string,unknown>,ctx:AuthContext
 export async function canEditDocument(doc:Record<string,unknown>,ctx:AuthContext){
   if(hasScope(ctx,"global"))return true;
   const ownDept=ctx.deptIds.includes(Number(doc.dept_id));
-  if((hasScope(ctx,"department")&&ownDept)||(ownDept&&Number(doc.create_user_id)===ctx.userId))return true;
+  if(((ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))&&ownDept)||(ownDept&&Number(doc.create_user_id)===ctx.userId))return true;
   return explicitPermission(Number(doc.id),doc.space_id?Number(doc.space_id):null,"EDIT",ctx);
 }

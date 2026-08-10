@@ -2,6 +2,13 @@ import { getD1 } from "../../../../db";
 import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
 import { hasPermission, requireApiUser } from "../../../../lib/authz";
 
+async function expandPermissionTree(ids:number[]){
+  const rows=await getD1().prepare("SELECT id,code,parent_code FROM permissions").all<{id:number;code:string;parent_code:string|null}>();
+  const selected=new Set(ids.map(Number)),byCode=new Map(rows.results.map(row=>[row.code,row]));
+  for(const row of rows.results.filter(item=>selected.has(item.id))){let parent=row.parent_code;while(parent){const target=byCode.get(parent);if(!target)break;selected.add(target.id);parent=target.parent_code;}}
+  return [...selected].filter(id=>rows.results.some(row=>row.id===id));
+}
+
 export async function GET(request: Request) {
   const rid = requestId(request);
   try {
@@ -56,7 +63,7 @@ export async function POST(request: Request) {
     const roleId = Number(result.meta.last_row_id);
 
     if (Array.isArray(p.permissionIds) && p.permissionIds.length) {
-      for (const pid of p.permissionIds) {
+      for (const pid of await expandPermissionTree(p.permissionIds)) {
         await db.prepare("INSERT OR IGNORE INTO role_permissions(role_id, permission_id) VALUES(?,?)").bind(roleId, Number(pid)).run();
       }
     }
@@ -90,14 +97,18 @@ export async function PATCH(request: Request) {
       else await db.prepare("UPDATE roles SET name=?, description=? WHERE id=?").bind(name, description, id).run();
     }
 
+    const beforePermissions=Array.isArray(p.permissionIds)?(await db.prepare("SELECT p.code FROM role_permissions rp JOIN permissions p ON p.id=rp.permission_id WHERE rp.role_id=? ORDER BY p.code").bind(id).all<{code:string}>()).results.map(item=>item.code):[];
+    let afterPermissionIds:number[]|null=null;
     if (Array.isArray(p.permissionIds)) {
+      afterPermissionIds=await expandPermissionTree(p.permissionIds);
       await db.prepare("DELETE FROM role_permissions WHERE role_id=?").bind(id).run();
-      for (const pid of p.permissionIds) {
+      for (const pid of afterPermissionIds) {
         await db.prepare("INSERT OR IGNORE INTO role_permissions(role_id, permission_id) VALUES(?,?)").bind(id, Number(pid)).run();
       }
     }
 
-    await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?, 'UPDATE_ROLE', ?, ?, ?, ?)").bind(ctx.primaryDeptId, ctx.userId, ctx.displayName, `更新角色 ${name || id} 权限`, rid).run();
+    const afterPermissions=afterPermissionIds?(await db.prepare(`SELECT code FROM permissions WHERE id IN (${afterPermissionIds.map(()=>"?").join(",")||"NULL"}) ORDER BY code`).bind(...afterPermissionIds).all<{code:string}>()).results.map(item=>item.code):beforePermissions;
+    await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?, 'UPDATE_ROLE', ?, ?, ?, ?)").bind(ctx.primaryDeptId, ctx.userId, ctx.displayName, `更新角色 ${name || id} 权限：${JSON.stringify({before:beforePermissions,after:afterPermissions})}`, rid).run();
 
     return ok({ updated: true, id }, rid);
   } catch (error) { return fail(error, rid); }

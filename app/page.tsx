@@ -25,6 +25,10 @@ type View =
   | "library"
   | "contributions"
   | "admin"
+  | "approval"
+  | "approvalHistory"
+  | "feedbackGovernance"
+  | "lifecycleGovernance"
   | "platform"
   | "taxonomy"
   | "favorites"
@@ -46,6 +50,7 @@ type DocumentStatus =
 type KnowledgeDocument = {
   id: number;
   creatorUserId?: number;
+  deptId?: number;
   title: string;
   summary: string;
   content: string;
@@ -55,6 +60,7 @@ type KnowledgeDocument = {
   securityLevel: string;
   owner: string;
   uploader: string;
+  departmentName?: string;
   sourceName?: string | null;
   sourceKey?: string | null;
   mimeType?: string | null;
@@ -81,6 +87,8 @@ type KnowledgeDocument = {
   aiIndexStatus?: string;
   latestApprovalAction?: string;
   latestApprovalComment?: string;
+  latestApprover?: string;
+  latestApprovalAt?: string | null;
   feedbackCount?: number;
   latestFeedback?: string;
   latestFeedbackAt?: string | null;
@@ -216,6 +224,7 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
   return {
     id: Number(row.id),
     creatorUserId: Number(row.create_user_id ?? 0),
+    deptId: Number(row.dept_id ?? 0),
     title: String(row.title ?? ""),
     summary: String(row.summary ?? ""),
     content: String(row.content ?? ""),
@@ -230,6 +239,7 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
     ),
     owner: String(row.owner ?? ""),
     uploader: String(row.uploader ?? row.creator_name ?? ""),
+    departmentName: String(row.department_name ?? ""),
     sourceName:
       (row.sourceName as string) ?? (row.source_name as string) ?? null,
     sourceKey: (row.sourceKey as string) ?? (row.source_key as string) ?? null,
@@ -257,6 +267,8 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
     aiIndexStatus: String(row.ai_index_status ?? "PENDING"),
     latestApprovalAction: String(row.latest_approval_action ?? ""),
     latestApprovalComment: String(row.latest_approval_comment ?? ""),
+    latestApprover: String(row.latest_approver ?? ""),
+    latestApprovalAt: (row.latest_approval_at as string) ?? null,
     feedbackCount: Number(row.feedback_count ?? 0),
     latestFeedback: String(row.latest_feedback ?? ""),
     latestFeedbackAt: (row.latest_feedback_at as string) ?? null,
@@ -427,6 +439,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [pipelineProgress, setPipelineProgress] =
     useState<ExtractionProgress | null>(null);
+  const [ocrReviewNotice,setOcrReviewNotice]=useState("");
   function hasPerm(perm: string) { return currentUser.scope === "global" || (currentUser.permissions?.includes(perm) ?? false); }
   const [currentUser, setCurrentUser] = useState<CurrentUser>({
     email: "",
@@ -451,6 +464,7 @@ export default function Home() {
   const [governanceDialog, setGovernanceDialog] =
     useState<GovernanceTask | null>(null);
   const [governanceSubmitting, setGovernanceSubmitting] = useState(false);
+  useEffect(()=>{if(!currentUser.email)return;const required:Partial<Record<View,string>>={library:"page:library",favorites:"page:favorites",contributions:"page:contributions",approval:"page:approval_pending",approvalHistory:"page:approval_history",admin:"page:document_admin",feedbackGovernance:"page:feedback_governance",lifecycleGovernance:"page:lifecycle_governance",taxonomy:"page:taxonomy",platform:"page:ai_ops",accounts:"page:accounts",settings:"page:runtime",audit:"page:audit"};if(required[view]&&hasPerm(required[view]!))return;const fallback=(["library","contributions","approval","approvalHistory","admin","feedbackGovernance","lifecycleGovernance","taxonomy","platform","accounts","settings","audit"] as View[]).find(item=>!required[item]||hasPerm(required[item]!));if(fallback){notify("当前页面未授权，已进入你有权限的首个功能");setView(fallback);}},[currentUser.email,currentUser.permissions,currentUser.scope,view]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!noticeOpen) return;
     const closeOnOutside = (event: PointerEvent) => {
@@ -605,6 +619,7 @@ export default function Home() {
   }
   async function openUpload(){
     if(uploadOpening)return;
+    setOcrReviewNotice("");
     const feedbackStartedAt=Date.now();
     setUploadOpening(true);
     try{
@@ -832,10 +847,12 @@ export default function Home() {
     setPipelineProgress({ stage: "READ", percent: 1, message: "正在准备资料" });
     const form = event.currentTarget;
     const data = new FormData(form);
+    setOcrReviewNotice("");
     try {
       const file = data.get("file");
       let stored: Record<string, unknown> = {};
       if (file instanceof File && file.size > 0) {
+        const hadManualContent = Boolean(String(data.get("content") ?? "").trim());
         const extraction = await extractKnowledgeFile(
           file,
           setPipelineProgress,
@@ -850,6 +867,17 @@ export default function Home() {
         data.set("extractionMethod", extraction.method);
         data.set("extractionDetail", extraction.detail);
         data.set("ocrStatus", extraction.ocrStatus);
+        if (extraction.needsReview && !hadManualContent) {
+          const contentField=form.elements.namedItem("content") as HTMLTextAreaElement|null;
+          const summaryField=form.elements.namedItem("summary") as HTMLTextAreaElement|null;
+          if(contentField) contentField.value=extraction.text.slice(0,500000);
+          if(summaryField&&!summaryField.value) summaryField.value=extraction.text.replace(/\s+/g," ").slice(0,180);
+          setLoading(false); setPipelineProgress(null);
+          setOcrReviewNotice(`OCR 识别置信度 ${extraction.confidence ?? 0}%。系统已将结果填入正文，请对照原图核对姓名、证件号码、签发机关和有效期限；确认无误后再次提交。`);
+          notify(`OCR 置信度 ${extraction.confidence ?? 0}%，请先校对“正文 / 解析补充”，确认后再次提交`);
+          contentField?.focus();
+          return;
+        }
         setPipelineProgress({
           stage: "READ",
           percent: 100,
@@ -1026,34 +1054,39 @@ export default function Home() {
         </button>
         <nav className="side-nav" aria-label="功能导航">
           <span>知识服务</span>
-          <button
+          {hasPerm("page:library")&&<button
             className={view === "library" ? "active" : ""}
             onClick={() => setView("library")}
           >
             <i>⌂</i>知识门户
-          </button>
-          <button
+          </button>}
+          {hasPerm("page:favorites")&&<button
             className={view === "favorites" ? "active" : ""}
             onClick={() => setView("favorites")}
           >
             <i>☆</i>我的收藏 <em>{favorites.length}</em>
-          </button>
-          <button
+          </button>}
+          {hasPerm("page:contributions")&&<button
             className={view === "contributions" ? "active" : ""}
             onClick={() => setView("contributions")}
           >
             <i>▤</i>我的上传 <em>{contributions.length}</em>
-          </button>
+          </button>}
           {hasPerm("governance:admin") && (
             <>
-              <span>知识治理</span>
-              <button
+              {hasPerm("menu:approval")&&<span>审批中心</span>}
+              {hasPerm("page:approval_pending")&&<button className={view === "approval" ? "active" : ""} onClick={() => setView("approval")}><i>✓</i>待我审批 <em>{metrics.pending}</em></button>}
+              {hasPerm("page:approval_history")&&<button className={view === "approvalHistory" ? "active" : ""} onClick={() => setView("approvalHistory")}><i>≣</i>审批记录</button>}
+              {hasPerm("menu:governance")&&<span>知识治理</span>}
+              {hasPerm("page:document_admin")&&<button
                 className={view === "admin" ? "active" : ""}
                 onClick={() => setView("admin")}
               >
-                <i>▦</i>知识维护与审核
-              </button>
-              {hasPerm("governance:platform") && (
+                <i>▦</i>文档管理
+              </button>}
+              {hasPerm("page:feedback_governance")&&<button className={view === "feedbackGovernance" ? "active" : ""} onClick={() => setView("feedbackGovernance")}><i>!</i>反馈治理 <em>{governanceTasks.length}</em></button>}
+              {hasPerm("page:lifecycle_governance")&&<button className={view === "lifecycleGovernance" ? "active" : ""} onClick={() => setView("lifecycleGovernance")}><i>◷</i>生命周期治理</button>}
+              {hasPerm("page:taxonomy") && (
                 <button
                   className={view === "taxonomy" ? "active" : ""}
                   onClick={() => setView("taxonomy")}
@@ -1061,7 +1094,7 @@ export default function Home() {
                   <i>⌘</i>知识体系
                 </button>
               )}
-              {hasPerm("governance:platform") && (
+              {hasPerm("page:ai_ops") && (
                 <button
                   className={view === "platform" ? "active" : ""}
                   onClick={() => setView("platform")}
@@ -1074,7 +1107,7 @@ export default function Home() {
           {(hasPerm("system:accounts") || hasPerm("governance:audit")) && (
             <>
               <span>系统管理</span>
-              {hasPerm("system:accounts") && (
+              {hasPerm("page:accounts") && (
                 <button
                   className={view === "accounts" ? "active" : ""}
                   onClick={() => setView("accounts")}
@@ -1082,7 +1115,7 @@ export default function Home() {
                   <i>♙</i>成员与权限
                 </button>
               )}
-              {hasPerm("system:accounts") && (
+              {hasPerm("page:runtime") && (
                 <button
                   className={view === "settings" ? "active" : ""}
                   onClick={() => setView("settings")}
@@ -1090,7 +1123,7 @@ export default function Home() {
                   <i>⚙</i>系统运行与自动化
                 </button>
               )}
-              {hasPerm("governance:audit") && (
+              {hasPerm("page:audit") && (
                 <button
                   className={view === "audit" ? "active" : ""}
                   onClick={() => setView("audit")}
@@ -1224,7 +1257,7 @@ export default function Home() {
               )}
             </div>
           )}
-          <button
+          {hasPerm("knowledge:upload")&&<button
             className={`primary-action${uploadOpening ? " is-loading" : ""}`}
             disabled={uploadOpening}
             aria-busy={uploadOpening}
@@ -1232,7 +1265,7 @@ export default function Home() {
           >
             {uploadOpening && <i className="button-spinner" aria-hidden="true" />}
             {uploadOpening ? "加载上传配置…" : "＋ 上传资料"}
-          </button>
+          </button>}
         </header>
 
         {view === "contributions" ? (
@@ -1246,8 +1279,9 @@ export default function Home() {
             }
             onSubmit={(id) => updateStatus(id, "submit")}
           />
-        ) : view === "admin" && hasPerm("governance:admin") ? (
+        ) : (["admin","approval","approvalHistory","feedbackGovernance","lifecycleGovernance"] as View[]).includes(view) && hasPerm("governance:admin") ? (
           <AdminView
+            mode={view as "admin"|"approval"|"approvalHistory"|"feedbackGovernance"|"lifecycleGovernance"}
             documents={documents}
             metrics={metrics}
             governanceTasks={governanceTasks}
@@ -1290,7 +1324,7 @@ export default function Home() {
             query={query}
             correction={searchCorrection}
             category={category}
-            categories={knowledgeCategories}
+            categories={["全部",...Array.from(new Set(published.map(item=>item.category).filter(Boolean)))]}
             tagFilter={tagFilter}
             tags={["全部标签", ...Array.from(new Set(tagOptions.map((item) => item.name).filter(Boolean)))]}
             setCategory={setCategory}
@@ -1404,6 +1438,7 @@ export default function Home() {
         <UploadModal
           loading={loading}
           progress={pipelineProgress}
+          ocrReviewNotice={ocrReviewNotice}
           currentUser={currentUser}
           options={uploadOptions}
           categories={categoryOptions}
@@ -1551,7 +1586,7 @@ export default function Home() {
           </form>
         </div>
       )}
-      <div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>
+      {hasPerm("page:ai_assistant")&&<div className={`ai-entry${aiUnread ? " has-unread" : ""}`}>
         {aiGuideVisible && (
           <div className="ai-guide" role="status">
             <button
@@ -1581,8 +1616,8 @@ export default function Home() {
           )}
           <em className="ai-quick">搜制度 · 查流程 · 找负责人</em>
         </button>
-      </div>
-      {aiOpen && (
+      </div>}
+      {hasPerm("page:ai_assistant")&&aiOpen && (
         <AiPanel
           onClose={closeAi}
           onActivity={() => setAiSessionUpdated(true)}
@@ -1654,13 +1689,18 @@ export default function Home() {
   );
 }
 
-function ContributionView({documents,onUpload,onSelect,onSubmit}:{documents:KnowledgeDocument[];onUpload:()=>void;onSelect:(doc:KnowledgeDocument)=>void;onSubmit:(id:number)=>void}){
+function ContributionView({documents,onUpload:_,onSelect,onSubmit}:{documents:KnowledgeDocument[];onUpload:()=>void;onSelect:(doc:KnowledgeDocument)=>void;onSubmit:(id:number)=>void}){
+  const [status,setStatus]=useState("all"),[keyword,setKeyword]=useState(""),[order,setOrder]=useState("updated"),[page,setPage]=useState(1),[from,setFrom]=useState(""),[to,setTo]=useState(""),[serverDocs,setServerDocs]=useState(documents),[serverTotal,setServerTotal]=useState(documents.length);const pageSize=10;
+  useEffect(()=>{const controller=new AbortController(),params=new URLSearchParams({mode:"mine",page:String(page),pageSize:String(pageSize),order});if(status!=="all")params.set("status",status);if(keyword.trim())params.set("keyword",keyword.trim());if(from)params.set("from",from);if(to)params.set("to",to);const timer=setTimeout(()=>fetch(`/api/documents/query?${params}`,{cache:"no-store",signal:controller.signal}).then(r=>r.json()).then(payload=>{if(payload.data?.documents){setServerDocs(payload.data.documents.map(normalizeDocument));setServerTotal(Number(payload.data.pagination?.total||0));}}).catch(()=>undefined),180);return()=>{clearTimeout(timer);controller.abort()}},[status,keyword,order,page,from,to,documents]);
   const pending=documents.filter(item=>item.status==="review").length;
   const feedback=documents.reduce((sum,item)=>sum+Number(item.openFeedbackCount||0),0);
+  const filtered=serverDocs, pages=Math.max(1,Math.ceil(serverTotal/pageSize)),shown=serverDocs;
+  useEffect(()=>{if(page>pages)setPage(pages)},[page,pages]);
   return <main className="workspace contribution-view">
-    <section className="admin-heading"><div><span className="page-kicker">MY CONTRIBUTIONS</span><h1>我的上传</h1><p>查看从上传、解析、提交审批到发布生效的完整状态，并处理后续反馈。</p></div><button className="primary-action" onClick={onUpload}>＋ 上传资料</button></section>
+    <section className="admin-heading"><div><span className="page-kicker">MY CONTRIBUTIONS</span><h1>我的上传</h1><p>查看从上传、解析、提交审批到发布生效的完整状态，并处理后续反馈。</p></div></section>
     <section className="contribution-summary"><div><b>{documents.length}</b><span>累计上传</span></div><div><b>{pending}</b><span>审批中</span></div><div><b>{documents.filter(item=>item.status==="published").length}</b><span>已发布</span></div><div className={feedback?"attention":""}><b>{feedback}</b><span>待补充反馈</span></div></section>
-    {documents.length?<section className="contribution-list">{documents.map(doc=>{
+    <section className="list-toolbar contribution-toolbar"><input aria-label="搜索我的上传" value={keyword} onChange={e=>{setKeyword(e.target.value);setPage(1)}} placeholder="搜索标题或文件名"/><select value={status} onChange={e=>{setStatus(e.target.value);setPage(1)}}><option value="all">全部状态</option><option value="draft">草稿</option><option value="review">待审核</option><option value="published">已发布</option><option value="rejected">已驳回</option><option value="supplement">待补充</option><option value="archived">已作废</option></select><input aria-label="上传开始日期" type="date" value={from} onChange={e=>{setFrom(e.target.value);setPage(1)}}/><input aria-label="上传结束日期" type="date" value={to} onChange={e=>{setTo(e.target.value);setPage(1)}}/><select value={order} onChange={e=>setOrder(e.target.value)}><option value="updated">最近更新优先</option><option value="created">最近上传优先</option></select><span>共 {serverTotal} 条</span></section>
+    {filtered.length?<section className="contribution-list">{shown.map(doc=>{
       const canSubmit=doc.status==="draft"||doc.status==="rejected";
       return <article className="contribution-card" key={doc.id}>
         <header><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><h2>{doc.title}</h2><small>{doc.sourceName||"在线资料"} · V{doc.version}.0 · {doc.category}</small></div><button className="outline-action" onClick={()=>onSelect(doc)}>查看并补充</button></header>
@@ -1674,7 +1714,7 @@ function ContributionView({documents,onUpload,onSelect,onSubmit}:{documents:Know
         {doc.latestApprovalAction==="REJECT"&&<div className="contribution-alert"><b>审批驳回</b><span>{doc.latestApprovalComment||"请根据审批意见补充后重新提交"}</span></div>}
         {Number(doc.feedbackCount)>0&&<div className={`contribution-feedback${Number(doc.openFeedbackCount)>0?" open":""}`}><div><b>{Number(doc.openFeedbackCount)>0?"收到待处理建议":"历史反馈已处理"}</b><span>{doc.latestFeedback}</span><small>{fmtBusinessTime(doc.latestFeedbackAt)} · 累计 {doc.feedbackCount} 条</small></div><button onClick={()=>onSelect(doc)}>{Number(doc.openFeedbackCount)>0?"补充资料":"查看记录"}</button></div>}
         {canSubmit&&<footer><span>{doc.parseStatus==="COMPLETED"?"资料已解析，可发起部门审批":"资料仍在解析，完成后可提交审核"}</span><button className="primary-action" disabled={doc.parseStatus!=="COMPLETED"} onClick={()=>onSubmit(doc.id)}>提交部门审核</button></footer>}
-      </article>})}</section>:<section className="empty-state"><span>▤</span><h3>还没有上传记录</h3><p>上传后可在这里持续跟踪解析、审批、发布和反馈状态。</p><button className="primary-action" onClick={onUpload}>上传第一份资料</button></section>}
+      </article>})}<footer className="pagination"><button disabled={page<=1} onClick={()=>setPage(p=>p-1)}>上一页</button><span>{Math.min(page,pages)} / {pages}</span><button disabled={page>=pages} onClick={()=>setPage(p=>p+1)}>下一页</button></footer></section>:<section className="empty-state"><span>▤</span><h3>{documents.length?"没有符合条件的资料":"还没有上传记录"}</h3><p>{documents.length?"请调整筛选条件":"点击页面右上角“上传资料”创建第一份知识。"}</p></section>}
   </main>
 }
 
@@ -1883,6 +1923,7 @@ function LibraryView({
 }
 
 function AdminView({
+  mode,
   documents,
   metrics,
   governanceTasks,
@@ -1894,6 +1935,7 @@ function AdminView({
   notify,
   onTaskStarted,
 }: {
+  mode:"admin"|"approval"|"approvalHistory"|"feedbackGovernance"|"lifecycleGovernance";
   documents: KnowledgeDocument[];
   metrics: Metrics;
   governanceTasks: GovernanceTask[];
@@ -1909,6 +1951,8 @@ function AdminView({
   onTaskStarted: (taskId: number) => void;
 }) {
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [adminKeyword,setAdminKeyword]=useState(""),[adminCategory,setAdminCategory]=useState("ALL"),[adminOrder,setAdminOrder]=useState("updated"),[adminPage,setAdminPage]=useState(1),[adminDept,setAdminDept]=useState("ALL"),[adminUploader,setAdminUploader]=useState("ALL"),[adminFrom,setAdminFrom]=useState(""),[adminTo,setAdminTo]=useState(""),[approvalAction,setApprovalAction]=useState("ALL"),[adminDocs,setAdminDocs]=useState(documents),[adminTotal,setAdminTotal]=useState(documents.length);const adminPageSize=15;
+  const [manageFilterOptions,setManageFilterOptions]=useState<Array<{dept_id:number;department_name:string;category:string;uploader:string}>>([]);
   const [startingTaskId, setStartingTaskId] = useState<number | null>(null);
   const [timelineDocument, setTimelineDocument] = useState<KnowledgeDocument | null>(null);
   async function startGovernanceTask(task: GovernanceTask) {
@@ -1946,17 +1990,16 @@ function AdminView({
     { label: "即将复核", value: metrics.due_soon, hint: "未来 30 天" },
   ];
   const canApprove = role === "SUPER_ADMIN" || role === "DEPT_ADMIN";
-  const shown =
-    statusFilter === "ALL"
-      ? documents
-      : documents.filter((doc) => doc.status === statusFilter);
+  useEffect(()=>{if(mode==="feedbackGovernance")return;const controller=new AbortController(),params=new URLSearchParams({mode:"manage",page:String(adminPage),pageSize:String(adminPageSize),order:adminOrder});if(mode==="lifecycleGovernance")params.set("lifecycle","1");if(mode==="approvalHistory")params.set("approvalHistory","1");if(mode==="approvalHistory"&&approvalAction!=="ALL")params.set("approvalAction",approvalAction);const effectiveStatus=mode==="approval"?"review":statusFilter!=="ALL"?statusFilter:"";if(effectiveStatus)params.set("status",effectiveStatus);if(adminCategory!=="ALL")params.set("category",adminCategory);if(adminDept!=="ALL")params.set("deptId",adminDept);if(adminUploader!=="ALL")params.set("uploader",adminUploader);if(adminKeyword.trim())params.set("keyword",adminKeyword.trim());if(adminFrom)params.set("from",adminFrom);if(adminTo)params.set("to",adminTo);const timer=setTimeout(()=>fetch(`/api/documents/query?${params}`,{cache:"no-store",signal:controller.signal}).then(r=>r.json()).then(payload=>{if(payload.data?.documents){setAdminDocs(payload.data.documents.map(normalizeDocument));setAdminTotal(Number(payload.data.pagination?.total||0));setManageFilterOptions(payload.data.filterOptions||[]);}}).catch(()=>undefined),180);return()=>{clearTimeout(timer);controller.abort()}},[mode,statusFilter,adminCategory,adminDept,adminUploader,adminKeyword,adminFrom,adminTo,approvalAction,adminOrder,adminPage,documents]);
+  const filteredDocuments=adminDocs,adminPages=Math.max(1,Math.ceil(adminTotal/adminPageSize)),shown=adminDocs;
+  useEffect(()=>{if(adminPage>adminPages)setAdminPage(adminPages)},[adminPage,adminPages]);
   return (
     <main className="workspace">
       <section className="admin-heading">
         <div>
           <span className="page-kicker">GOVERNANCE CONSOLE</span>
-          <h1>知识维护与审核</h1>
-          <p>管理资料入库、审核发布、用户反馈、版本与生命周期。</p>
+          <h1>{mode==="approval"?"待我审批":mode==="approvalHistory"?"审批记录":mode==="feedbackGovernance"?"反馈治理":mode==="lifecycleGovernance"?"生命周期治理":"文档管理"}</h1>
+          <p>{mode==="approval"?"集中处理本部门员工提交的待发布资料。":mode==="approvalHistory"?"按动作、人员和时间追溯权限范围内的审批过程。":mode==="feedbackGovernance"?"认领、核查并闭环用户纠错和知识缺口。":mode==="lifecycleGovernance"?"管理资料复核、过期、归档与作废。":"统一检索和维护权限范围内的知识资料。"}</p>
         </div>
         <button className="primary-action" onClick={onUpload}>
           ＋ 上传新资料
@@ -1971,7 +2014,7 @@ function AdminView({
           </div>
         ))}
       </div>
-      {governanceTasks.length > 0 && (
+      {mode==="feedbackGovernance" && governanceTasks.length > 0 && (
         <section className="governance-tasks">
           <div className="table-title">
             <div>
@@ -2014,23 +2057,26 @@ function AdminView({
           ))}
         </section>
       )}
-      <section className="table-card">
+      {mode!=="feedbackGovernance"&&<section className="table-card">
         <div className="table-title">
           <div>
             <h2>资料与审批记录</h2>
             <p>草稿提交部门审核，审批通过后自动进入知识目录</p>
           </div>
-          <select
+          <span>{adminTotal} 条资料</span>
+        </div>
+        <div className="list-toolbar admin-list-toolbar"><input aria-label="搜索管理资料" value={adminKeyword} onChange={e=>{setAdminKeyword(e.target.value);setAdminPage(1)}} placeholder="搜索标题、上传人或负责人"/><select
             aria-label="按状态筛选资料"
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
+            onChange={(e) => {setStatusFilter(e.target.value);setAdminPage(1)}}
           >
             <option value="ALL">全部状态</option>
             <option value="draft">草稿</option>
             <option value="review">待审核</option>
             <option value="published">已发布</option>
             <option value="archived">已作废</option>
-          </select>
+          </select><select value={adminCategory} onChange={e=>{setAdminCategory(e.target.value);setAdminPage(1)}}><option value="ALL">全部分类</option>{Array.from(new Set(manageFilterOptions.map(item=>item.category).filter(Boolean))).map(item=><option key={item}>{item}</option>)}</select><select value={adminDept} onChange={e=>{setAdminDept(e.target.value);setAdminPage(1)}}><option value="ALL">全部部门</option>{Array.from(new Map(manageFilterOptions.map(item=>[item.dept_id,item])).values()).map(item=><option key={item.dept_id} value={String(item.dept_id)}>{item.department_name}</option>)}</select><select value={adminUploader} onChange={e=>{setAdminUploader(e.target.value);setAdminPage(1)}}><option value="ALL">全部上传人</option>{Array.from(new Set(manageFilterOptions.map(item=>item.uploader).filter(Boolean))).map(item=><option key={item}>{item}</option>)}</select><input aria-label="上传开始日期" type="date" value={adminFrom} onChange={e=>{setAdminFrom(e.target.value);setAdminPage(1)}}/><input aria-label="上传结束日期" type="date" value={adminTo} onChange={e=>{setAdminTo(e.target.value);setAdminPage(1)}}/><select value={adminOrder} onChange={e=>setAdminOrder(e.target.value)}><option value="updated">最近更新优先</option><option value="created">最近上传优先</option></select>
+          {mode==="approvalHistory"&&<select aria-label="按审批动作筛选" value={approvalAction} onChange={e=>{setApprovalAction(e.target.value);setAdminPage(1)}}><option value="ALL">全部审批动作</option><option value="SUBMIT">发起审批</option><option value="APPROVE">审批通过</option><option value="REJECT">审批驳回</option><option value="ARCHIVE">作废归档</option></select>}
         </div>
         <div className="data-table">
           <div className="data-row table-head">
@@ -2065,11 +2111,13 @@ function AdminView({
                 <b>V{doc.version}.0</b>
                 <small>修改：{fmtBusinessTime(doc.updatedAt)}</small>
                 <small>复核：{doc.reviewDueAt || "未设置"}</small>
+                {mode==="approvalHistory"&&<small>审批：{doc.latestApprover||"系统"} · {fmtBusinessTime(doc.latestApprovalAt)}</small>}
               </span>
               <span>
                 <i className={`doc-status ${doc.status}`}>
                   {statusLabel[doc.status]}
                 </i>
+                {mode==="approvalHistory"&&<small>最近动作：{({SUBMIT:"发起审批",APPROVE:"审批通过",REJECT:"审批驳回",ARCHIVE:"作废归档"} as Record<string,string>)[doc.latestApprovalAction||""]||doc.latestApprovalAction||"未知"}</small>}
                 <small>
                   {doc.approvedAt
                     ? `发布：${fmtBusinessTime(doc.approvedAt)}`
@@ -2106,8 +2154,11 @@ function AdminView({
               </span>
             </div>
           ))}
+          {!shown.length&&<div className="table-empty">没有符合筛选条件的资料</div>}
         </div>
-      </section>
+        <footer className="pagination"><button disabled={adminPage<=1} onClick={()=>setAdminPage(p=>p-1)}>上一页</button><span>{Math.min(adminPage,adminPages)} / {adminPages}</span><button disabled={adminPage>=adminPages} onClick={()=>setAdminPage(p=>p+1)}>下一页</button></footer>
+      </section>}
+      {mode==="feedbackGovernance"&&!governanceTasks.length&&<section className="empty-state"><span>✓</span><h3>暂无待治理反馈</h3><p>新反馈会自动进入此页面，并保留认领与闭环记录。</p></section>}
       {timelineDocument && (
         <div className="modal-backdrop" onMouseDown={() => setTimelineDocument(null)}>
           <section className="feedback-modal document-timeline" onMouseDown={(event) => event.stopPropagation()}>
@@ -3074,10 +3125,11 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
       });
       const p = await r.json();
       if (!r.ok) throw new Error(p.error?.message ?? "保存失败");
-      notify(editingRole.id ? "角色已更新" : "角色已创建");
+      notify(editingRole.id ? "角色已更新，正在刷新当前账号功能树" : "角色已创建");
       setShowRoleEditor(false);
       setEditingRole(null);
       await load();
+      if(editingRole.id)window.setTimeout(()=>window.location.reload(),500);
     } catch (e: any) { notify(e.message); }
   }
   async function deleteRole(id: number, name: string) {
@@ -3092,10 +3144,10 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
   }
   function togglePerm(pid: number) {
     if (!editingRole) return;
-    const ids = editingRole.permissionIds.includes(pid)
-      ? editingRole.permissionIds.filter(i => i !== pid)
-      : [...editingRole.permissionIds, pid];
-    setEditingRole({ ...editingRole, permissionIds: ids });
+    const target=permTree.find(item=>item.id===pid);const selected=editingRole.permissionIds.includes(pid);const ids=new Set(editingRole.permissionIds);
+    if(selected){ids.delete(pid);for(const child of permTree.filter(item=>item.parent_code===target?.code))ids.delete(child.id);}
+    else{ids.add(pid);let parent=target?.parent_code;while(parent){const node=permTree.find(item=>item.code===parent);if(!node)break;ids.add(node.id);parent=node.parent_code;}}
+    setEditingRole({ ...editingRole, permissionIds: [...ids] });
   }
   return (
     <main className="workspace">
@@ -3195,14 +3247,14 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
             <div style={{marginTop:12}}>
               <b style={{fontSize:10}}>功能权限</b>
               <div style={{maxHeight:260,overflow:"auto",marginTop:6,border:"1px solid #e8edef",borderRadius:6}}>
-                {["knowledge","governance","system","agent"].map(cat => {
-                  const items=permTree.filter(p=>p.code.startsWith(cat+":")||p.code===cat);
+                {["menu","knowledge","governance","system","agent"].map(cat => {
+                  const items=cat==="menu"?permTree.filter(p=>p.code.startsWith("menu:")||p.code.startsWith("page:")):permTree.filter(p=>p.code.startsWith(cat+":")||p.code===cat);
                   if(!items.length)return null;
-                  const catName={knowledge:"知识服务",governance:"知识治理",system:"系统管理",agent:"AI Agent"}[cat]||cat;
+                  const catName={menu:"功能树（菜单与页面）",knowledge:"知识操作",governance:"治理操作",system:"系统操作",agent:"AI Agent"}[cat]||cat;
                   return <div key={cat} style={{padding:"6px 10px",borderBottom:"1px solid #f0f4f2"}}>
                     <b style={{fontSize:9,color:"#38534c"}}>{catName}</b>
                     <div style={{display:"grid",gap:2,marginTop:3}}>
-                      {items.map(p=><label key={p.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:9,color:"#5a6e68",cursor:"pointer",padding:"2px 0"}}><input type="checkbox" checked={editingRole.permissionIds.includes(p.id)} onChange={()=>togglePerm(p.id)} style={{accentColor:"#16796d"}} />{p.name}</label>)}
+                      {items.map(p=><label key={p.id} style={{display:"flex",alignItems:"center",gap:5,fontSize:9,color:"#5a6e68",cursor:"pointer",padding:"2px 0",marginLeft:p.parent_code?14:0,fontWeight:p.code.startsWith("menu:")?700:400}}><input type="checkbox" checked={editingRole.permissionIds.includes(p.id)} onChange={()=>togglePerm(p.id)} style={{accentColor:"#16796d"}} />{p.name}</label>)}
                     </div>
                   </div>;
                 })}
@@ -3619,6 +3671,7 @@ function DocumentDrawer({
 function UploadModal({
   loading,
   progress,
+  ocrReviewNotice,
   currentUser,
   options,
   categories,
@@ -3630,6 +3683,7 @@ function UploadModal({
 }: {
   loading: boolean;
   progress: ExtractionProgress | null;
+  ocrReviewNotice: string;
   currentUser: { displayName: string; role: string; primaryDeptId: number };
   options: UploadOptions;
   categories: TaxonomyOption[];
@@ -3830,6 +3884,7 @@ function UploadModal({
               rows={4}
               placeholder="可粘贴核心内容，上传后仍可继续编辑"
             />
+            {ocrReviewNotice&&<div className="ocr-review-notice" role="alert"><b>需要人工校对后再提交</b><span>{ocrReviewNotice}</span><small>身份资料将自动设为机密、仅本部门可见，并记录下载行为。</small></div>}
           </label>
         </div>
         <div className="publish-choice">

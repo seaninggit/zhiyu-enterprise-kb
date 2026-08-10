@@ -9,7 +9,9 @@ test("enterprise knowledge hub metadata and product copy are configured", async 
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
   assert.match(layout, /知域 · 企业知识库/);
-  assert.match(page, /知识维护与审核/);
+  assert.match(page, /文档管理/);
+  assert.match(page, /待我审批/);
+  assert.match(page, /反馈治理/);
   assert.match(page, /上传并生成记录/);
   assert.match(page, /下载原件/);
   assert.match(page, /附件已安全保存/);

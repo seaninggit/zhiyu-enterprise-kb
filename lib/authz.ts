@@ -57,6 +57,13 @@ async function ensureIdentityRecord(email: string, displayName: string) {
     ]);
     return;
   }
+  if (found.length && isPublicViewerEmail(email)) {
+    await d1.batch([
+      d1.prepare("DELETE FROM user_departments WHERE user_id=(SELECT id FROM users WHERE email=?)").bind(email),
+      d1.prepare("INSERT INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT u.id,d.id,1,0 FROM users u CROSS JOIN departments d WHERE u.email=? AND d.code='GENERAL' AND d.is_active=1").bind(email),
+    ]);
+    return;
+  }
   if (found.length) return;
   if (demoRole) {
     const dept = DEMO_DEPARTMENT[demoRole];
@@ -76,7 +83,7 @@ async function ensureIdentityRecord(email: string, displayName: string) {
     await d1.batch([
       d1.prepare("INSERT OR IGNORE INTO users(email,display_name,status,identity_provider) VALUES(?,?,'ACTIVE','PUBLIC_ACCESS')").bind(email, displayName),
       d1.prepare("INSERT OR IGNORE INTO user_roles(user_id,role_id) SELECT u.id,r.id FROM users u CROSS JOIN roles r WHERE u.email=? AND r.code='EMPLOYEE'").bind(email),
-      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT u.id,d.id,CASE WHEN d.code='GENERAL' THEN 1 ELSE 0 END,0 FROM users u CROSS JOIN departments d WHERE u.email=? AND d.is_active=1").bind(email),
+      d1.prepare("INSERT OR IGNORE INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT u.id,d.id,1,0 FROM users u CROSS JOIN departments d WHERE u.email=? AND d.code='GENERAL' AND d.is_active=1").bind(email),
     ]);
     return;
   }
@@ -114,7 +121,7 @@ export async function requireApiUser(): Promise<AuthContext> {
   return { userId: user.id, email: user.email, displayName: user.displayName, role, permissions: userPermissions, scope, deptIds: deptRows.map(d => d.deptId), primaryDeptId: primary, isPublicViewer: isPublicViewerEmail(user.email), demoMode: demoModeEnabled() };
 }
 
-export function canManageDepartment(ctx: AuthContext, deptId: number) { return hasScope(ctx, "global") || (hasScope(ctx, "department") && ctx.deptIds.includes(deptId)); }
+export function canManageDepartment(ctx: AuthContext, deptId: number) { return hasScope(ctx, "global") || ((ctx.role==="DEPT_ADMIN"||hasPermission(ctx,"governance:admin")) && ctx.deptIds.includes(deptId)); }
 export function assertDepartment(ctx: AuthContext, deptId: number) { if (!canManageDepartment(ctx, deptId) && !ctx.deptIds.includes(deptId)) throw new ApiError(403, "DEPARTMENT_FORBIDDEN", "无权访问该部门数据"); }
 
 export async function enforceRateLimit(ctx: AuthContext, action: string, limit: number, seconds: number) {

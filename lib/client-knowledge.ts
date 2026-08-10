@@ -7,6 +7,8 @@ export type ExtractionResult = {
   method: "TEXT" | "PDF_TEXT" | "DOCX" | "XLSX" | "PPTX" | "OCR" | "NONE";
   ocrStatus: "NOT_REQUIRED" | "COMPLETED" | "FAILED";
   detail: string;
+  confidence?: number;
+  needsReview?: boolean;
 };
 
 type FeatureOutput = { tolist(): unknown };
@@ -78,6 +80,28 @@ async function createOcrWorker(onProgress?: (progress: ExtractionProgress) => vo
   });
 }
 
+async function preprocessImage(file: File) {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.max(1, Math.min(3, 1800 / Math.max(bitmap.width, bitmap.height)));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale); canvas.height = Math.round(bitmap.height * scale);
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return file;
+  context.drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+  const image = context.getImageData(0, 0, canvas.width, canvas.height);
+  for (let index = 0; index < image.data.length; index += 4) {
+    const gray = image.data[index] * .299 + image.data[index + 1] * .587 + image.data[index + 2] * .114;
+    const value = gray > 205 ? 255 : gray < 70 ? 0 : Math.max(0, Math.min(255, (gray - 128) * 1.45 + 128));
+    image.data[index] = value; image.data[index + 1] = value; image.data[index + 2] = value;
+  }
+  context.putImageData(image, 0, 0);
+  return canvas;
+}
+
+function normalizeOcrText(input: string) {
+  return input.replace(/[ \t]+/g, " ").replace(/\s+([，。；：、])/g, "$1").replace(/([\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])/g, "$1").replace(/(\d{4})[ .](\d{2})[ .](\d{2})/g, "$1.$2.$3").replace(/\n{3,}/g, "\n\n").trim();
+}
+
 async function parsePdf(file: File, onProgress?: (progress: ExtractionProgress) => void) {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -117,7 +141,7 @@ export async function extractKnowledgeFile(file: File, onProgress?: (progress: E
     if (extension === "pptx") return { text: await parsePptx(await file.arrayBuffer()), method: "PPTX", ocrStatus: "NOT_REQUIRED", detail: "PowerPoint 幻灯片解析" };
     if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"].includes(extension)) {
       const worker = await createOcrWorker(onProgress);
-      try { const result = await worker.recognize(file); return { text: result.data.text, method: "OCR", ocrStatus: "COMPLETED", detail: `浏览器本地中英文 OCR，识别置信度 ${Math.round(result.data.confidence)}%` }; }
+      try { const result = await worker.recognize(await preprocessImage(file)); const confidence=Math.round(result.data.confidence); return { text: normalizeOcrText(result.data.text), method: "OCR", ocrStatus: "COMPLETED", confidence, needsReview:confidence<82, detail: `图片增强与本地中英文 OCR，识别置信度 ${confidence}%${confidence<82?"，需人工校对":""}` }; }
       finally { await worker.terminate(); }
     }
     return { text: "", method: "NONE", ocrStatus: "NOT_REQUIRED", detail: "当前格式保留原件，需补充可检索正文" };

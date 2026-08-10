@@ -13,12 +13,12 @@ test("custom categories and groups persist and refresh every consuming interface
   assert.match(page,/spaces=\{knowledgeSpaces\}/);
   assert.match(page,/action:"SAVE_GROUP"/);
   assert.match(page,/当前页面及业务表单已同步更新/);
-  assert.match(enterprise,/category},rid/);
-  assert.match(enterprise,/group,message:/);
+  assert.match(enterprise,/category\s*},\s*rid/);
+  assert.match(enterprise,/group,\s*message:/);
   assert.match(enterprise,/DELETE_CATEGORY/);
   assert.match(enterprise,/DELETE_GROUP/);
   assert.match(enterprise,/DELETE_TAG/);
-  assert.match(enterprise,/mode:\"DEACTIVATED\"/);
+  assert.match(enterprise,/mode:\s*\"DEACTIVATED\"/);
   assert.match(page,/配置删除确认/);
   assert.match(page,/当前关联.*份有效资料/);
   assert.match(enterprise,/MIGRATE_CATEGORY/);

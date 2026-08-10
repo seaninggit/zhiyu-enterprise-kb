@@ -2301,8 +2301,14 @@ function EnterprisePanels({
   onConfigurationChange: (data:Record<string,Record<string,unknown>[]>)=>void;
   section: "knowledge" | "security" | "operations";
 }) {
-  const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
+  const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;score:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;score:number;status:string}>}|null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
+  const [aiStrategyTab,setAiStrategyTab]=useState<"strategy"|"versions"|"evaluation"|"monitoring">("strategy");
+  const [selectedPromptId,setSelectedPromptId]=useState<number>(0);
+  const [promptTest,setPromptTest]=useState<{answer:string;sources:Array<Record<string,unknown>>;assembledPrompt:string;provider:string;model:string}|null>(null);
+  const [promptTesting,setPromptTesting]=useState(false);
+  const [comparePromptIds,setComparePromptIds]=useState<[number,number]>([0,0]);
+  useEffect(()=>{if(selectedPromptId>0)setAiStrategyTab("evaluation");},[selectedPromptId]);
   const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string;code?:string;deptId?:number|null;references?:number;targetId?:number}|null>(null);
   const [editingCategory,setEditingCategory]=useState<Record<string,unknown>|null>(null);
   const [data, setData] = useState<Record<
@@ -2350,6 +2356,11 @@ function EnterprisePanels({
     cases = data.evalCases ?? [],
     webhooks = data.webhooks ?? [],
     retention = data.retention ?? [];
+  const activePrompt=prompts.find(item=>item.status==="PUBLISHED");
+  const selectedPrompt=prompts.find(item=>Number(item.id)===(selectedPromptId||Number(activePrompt?.id)||Number(prompts[0]?.id)));
+  const aiMetrics=(data.aiMetrics as unknown as Record<string,unknown>)??{};
+  const promptReleases=data.promptReleases??[];
+  const releaseMinScore=Number((data.promptSettings as unknown as Record<string,unknown>)?.["prompt.release_min_score"]||85);
   return (
     <>
       {section === "knowledge" && <div className="platform-grid">
@@ -2434,106 +2445,29 @@ function EnterprisePanels({
       </div>}
       {section === "operations" && role === "SUPER_ADMIN" && (
         <>
-          <section className="platform-card wide-card">
-            <header>
-              <h2>回答策略与效果评测</h2>
-              <span>{cases.length} 条验收用例</span>
-            </header>
-            {prompts.map((item) => (
-              <div className="platform-row" key={String(item.id)}>
-                <div>
-                  <b>
-                    {String(item.name)} · V{String(item.version)}
-                  </b>
-                  <small>
-                    {String(item.status)} · {String(item.creator)}
-                  </small>
-                </div>
-                {item.status !== "PUBLISHED" && (
-                  <button
-                    onClick={() =>
-                      act({ action: "PUBLISH_PROMPT", id: item.id })
-                    }
-                  >
-                    发布此版
-                  </button>
-                )}
+          <section className="platform-card wide-card ai-strategy-center">
+            <header><div><h2>AI 策略与评测</h2><small>配置、评测、审核、发布与回滚全流程</small></div><span>生产版本 V{String(activePrompt?.version??"—")} · 门槛 {releaseMinScore} 分</span></header>
+            <div className="ai-strategy-tabs">{([['strategy','回答策略'],['versions','版本发布'],['evaluation','测试评测'],['monitoring','运行监控']] as const).map(([key,label])=><button key={key} className={aiStrategyTab===key?'active':''} onClick={()=>setAiStrategyTab(key)}>{label}</button>)}</div>
+            {aiStrategyTab==="strategy"&&<form className="ai-strategy-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget,v=new FormData(form);const saved=await act({action:"SAVE_PROMPT",name:v.get("name"),code:"enterprise_rag",changeNote:v.get("changeNote"),instructions:v.get("instructions"),strategy:{sections:{companyEvidence:v.has("companyEvidence"),generalAdvice:v.has("generalAdvice"),pendingConfirmation:v.has("pendingConfirmation")},facts:{citationRequired:v.has("citationRequired"),noInternalGuess:v.has("noInternalGuess"),generalAdviceLabel:v.has("generalAdviceLabel")},style:v.get("style"),detail:v.get("detail"),temperature:Number(v.get("temperature")),maxCitations:Number(v.get("maxCitations")),maxTokens:Number(v.get("maxTokens"))}});if(saved)setAiStrategyTab("versions");}}>
+              <div className="strategy-field-grid"><label>策略名称<input name="name" defaultValue="企业知识问答" required /></label><label>变更说明<input name="changeNote" placeholder="例如：增加通用建议分层" required /></label></div>
+              <div className="strategy-config-grid">
+                <fieldset><legend>回答结构</legend><label><input type="checkbox" name="companyEvidence" defaultChecked/>公司知识依据</label><label><input type="checkbox" name="generalAdvice" defaultChecked/>通用建议</label><label><input type="checkbox" name="pendingConfirmation" defaultChecked/>待确认事项</label></fieldset>
+                <fieldset><legend>事实与引用</legend><label><input type="checkbox" name="citationRequired" defaultChecked/>企业事实必须有引用</label><label><input type="checkbox" name="noInternalGuess" defaultChecked/>禁止猜测内部路径</label><label><input type="checkbox" name="generalAdviceLabel" defaultChecked/>通用建议显式标识</label></fieldset>
+                <fieldset><legend>回答体验</legend><label>语气<select name="style" defaultValue="PROFESSIONAL"><option value="PROFESSIONAL">专业简洁</option><option value="FRIENDLY">自然友好</option><option value="STRICT">正式严谨</option></select></label><label>详细程度<select name="detail" defaultValue="STANDARD"><option value="CONCISE">精简</option><option value="STANDARD">标准</option><option value="DETAILED">详细</option></select></label></fieldset>
+                <fieldset><legend>模型与输出</legend><label>温度<input name="temperature" type="number" min="0" max="1" step="0.1" defaultValue="0.2"/></label><label>最大引用<input name="maxCitations" type="number" min="1" max="10" defaultValue="5"/></label><label>最大输出 Token<input name="maxTokens" type="number" min="300" max="4000" defaultValue="1200"/></label></fieldset>
               </div>
-            ))}
-            <form
-              className="enterprise-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                act({
-                  action: "SAVE_PROMPT",
-                  ...Object.fromEntries(new FormData(e.currentTarget)),
-                });
-                e.currentTarget.reset();
-              }}
-            >
-              <input name="name" required placeholder="Prompt 名称" />
-              <input name="code" defaultValue="enterprise_rag" />
-              <textarea
-                name="instructions"
-                required
-                placeholder="生产指令（至少20字）"
-              />
-              <button>保存新版本</button>
-            </form>
-            <form
-              className="inline-governance"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const v = Object.fromEntries(new FormData(e.currentTarget));
-                act({
-                  action: "SAVE_EVAL_CASE",
-                  question: v.question,
-                  expectedKeywords: String(v.keywords).split(","),
-                });
-                e.currentTarget.reset();
-              }}
-            >
-              <input name="question" required placeholder="评测问题" />
-              <input
-                name="keywords"
-                required
-                placeholder="期望关键词，逗号分隔"
-              />
-              <button>新增用例</button>
-            </form>
-            <button
-              className="platform-wide-action"
-              disabled={evalRunning}
-              onClick={async () => {
-                setEvalRunning(true); setEvalResult(null);
-                try {
-                  const r = await fetch("/api/enterprise", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "RUN_EVAL" }) });
-                  const p = await r.json();
-                  if (!r.ok) throw new Error(p.error?.message ?? "评测失败");
-                  setEvalResult(p.data);
-                } catch (e: any) { notify(e.message); }
-                finally { setEvalRunning(false); }
-              }}
-            >
-              {evalRunning ? "评测中..." : "运行全部 RAG 评测"}
-            </button>
-            {evalResult && (
-              <div style={{margin:"8px 12px 12px",padding:12,background:"#f5faf7",border:"1px solid #d0e8dd",borderRadius:8}}>
-                <b style={{fontSize:10}}>评测结果：{evalResult.total} 题，通过 {evalResult.passed}，失败 {evalResult.failed}</b>
-                <div style={{marginTop:8,display:"grid",gap:4}}>
-                  {evalResult.results.map((r,i) => (
-                    <div key={i} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 8px",background:"white",borderRadius:4,fontSize:9}}>
-                      <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.question}</span>
-                      <span style={{marginLeft:8,display:"flex",gap:8,alignItems:"center"}}>
-                        <span style={{color:"#8b9d98"}}>召回{r.recall}%</span>
-                        <span style={{color:"#8b9d98"}}>关键词{r.keyword}%</span>
-                        <span style={{padding:"1px 6px",borderRadius:3,fontSize:8,background:r.status==="PASSED"?"#d0f0e0":"#f8e0d0",color:r.status==="PASSED"?"#16796d":"#b55a5a"}}>{r.status==="PASSED"?"通过":"失败"}</span>
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+              <label>高级补充指令（选填）<textarea name="instructions" placeholder="仅填写业务特殊规则，系统会自动组装安全与引用约束"/></label><button className="platform-wide-action">保存为新草稿版本</button>
+            </form>}
+            {aiStrategyTab==="versions"&&<div className="prompt-version-list"><div className="prompt-compare-controls"><b>版本对比</b><select value={String(comparePromptIds[0]||prompts[0]?.id||"")} onChange={e=>setComparePromptIds(([_,right])=>[Number(e.target.value),right])}>{prompts.map(item=><option key={String(item.id)} value={String(item.id)}>V{String(item.version)} · {String(item.status)}</option>)}</select><span>对比</span><select value={String(comparePromptIds[1]||prompts[1]?.id||prompts[0]?.id||"")} onChange={e=>setComparePromptIds(([left])=>[left,Number(e.target.value)])}>{prompts.map(item=><option key={String(item.id)} value={String(item.id)}>V{String(item.version)} · {String(item.status)}</option>)}</select></div><div className="prompt-compare-grid">{[comparePromptIds[0]||Number(prompts[0]?.id),comparePromptIds[1]||Number(prompts[1]?.id||prompts[0]?.id)].map((id,index)=>{const item=prompts.find(p=>Number(p.id)===id);return <section key={`${id}-${index}`}><b>V{String(item?.version??"—")} · {String(item?.status??"")}</b><small>{String(item?.change_note||"暂无变更说明")}</small><pre>{String(item?.instructions||"")}</pre></section>})}</div>{prompts.map(item=><div className="prompt-version-card" key={String(item.id)}><div><b>{String(item.name)} · V{String(item.version)}</b><small>{String(item.status)} · {String(item.creator)} · 评测 {Number(item.eval_score||0)} 分</small><small>{String(item.change_note||"暂无变更说明")}</small></div><div><button onClick={()=>setSelectedPromptId(Number(item.id))}>测试</button>{["DRAFT","TESTING"].includes(String(item.status))&&<button disabled={Number(item.eval_score)<releaseMinScore} onClick={()=>act({action:"SUBMIT_PROMPT",id:item.id})}>提交审核</button>}{item.status==="PENDING_APPROVAL"&&<button onClick={()=>act({action:"PUBLISH_PROMPT",id:item.id})}>审核发布</button>}{item.status==="RETIRED"&&<button onClick={()=>act({action:"ROLLBACK_PROMPT",id:item.id})}>回滚此版</button>}{item.status==="PUBLISHED"&&<span className="status-pill">生产中</span>}</div></div>)}</div>}
+            {aiStrategyTab==="evaluation"&&<div className="ai-evaluation-workbench">
+              <label>待测试版本<select value={String(selectedPrompt?.id??"")} onChange={e=>setSelectedPromptId(Number(e.target.value))}>{prompts.map(item=><option key={String(item.id)} value={String(item.id)}>V{String(item.version)} · {String(item.status)} · {Number(item.eval_score||0)}分</option>)}</select></label>
+              <form className="prompt-test-form" onSubmit={async e=>{e.preventDefault();const q=String(new FormData(e.currentTarget).get("question")||"");setPromptTesting(true);setPromptTest(null);try{const r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"TEST_PROMPT",promptId:selectedPrompt?.id,question:q})}),p=await r.json();if(!r.ok)throw new Error(p.error?.message||"测试失败");setPromptTest(p.data);}catch(error){notify(error instanceof Error?error.message:"测试失败");}finally{setPromptTesting(false);}}}><input name="question" required placeholder="输入一个真实业务问题，例如：报销在哪里提交？"/><button disabled={promptTesting}>{promptTesting?"生成中…":"在线测试"}</button></form>
+              {promptTest&&<div className="prompt-test-result"><section><b>模型回答</b><p>{promptTest.answer}</p></section><section><b>检索与运行</b><small>{promptTest.provider} · {promptTest.model||"默认模型"} · {promptTest.sources.length} 条候选来源</small>{promptTest.sources.map((s,i)=><p key={i}>[{String(s.citation)}] {String(s.title)} · 匹配 {String(s.score)}</p>)}</section><details><summary>查看最终组装 Prompt</summary><pre>{promptTest.assembledPrompt}</pre></details></div>}
+              <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget,v=Object.fromEntries(new FormData(form));const saved=await act({action:"SAVE_EVAL_CASE",question:v.question,expectedKeywords:String(v.keywords).split(",").map(x=>x.trim()).filter(Boolean)});if(saved)form.reset();}}><input name="question" required placeholder="新增评测问题"/><input name="keywords" required placeholder="期望关键词，逗号分隔"/><button>加入评测集</button></form>
+              <button className="platform-wide-action" disabled={evalRunning||!selectedPrompt} onClick={async()=>{setEvalRunning(true);setEvalResult(null);try{const r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"RUN_EVAL",promptId:selectedPrompt?.id})}),p=await r.json();if(!r.ok)throw new Error(p.error?.message||"评测失败");setEvalResult(p.data);await load();}catch(error){notify(error instanceof Error?error.message:"评测失败");}finally{setEvalRunning(false);}}}>{evalRunning?"评测中…":`运行全部 ${cases.length} 条验收用例`}</button>
+              {evalResult&&<div className="eval-summary"><b>综合得分 {evalResult.score} · {evalResult.score>=releaseMinScore?"达到发布门槛":"未达到发布门槛"}</b><span>通过 {evalResult.passed}/{evalResult.total}</span>{evalResult.results.map((r,i)=><small key={i}>{r.status==="PASSED"?"✓":"×"} {r.question} · {r.score}分</small>)}</div>}
+            </div>}
+            {aiStrategyTab==="monitoring"&&<div className="ai-monitoring"><div className="metric-grid"><div><b>{Number(aiMetrics.total||0)}</b><span>近30天问答</span></div><div><b>{Number(aiMetrics.avg_latency||0)}ms</b><span>平均响应</span></div><div><b>{Number(aiMetrics.total)?Math.round(Number(aiMetrics.cited||0)/Number(aiMetrics.total)*100):0}%</b><span>有引用回答</span></div><div><b>{Number(aiMetrics.total)?Math.round(Number(aiMetrics.no_evidence||0)/Number(aiMetrics.total)*100):0}%</b><span>无答案率</span></div></div><h3>发布与回滚记录</h3>{promptReleases.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.action)} · V{String(item.version)}</b><small>{String(item.actor)} · {String(item.create_time)}</small></div><span>{Number(item.eval_score||0)} 分</span></div>)}</div>}
           </section>
           <div className="platform-grid">
             <section className="platform-card">

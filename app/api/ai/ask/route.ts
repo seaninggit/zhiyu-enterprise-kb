@@ -158,7 +158,10 @@ export async function POST(request: Request) {
     const useContextFilter=contextualFollowUp&&contextDocumentIds.size>0;
     const chunkScope=useContextFilter?scope+` AND d.id IN (${[...contextDocumentIds].map(()=>"?").join(",")})`:scope;
     const chunkBinds=useContextFilter?[...binds,...contextDocumentIds]:binds;
-    const settings=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>();const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(10,Number(config["rag.top_k"]||5)));
+    const [settings,activePrompt]=await Promise.all([
+      db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>(),
+      db.prepare("SELECT strategy_json FROM prompt_templates WHERE code='enterprise_rag' AND status='PUBLISHED' ORDER BY version DESC LIMIT 1").first<{strategy_json:string}>(),
+    ]);const config=Object.fromEntries(settings.results.map(row=>[row.key,Number(row.value)]));let promptMaxCitations=10;try{const strategy=JSON.parse(String(activePrompt?.strategy_json||"{}"));promptMaxCitations=Math.max(1,Math.min(10,Number(strategy.maxCitations||10)));}catch{/* use platform limit for legacy prompts */}const vectorWeight=Number(config["hybrid.vector_weight"]||.72),keywordWeight=Number(config["hybrid.keyword_weight"]||.28),topK=Math.max(1,Math.min(promptMaxCitations,10,Number(config["rag.top_k"]||5)));
     const loadChunks = () => db.prepare(`SELECT c.id,c.content,c.embedding,c.chunk_index,d.id AS document_id,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.title ELSE COALESCE(d.published_title,d.title) END title,CASE WHEN d.status='ARCHIVED_ACTIVE' THEN d.version ELSE COALESCE(d.published_version,d.version) END version,d.update_time,dep.name AS department_name
       FROM document_chunks c JOIN documents d ON d.id=c.document_id JOIN departments dep ON dep.id=d.dept_id
       WHERE c.is_active=1 AND ${chunkScope} ORDER BY d.update_time DESC LIMIT 800`).bind(...chunkBinds).all<Record<string, unknown>>();

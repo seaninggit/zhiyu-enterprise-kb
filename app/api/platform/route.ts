@@ -3,6 +3,8 @@ import { ApiError, fail, ok, requestId, safeText } from "../../../lib/api";
 import { canManageDepartment, requireApiUser } from "../../../lib/authz";
 import { processDocument } from "../../../lib/ingestion";
 import { runGovernanceMaintenance } from "../../../lib/governance";
+import { notifyUser } from "../../../lib/notifications";
+import { resolvePublishedFeedback } from "../../../lib/governance-feedback";
 function placeholders(values: number[]) {
   return values.map(() => "?").join(",");
 }
@@ -199,19 +201,35 @@ export async function POST(request: Request) {
     if (action === "START_GOVERNANCE") {
       const task = await db
         .prepare(
-          "SELECT dept_id FROM knowledge_governance_tasks WHERE id=? AND status='OPEN'",
+          "SELECT id,dept_id,reason,source_document_id FROM knowledge_governance_tasks WHERE id=? AND status='OPEN'",
         )
         .bind(Number(payload.taskId))
-        .first<{ dept_id: number }>();
+        .first<{ id: number; dept_id: number; reason: string; source_document_id: number | null }>();
       if (!task || !canManageDepartment(ctx, task.dept_id))
         throw new ApiError(403, "FORBIDDEN", "无权处理该治理任务");
-      await db
-        .prepare(
-          "UPDATE knowledge_governance_tasks SET status='IN_PROGRESS',assignee_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?",
-        )
-        .bind(ctx.userId, Number(payload.taskId))
-        .run();
-      return ok({ started: true }, rid);
+      await db.batch([
+        db
+          .prepare(
+            "UPDATE knowledge_governance_tasks SET status='IN_PROGRESS',assignee_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?",
+          )
+          .bind(ctx.userId, task.id),
+        db
+          .prepare(
+            "INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'GOVERNANCE_STARTED',?,?,?,?)",
+          )
+          .bind(
+            task.source_document_id,
+            task.dept_id,
+            ctx.userId,
+            ctx.displayName,
+            `认领知识治理任务 #${task.id}：${task.reason}`,
+            rid,
+          ),
+      ]);
+      return ok(
+        { started: true, status: "IN_PROGRESS", assignee: ctx.displayName, taskId: task.id },
+        rid,
+      );
     }
     if (action === "RESOLVE_GOVERNANCE") {
       const task = await db
@@ -257,11 +275,6 @@ export async function POST(request: Request) {
             "UPDATE knowledge_governance_tasks SET status='RESOLVED',assignee_user_id=COALESCE(assignee_user_id,?),target_document_id=?,resolution=?,resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?",
           )
           .bind(ctx.userId, targetId, resolution, ctx.userId, task.id),
-        db
-          .prepare(
-            "INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'GOVERNANCE_RESOLVED','你的知识反馈已处理',?,?)",
-          )
-          .bind(task.reporter_user_id, resolution, targetId),
         ...(task.source_document_id
           ? [
               db
@@ -284,22 +297,17 @@ export async function POST(request: Request) {
             rid,
           ),
       ]);
+      const delivery=await notifyUser({userId:Number(task.reporter_user_id),type:"GOVERNANCE_RESOLVED",title:"你的知识反馈已处理",content:resolution,documentId:targetId,requestId:rid,email:true});
       return ok(
-        { resolved: true, notified: true, targetDocumentId: targetId },
+        { resolved: true, notified: true, delivery, targetDocumentId: targetId },
         rid,
       );
     }
     if (action === "AUTO_RESOLVE_TASKS") {
       const docId = Number(payload.documentId);
       if (!docId) throw new ApiError(400, "VALIDATION_ERROR", "文档ID不能为空");
-      const tasks = await db.prepare("SELECT id, reporter_user_id, reason FROM knowledge_governance_tasks WHERE (source_document_id=? OR target_document_id=?) AND status IN ('OPEN','IN_PROGRESS')").bind(docId, docId).all<{id:number;reporter_user_id:number|null;reason:string}>();
-      for (const t of tasks.results) {
-        await db.batch([
-          db.prepare("UPDATE knowledge_governance_tasks SET status='RESOLVED',resolution='文档已审核通过，自动闭环',resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(ctx.userId, t.id),
-          db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'GOVERNANCE_RESOLVED','你的知识反馈已处理',?,?)").bind(t.reporter_user_id || 1, `关联文档已审核通过，「${t.reason}」自动闭环。`, docId),
-        ]);
-      }
-      return ok({ resolved: tasks.results.length }, rid);
+      const result=await resolvePublishedFeedback({documentId:docId,actorUserId:ctx.userId,actorName:ctx.displayName,requestId:rid});
+      return ok(result, rid);
     }
     if (action === "CREATE_SPACE") {
       if (ctx.role !== "SUPER_ADMIN")

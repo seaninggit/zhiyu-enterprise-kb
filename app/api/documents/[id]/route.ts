@@ -3,6 +3,24 @@ import { ApiError, fail, ok, requestId, safeText } from "../../../../lib/api";
 import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../../lib/authz";
 import { canEditDocument, canReadDocument } from "../../../../lib/document-access";
 import { deleteKnowledgeFile, getKnowledgeFile } from "../../../../lib/knowledge-files";
+import { notifyUser } from "../../../../lib/notifications";
+
+async function applyDownloadWatermark(object:Awaited<ReturnType<typeof getKnowledgeFile>>,mime:string,identity:string){
+  if(!object)return null;
+  const mark=`ZH I YU · ${identity} · ${new Date().toISOString().slice(0,16).replace("T"," ")} UTC`;
+  if(mime.includes("pdf")){
+    const {PDFDocument,StandardFonts,rgb,degrees}=await import("pdf-lib");
+    const pdf=await PDFDocument.load(await object.arrayBuffer());
+    const font=await pdf.embedFont(StandardFonts.Helvetica);
+    for(const page of pdf.getPages()){
+      const {width,height}=page.getSize();
+      page.drawText(mark,{x:Math.max(24,width*.12),y:height*.48,size:Math.max(9,Math.min(16,width/42)),font,color:rgb(.45,.52,.5),opacity:.24,rotate:degrees(28)});
+    }
+    return new Uint8Array(await pdf.save());
+  }
+  if(mime.startsWith("text/")||/json|csv|xml|markdown/.test(mime))return new TextEncoder().encode(`[Download trace: ${mark}]\n\n${await object.text()}`);
+  return null;
+}
 
 async function authorizedDocument(id: number, ctx: Awaited<ReturnType<typeof requireApiUser>>) {
   const doc = await getD1().prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(id).first<Record<string, unknown>>();
@@ -17,11 +35,13 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
     if (new URL(request.url).searchParams.get("download") === "1") {
       await enforceRateLimit(ctx, "download", 120, 60); if (!doc.source_key) throw new ApiError(404, "NO_ATTACHMENT", "该知识没有原始附件");
       const object = await getKnowledgeFile(String(doc.source_key)); if (!object) throw new ApiError(404, "FILE_NOT_FOUND", "附件不存在");
-      await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "DOWNLOAD", ctx.userId, ctx.displayName, doc.source_name, rid).run();
-      return new Response(object.body, { headers: { "content-type": String(doc.mime_type || "application/octet-stream"), "content-length": String(object.size), "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(doc.source_name || "document"))}`, "cache-control": "private, no-store" } });
+      const mime=String(doc.mime_type||object.contentType||"application/octet-stream"),watermarked=Number(doc.watermark_enabled)?await applyDownloadWatermark(object,mime,ctx.email):null,body=watermarked||object.body,size=watermarked?.byteLength||object.size;
+      await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "DOWNLOAD", ctx.userId, ctx.displayName, `${doc.source_name}${Number(doc.watermark_enabled)?watermarked?" · 已写入下载水印":" · 已记录下载追踪（原格式不支持写入水印）":""}`, rid).run();
+      return new Response(body, { headers: { "content-type": mime, "content-length": String(size), "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(String(doc.source_name || "document"))}`, "cache-control": "private, no-store",...(Number(doc.watermark_enabled)?{"x-knowledge-download-trace":rid,"x-knowledge-watermark":watermarked?"embedded":"audited"}:{}) } });
     }
     const versions = await db.prepare("SELECT * FROM document_versions WHERE document_id=? ORDER BY version DESC").bind(id).all();
-    const manager=canManageDepartment(ctx,Number(doc.dept_id)); const creator=Number(doc.create_user_id)===ctx.userId; const baseDoc={...doc,content:doc.content||doc.extracted_text||""};const visibleDoc=!manager&&!creator&&doc.status!=="ARCHIVED_ACTIVE"&&doc.published_version?{...baseDoc,title:doc.published_title,summary:doc.published_summary||String(doc.published_content||"").slice(0,180),content:doc.published_content||"",extracted_text:doc.published_content||"",version:doc.published_version,status:"ARCHIVED_ACTIVE"}:baseDoc;
+    const tagRow = await db.prepare("SELECT GROUP_CONCAT(t.name, ',') tags FROM document_tags dt JOIN tags t ON t.id=dt.tag_id WHERE dt.document_id=?").bind(id).first<{tags:string|null}>();
+    const manager=canManageDepartment(ctx,Number(doc.dept_id)); const creator=Number(doc.create_user_id)===ctx.userId; const baseDoc={...doc,tags:tagRow?.tags||"",content:doc.content||doc.extracted_text||""};const visibleDoc=!manager&&!creator&&doc.status!=="ARCHIVED_ACTIVE"&&doc.published_version?{...baseDoc,title:doc.published_title,summary:doc.published_summary||String(doc.published_content||"").slice(0,180),content:doc.published_content||"",extracted_text:doc.published_content||"",version:doc.published_version,status:"ARCHIVED_ACTIVE"}:baseDoc;
     const approvals=await db.prepare("SELECT a.*,u.display_name approver FROM approval_records a LEFT JOIN users u ON u.id=a.approver_user_id WHERE a.document_id=? ORDER BY a.create_time DESC").bind(id).all();
     const acl=manager?await db.prepare(`SELECT a.*,CASE a.subject_type WHEN 'USER' THEN (SELECT display_name FROM users WHERE id=a.subject_id) WHEN 'DEPT' THEN (SELECT name FROM departments WHERE id=a.subject_id) WHEN 'GROUP' THEN (SELECT name FROM enterprise_groups WHERE id=a.subject_id) END subject_name FROM document_acl a WHERE a.document_id=? ORDER BY a.create_time DESC`).bind(id).all():{results:[]};
     const permissionPrincipals=manager?{
@@ -58,7 +78,7 @@ export async function PUT(request: Request, context: { params: Promise<{ id: str
 
 export async function POST(request: Request, context: { params: Promise<{ id: string }> }) {
   const rid = requestId(request);
-  try { const ctx = await requireApiUser(); await enforceRateLimit(ctx, "feedback", 20, 60); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const payload = await request.json() as { type?: string; content?: string }; const type=safeText(payload.type || "纠错", 30);const content = safeText(payload.content, 2000); if (!content) throw new ApiError(400, "VALIDATION_ERROR", "反馈内容不能为空"); const db = getD1(); const receiver=Number(doc.owner_user_id||doc.create_user_id); await db.batch([db.prepare("INSERT INTO feedback(document_id,type,content,reporter_user_id,reporter) VALUES(?,?,?,?,?)").bind(id, type, content, ctx.userId, ctx.displayName),db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('DOCUMENT_FEEDBACK','OPEN',?,?,?,?,?,?)").bind(doc.dept_id,id,ctx.userId,receiver,type,content), db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "FEEDBACK", ctx.userId, ctx.displayName, content, rid),db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'KNOWLEDGE_FEEDBACK','收到知识纠错反馈',?,?)").bind(receiver,`${ctx.displayName}：${content}`,id)]); return ok({ submitted: true,governanceTaskCreated:true }, rid, 201); } catch (error) { return fail(error, rid); }
+  try { const ctx = await requireApiUser(); await enforceRateLimit(ctx, "feedback", 20, 60); const id = Number((await context.params).id); const doc = await authorizedDocument(id, ctx); const payload = await request.json() as { type?: string; content?: string }; const type=safeText(payload.type || "纠错", 30);const content = safeText(payload.content, 2000); if (!content) throw new ApiError(400, "VALIDATION_ERROR", "反馈内容不能为空"); const db = getD1(); const receiver=Number(doc.owner_user_id||doc.create_user_id); await db.batch([db.prepare("INSERT INTO feedback(document_id,type,content,reporter_user_id,reporter) VALUES(?,?,?,?,?)").bind(id, type, content, ctx.userId, ctx.displayName),db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('DOCUMENT_FEEDBACK','OPEN',?,?,?,?,?,?)").bind(doc.dept_id,id,ctx.userId,receiver,type,content), db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(id, doc.dept_id, "FEEDBACK", ctx.userId, ctx.displayName, content, rid)]); const delivery=await notifyUser({userId:receiver,type:"KNOWLEDGE_FEEDBACK",title:"收到知识纠错反馈",content:`${ctx.displayName} 对《${String(doc.title)}》提交了“${type}”反馈：${content}`,documentId:id,requestId:rid,email:true}); return ok({ submitted: true,governanceTaskCreated:true,notification:delivery }, rid, 201); } catch (error) { return fail(error, rid); }
 }
 
 export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {

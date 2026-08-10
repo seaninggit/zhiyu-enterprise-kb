@@ -9,13 +9,13 @@ test("enterprise knowledge hub metadata and product copy are configured", async 
     readFile(new URL("../.openai/hosting.json", import.meta.url), "utf8"),
   ]);
   assert.match(layout, /知域 · 企业知识库/);
-  assert.match(page, /知识维护工作台/);
+  assert.match(page, /知识维护与审核/);
   assert.match(page, /上传并生成记录/);
   assert.match(page, /下载原件/);
   assert.match(page, /附件已安全保存/);
   assert.match(page, /首次上传/);
   assert.doesNotMatch(page, /完成内容复核与格式修订/);
-  assert.match(page, /审计日志/);
+  assert.match(page, /安全与审计/);
   assert.doesNotMatch(page, /SkeletonPreview/);
   assert.equal(JSON.parse(hosting).d1, "DB");
   assert.equal(JSON.parse(hosting).r2, "KNOWLEDGE_FILES");

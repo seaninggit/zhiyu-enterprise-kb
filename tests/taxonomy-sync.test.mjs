@@ -14,7 +14,7 @@ test("custom categories and groups persist and refresh every consuming interface
   assert.match(page,/action:"SAVE_GROUP"/);
   assert.match(page,/当前页面及业务表单已同步更新/);
   assert.match(enterprise,/category},rid/);
-  assert.match(enterprise,/group},rid/);
+  assert.match(enterprise,/group,message:/);
   assert.match(enterprise,/DELETE_CATEGORY/);
   assert.match(enterprise,/DELETE_GROUP/);
   assert.match(enterprise,/DELETE_TAG/);

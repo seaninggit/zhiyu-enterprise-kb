@@ -37,11 +37,13 @@ test("real business flow persists upload, readiness, review, publish, ACL and go
     INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',2,99001,9003,9002,'答案不准确','缺少验收标准说明');
     UPDATE documents SET content=content||' 验收标准需量化。',published_content=content||' 验收标准需量化。',version=2,published_version=2,update_time=datetime('now','+2 second') WHERE id=99001;
     UPDATE knowledge_governance_tasks SET status='RESOLVED',target_document_id=99001,resolution='已补充量化验收标准并发布 V2.0',resolved_by=9002,resolved_at=datetime('now','+3 second') WHERE source_document_id=99001 AND status='OPEN';
+    INSERT INTO notification_deliveries(user_id,document_id,channel,event_type,recipient,status,provider_message_id,request_id) VALUES(9003,99001,'EMAIL','GOVERNANCE_RESOLVED','product@demo.invalid','SKIPPED','','integration-flow');
     COMMIT;
     SELECT status||'|'||published_version||'|'||verification_status FROM documents WHERE id=99001;
     SELECT target_term FROM search_corrections WHERE source_term='虚球';
     SELECT COUNT(*) FROM document_acl a JOIN user_groups ug ON ug.group_id=a.subject_id WHERE a.document_id=99001 AND a.subject_type='GROUP' AND ug.user_id=9003;
     SELECT status||'|'||resolution FROM knowledge_governance_tasks WHERE source_document_id=99001;
+    SELECT channel||'|'||event_type||'|'||status FROM notification_deliveries WHERE document_id=99001;
     PRAGMA foreign_key_check;
   `).split("\n");
 
@@ -50,5 +52,6 @@ test("real business flow persists upload, readiness, review, publish, ACL and go
     "需求",
     "1",
     "RESOLVED|已补充量化验收标准并发布 V2.0",
+    "EMAIL|GOVERNANCE_RESOLVED|SKIPPED",
   ]);
 });

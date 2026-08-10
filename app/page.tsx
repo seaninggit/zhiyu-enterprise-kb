@@ -25,6 +25,7 @@ type View =
   | "library"
   | "admin"
   | "platform"
+  | "taxonomy"
   | "favorites"
   | "audit"
   | "accounts"
@@ -54,6 +55,15 @@ type KnowledgeDocument = {
   reviewDueAt?: string | null;
   createdAt: string;
   updatedAt: string;
+  submittedAt?: string | null;
+  approvedAt?: string | null;
+  rejectedAt?: string | null;
+  voidedAt?: string | null;
+  deletedAt?: string | null;
+  lastVersionAt?: string | null;
+  ingestedAt?: string | null;
+  verifiedAt?: string | null;
+  aiIndexedAt?: string | null;
   versions?: DocumentVersion[];
   parseStatus?: string;
   verificationStatus?: string;
@@ -212,6 +222,15 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
       (row.reviewDueAt as string) ?? (row.review_due_at as string) ?? null,
     createdAt: String(row.createdAt ?? row.create_time ?? ""),
     updatedAt: String(row.updatedAt ?? row.update_time ?? ""),
+    submittedAt: (row.submitted_at as string) ?? null,
+    approvedAt: (row.approved_at as string) ?? null,
+    rejectedAt: (row.rejected_at as string) ?? null,
+    voidedAt: (row.voided_at as string) ?? null,
+    deletedAt: (row.deleted_at as string) ?? null,
+    lastVersionAt: (row.last_version_at as string) ?? null,
+    ingestedAt: (row.ingested_at as string) ?? null,
+    verifiedAt: (row.verified_at as string) ?? null,
+    aiIndexedAt: (row.ai_indexed_at as string) ?? null,
     parseStatus: String(row.parse_status ?? "PENDING"),
     verificationStatus: String(row.verification_status ?? "UNVERIFIED"),
     extractionMethod: String(row.extraction_method ?? "NONE"),
@@ -243,6 +262,22 @@ function normalizeGovernanceTask(
 
 function fmtSize(size = 0) {
   return size ? `${(size / 1024 / 1024).toFixed(1)} MB` : "在线文档";
+}
+
+function fmtBusinessTime(value?: string | null) {
+  if (!value) return "尚未发生";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const normalized = value.includes("T") ? value : `${value.replace(" ", "T")}Z`;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }
 function isContextFollowUp(question: string) {
   const compact = question.replace(/[\s，。！？、,.!?：:；;]/g, "");
@@ -334,6 +369,7 @@ export default function Home() {
   const [governanceTasks, setGovernanceTasks] = useState<GovernanceTask[]>([]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
+  const [tagFilter, setTagFilter] = useState("全部标签");
   const [knowledgeCategories, setKnowledgeCategories] = useState(DEFAULT_CATEGORIES);
   const [categoryOptions, setCategoryOptions] = useState<TaxonomyOption[]>(DEFAULT_CATEGORIES.filter(item=>item!=="全部").map((name,index)=>({id:-(index+1),dept_id:null,name})));
   const [tagOptions, setTagOptions] = useState<TaxonomyOption[]>([]);
@@ -387,6 +423,7 @@ export default function Home() {
   } | null>(null);
   const [governanceDialog, setGovernanceDialog] =
     useState<GovernanceTask | null>(null);
+  const [governanceSubmitting, setGovernanceSubmitting] = useState(false);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({
     departments: [
       {
@@ -494,12 +531,14 @@ export default function Home() {
           `${item.title}${item.summary}${item.content}${item.tags}${item.owner}${item.uploader}`.toLowerCase();
         return (
           (category === "全部" || item.category === category) &&
+          (tagFilter === "全部标签" ||
+            item.tags.split(",").map((tag) => tag.trim()).includes(tagFilter)) &&
           (searchResults !== null ||
             !query.trim() ||
             text.includes(query.trim().toLowerCase()))
         );
       }),
-    [searchBase, category, query, searchResults],
+    [searchBase, category, tagFilter, query, searchResults],
   );
   const visible =
     view === "favorites"
@@ -530,26 +569,33 @@ export default function Home() {
   }
   async function resolveGovernance(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!governanceDialog) return;
+    if (!governanceDialog || governanceSubmitting) return;
     const values = Object.fromEntries(new FormData(event.currentTarget));
-    const response = await fetch("/api/platform", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        action: "RESOLVE_GOVERNANCE",
-        taskId: governanceDialog.id,
-        resolution: values.resolution,
-        targetDocumentId: Number(values.targetDocumentId) || undefined,
-      }),
-    });
-    const payload = await response.json();
-    if (!response.ok)
-      return notify(payload.error?.message ?? "治理任务处理失败");
-    setGovernanceTasks((current) =>
-      current.filter((task) => task.id !== governanceDialog.id),
-    );
-    setGovernanceDialog(null);
-    notify("治理任务已闭环，处理结果已通知反馈人并留存审计");
+    setGovernanceSubmitting(true);
+    try {
+      const response = await fetch("/api/platform", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "RESOLVE_GOVERNANCE",
+          taskId: governanceDialog.id,
+          resolution: values.resolution,
+          targetDocumentId: Number(values.targetDocumentId) || undefined,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "治理任务处理失败");
+      setGovernanceTasks((current) =>
+        current.filter((task) => task.id !== governanceDialog.id),
+      );
+      setGovernanceDialog(null);
+      notify("治理任务已闭环，处理结果已通知反馈人并留存审计");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "治理任务处理失败");
+    } finally {
+      setGovernanceSubmitting(false);
+    }
   }
   async function openDocument(documentOrId: KnowledgeDocument | number) {
     const id =
@@ -701,6 +747,8 @@ export default function Home() {
       const refreshed = await fetch("/api/documents", {
         cache: "no-store",
       }).then((r) => r.json());
+      if (refreshed.data?.documents)
+        setDocuments(refreshed.data.documents.map(normalizeDocument));
       if (refreshed.data?.metrics) setMetrics(refreshed.data.metrics);
       if (refreshed.data?.notifications)
         setNotifications(refreshed.data.notifications);
@@ -713,12 +761,6 @@ export default function Home() {
               ? "已驳回至草稿，原因已通知上传人"
               : "已作废并退出检索范围",
       );
-      // 审批通过时自动关闭关联的治理任务
-      if (action === "approve") {
-        try {
-          await fetch("/api/platform", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "AUTO_RESOLVE_TASKS", documentId: id }) });
-        } catch { /* 非关键路径，静默失败 */ }
-      }
       setWorkflowDialog(null);
     } catch (error) {
       notify(error instanceof Error ? error.message : "操作失败");
@@ -928,7 +970,7 @@ export default function Home() {
             className={view === "library" ? "active" : ""}
             onClick={() => setView("library")}
           >
-            <i>⌂</i>知识广场
+            <i>⌂</i>知识门户
           </button>
           <button
             className={view === "favorites" ? "active" : ""}
@@ -943,14 +985,22 @@ export default function Home() {
                 className={view === "admin" ? "active" : ""}
                 onClick={() => setView("admin")}
               >
-                <i>▦</i>维护工作台
+                <i>▦</i>知识维护与审核
               </button>
+              {hasPerm("governance:platform") && (
+                <button
+                  className={view === "taxonomy" ? "active" : ""}
+                  onClick={() => setView("taxonomy")}
+                >
+                  <i>⌘</i>知识体系
+                </button>
+              )}
               {hasPerm("governance:platform") && (
                 <button
                   className={view === "platform" ? "active" : ""}
                   onClick={() => setView("platform")}
                 >
-                  <i>◫</i>运营概览
+                  <i>◫</i>知识运营
                 </button>
               )}
             </>
@@ -971,7 +1021,7 @@ export default function Home() {
                   className={view === "settings" ? "active" : ""}
                   onClick={() => setView("settings")}
                 >
-                  <i>⚙</i>平台管理
+                  <i>⚙</i>系统运行与自动化
                 </button>
               )}
               {hasPerm("governance:audit") && (
@@ -979,7 +1029,7 @@ export default function Home() {
                   className={view === "audit" ? "active" : ""}
                   onClick={() => setView("audit")}
                 >
-                  <i>≡</i>审计日志
+                  <i>≡</i>安全与审计
                 </button>
               )}
             </>
@@ -1120,15 +1170,27 @@ export default function Home() {
             }
             onStatus={updateStatus}
             onResolve={setGovernanceDialog}
+            notify={notify}
+            onTaskStarted={(taskId) =>
+              setGovernanceTasks((current) =>
+                current.map((task) =>
+                  task.id === taskId
+                    ? { ...task, status: "IN_PROGRESS", assignee: currentUser.displayName }
+                    : task,
+                ),
+              )
+            }
           />
         ) : view === "platform" && hasPerm("governance:platform") ? (
           <PlatformView role={currentUser.role} notify={notify} />
+        ) : view === "taxonomy" && hasPerm("governance:platform") ? (
+          <KnowledgeSystemView role={currentUser.role} notify={notify} onConfigurationChange={(data)=>{const categories=(data.categories??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),code:String(item.code??""),sort_order:Number(item.sort_order)||0}));setCategoryOptions(categories);setKnowledgeCategories(["全部",...Array.from(new Set(categories.map(item=>item.name).filter(Boolean)))]);setTagOptions((data.tags??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name)})));}} />
         ) : view === "accounts" && hasPerm("system:accounts") ? (
           <AccountAdminView notify={notify} />
         ) : view === "settings" && hasPerm("system:accounts") ? (
           <SettingsView role={currentUser.role} notify={notify} onConfigurationChange={(data)=>{const categories=(data.categories??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),code:String(item.code??""),sort_order:Number(item.sort_order)||0}));setCategoryOptions(categories);setKnowledgeCategories(["全部",...Array.from(new Set(categories.map(item=>item.name).filter(Boolean)))]);setTagOptions((data.tags??[]).map(item=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name)})));}} />
         ) : view === "audit" && hasPerm("governance:audit") ? (
-          <AuditView logs={logs} documents={documents} />
+          <AuditView logs={logs} documents={documents} role={currentUser.role} notify={notify} />
         ) : (
           <LibraryView
             currentUser={currentUser}
@@ -1139,7 +1201,10 @@ export default function Home() {
             correction={searchCorrection}
             category={category}
             categories={knowledgeCategories}
+            tagFilter={tagFilter}
+            tags={["全部标签", ...Array.from(new Set(tagOptions.map((item) => item.name).filter(Boolean)))]}
             setCategory={setCategory}
+            setTagFilter={setTagFilter}
             setQuery={setQuery}
             onSearch={runSearch}
             searchLoading={searchLoading}
@@ -1348,7 +1413,7 @@ export default function Home() {
             onMouseDown={(e) => e.stopPropagation()}
             onSubmit={resolveGovernance}
           >
-            <button type="button" onClick={() => setGovernanceDialog(null)}>
+            <button type="button" disabled={governanceSubmitting} onClick={() => setGovernanceDialog(null)}>
               ×
             </button>
             <span>知识治理闭环</span>
@@ -1385,10 +1450,13 @@ export default function Home() {
               />
             </label>
             <footer>
-              <button type="button" onClick={() => setGovernanceDialog(null)}>
+              <button type="button" disabled={governanceSubmitting} onClick={() => setGovernanceDialog(null)}>
                 取消
               </button>
-              <button className="primary-action">提交并通知反馈人</button>
+              <button className="primary-action is-loading" disabled={governanceSubmitting} aria-busy={governanceSubmitting}>
+                {governanceSubmitting && <span className="button-spinner" />}
+                {governanceSubmitting ? "正在提交..." : "提交并通知反馈人"}
+              </button>
             </footer>
           </form>
         </div>
@@ -1505,7 +1573,10 @@ function LibraryView({
   correction,
   category,
   categories,
+  tagFilter,
+  tags,
   setCategory,
+  setTagFilter,
   setQuery,
   onSearch,
   searchLoading,
@@ -1522,7 +1593,10 @@ function LibraryView({
   correction: QueryCorrection | null;
   category: string;
   categories: string[];
+  tagFilter: string;
+  tags: string[];
   setCategory: (v: string) => void;
+  setTagFilter: (v: string) => void;
   setQuery: (v: string) => void;
   onSearch: (useOriginal?: boolean) => void;
   searchLoading: boolean;
@@ -1615,6 +1689,15 @@ function LibraryView({
                 {item}
               </button>
             ))}
+            {tags.length > 1 && (
+              <select
+                aria-label="按知识标签筛选"
+                value={tagFilter}
+                onChange={(event) => setTagFilter(event.target.value)}
+              >
+                {tags.map((tag) => <option key={tag}>{tag}</option>)}
+              </select>
+            )}
           </div>
         </div>
         {documents.length ? (
@@ -1694,6 +1777,8 @@ function AdminView({
   onSelect,
   onStatus,
   onResolve,
+  notify,
+  onTaskStarted,
 }: {
   documents: KnowledgeDocument[];
   metrics: Metrics;
@@ -1706,8 +1791,36 @@ function AdminView({
     action: "submit" | "approve" | "reject" | "archive",
   ) => void;
   onResolve: (task: GovernanceTask) => void;
+  notify: (message: string) => void;
+  onTaskStarted: (taskId: number) => void;
 }) {
   const [statusFilter, setStatusFilter] = useState("ALL");
+  const [startingTaskId, setStartingTaskId] = useState<number | null>(null);
+  const [timelineDocument, setTimelineDocument] = useState<KnowledgeDocument | null>(null);
+  async function startGovernanceTask(task: GovernanceTask) {
+    if (startingTaskId !== null) return;
+    setStartingTaskId(task.id);
+    try {
+      const response = await fetch("/api/platform", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "START_GOVERNANCE", taskId: task.id }),
+      });
+      const payload = await response.json();
+      if (!response.ok)
+        throw new Error(payload.error?.message ?? "任务认领失败");
+      onTaskStarted(task.id);
+      notify(
+        task.sourceDocumentId
+          ? "任务已由你认领，可进入关联文档核查并更新"
+          : "任务已由你认领，请补充处理结果并完成闭环",
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "任务认领失败");
+    } finally {
+      setStartingTaskId(null);
+    }
+  }
   const cards = [
     { label: "知识总量", value: metrics.total, hint: "权限范围内" },
     { label: "待审核", value: metrics.pending, hint: "需及时处理" },
@@ -1728,7 +1841,7 @@ function AdminView({
       <section className="admin-heading">
         <div>
           <span className="page-kicker">GOVERNANCE CONSOLE</span>
-          <h1>知识维护工作台</h1>
+          <h1>知识维护与审核</h1>
           <p>管理资料入库、审核发布、用户反馈、版本与生命周期。</p>
         </div>
         <button className="primary-action" onClick={onUpload}>
@@ -1773,15 +1886,15 @@ function AdminView({
                   <button onClick={() => onResolve(task)}>处理</button>
                 )
               ) : (
-                <button onClick={async () => {
-                  try {
-                    const r = await fetch("/api/platform", {method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"START_GOVERNANCE",taskId:task.id})});
-                    const p = await r.json();
-                    if (!r.ok) throw new Error(p.error?.message ?? "操作失败");
-                    notify("已标记为处理中，请编辑关联文档后提交审核");
-                    if (typeof window !== "undefined") window.location.reload();
-                  } catch(e: any) { notify(e.message); }
-                }}>开始处理</button>
+                <button
+                  className={startingTaskId === task.id ? "is-loading" : undefined}
+                  disabled={startingTaskId !== null}
+                  aria-busy={startingTaskId === task.id}
+                  onClick={() => startGovernanceTask(task)}
+                >
+                  {startingTaskId === task.id && <span className="button-spinner" />}
+                  {startingTaskId === task.id ? "正在认领..." : "开始处理"}
+                </button>
               )}
             </div>
           ))}
@@ -1810,7 +1923,7 @@ function AdminView({
             <span>资料名称</span>
             <span>分类 / 密级</span>
             <span>上传人与负责人</span>
-            <span>版本 / 复核日</span>
+            <span>版本 / 关键时间</span>
             <span>状态</span>
             <span>操作</span>
           </div>
@@ -1823,6 +1936,7 @@ function AdminView({
                   <small>
                     {doc.sourceName ?? "在线文档"} · {fmtSize(doc.size)}
                   </small>
+                  <small>上传：{fmtBusinessTime(doc.createdAt)}</small>
                 </div>
               </button>
               <span>
@@ -1835,14 +1949,23 @@ function AdminView({
               </span>
               <span>
                 <b>V{doc.version}.0</b>
-                <small>{doc.reviewDueAt || "未设置"}</small>
+                <small>修改：{fmtBusinessTime(doc.updatedAt)}</small>
+                <small>复核：{doc.reviewDueAt || "未设置"}</small>
               </span>
               <span>
                 <i className={`doc-status ${doc.status}`}>
                   {statusLabel[doc.status]}
                 </i>
+                <small>
+                  {doc.approvedAt
+                    ? `发布：${fmtBusinessTime(doc.approvedAt)}`
+                    : doc.submittedAt
+                      ? `发起审批：${fmtBusinessTime(doc.submittedAt)}`
+                      : "尚未发起审批"}
+                </small>
               </span>
               <span className="row-actions">
+                <button onClick={() => setTimelineDocument(doc)}>时间记录</button>
                 {doc.status === "draft" ? (
                   <button onClick={() => onStatus(doc.id, "submit")}>
                     提交审核
@@ -1871,6 +1994,41 @@ function AdminView({
           ))}
         </div>
       </section>
+      {timelineDocument && (
+        <div className="modal-backdrop" onMouseDown={() => setTimelineDocument(null)}>
+          <section className="feedback-modal document-timeline" onMouseDown={(event) => event.stopPropagation()}>
+            <button aria-label="关闭时间记录" onClick={() => setTimelineDocument(null)}>×</button>
+            <span>DOCUMENT AUDIT TIMELINE</span>
+            <h2>{timelineDocument.title}</h2>
+            <p>时间来自文档、版本、解析任务和审批记录，未发生的节点不会生成虚假时间。</p>
+            <div className="timeline-list">
+              {[
+                ["上传创建", timelineDocument.createdAt, "资料进入系统并生成 V1.0"],
+                ["解析完成", timelineDocument.ingestedAt, "正文提取、切片与入库完成"],
+                ["最近版本", timelineDocument.lastVersionAt, `当前 V${timelineDocument.version}.0`],
+                ["最近修改", timelineDocument.updatedAt, "资料字段、内容或状态最后变更"],
+                ["发起审批", timelineDocument.submittedAt, "同时进入部门审批人的待办，即待办接收时间"],
+                ["审批驳回", timelineDocument.rejectedAt, "仅在发生驳回时记录"],
+                ["审批通过并发布", timelineDocument.approvedAt, "当前流程审批通过后立即生效发布"],
+                ["AI 索引完成", timelineDocument.aiIndexedAt, "资料可参与语义检索和 RAG 问答"],
+                ["内容核验", timelineDocument.verifiedAt, "负责人或管理员完成有效性核验"],
+                ["作废", timelineDocument.voidedAt, "归档失效或主动作废"],
+                ["软删除", timelineDocument.deletedAt, "进入回收站，可按权限恢复或彻底删除"],
+                ["下次复核", timelineDocument.reviewDueAt, "到期前进入知识治理待办"],
+              ].map(([label, value, description]) => (
+                <div className={value ? "occurred" : "pending"} key={label}>
+                  <i />
+                  <div>
+                    <b>{label}</b>
+                    <small>{description}</small>
+                  </div>
+                  <time>{fmtBusinessTime(value)}</time>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }
@@ -1953,13 +2111,12 @@ function PlatformView({
     );
   const m = data.metrics ?? {},
     s = data.searches ?? {};
-  const platformSpaces=Array.from(new Map(data.spaces.map(item=>[Number(item.id),item])).values());
   return (
     <main className="workspace">
       <section className="admin-heading">
         <div>
           <span className="page-kicker">KNOWLEDGE OPERATIONS</span>
-          <h1>运营概览</h1>
+          <h1>知识运营</h1>
           <p>知识库运行指标与智能巡检。</p>
         </div>
         <div className="member-actions">
@@ -2008,7 +2165,7 @@ function PlatformView({
       <div className="platform-grid">
         <section className="platform-card">
           <header>
-            <h2>文件解析流水线</h2>
+            <h2>解析与索引状态</h2>
             <span>{data.jobs.length} 条</span>
           </header>
           {data.jobs.map((job) => (
@@ -2056,43 +2213,6 @@ function PlatformView({
       </div>
       <section className="platform-card wide-card">
         <header>
-          <h2>知识空间与目录</h2>
-          <span>部门隔离</span>
-        </header>
-        <div className="space-grid">
-          {data.spaces.map((space, index) => (
-            <div key={`${space.id}-${space.folder_id}-${index}`}>
-              <b>{String(space.name)}</b>
-              <span>
-                {space.folder_name ? String(space.folder_name) : "根目录"}
-              </span>
-              <small>{String(space.document_count ?? 0)} 份资料</small>
-            </div>
-          ))}
-        </div>
-        {role === "SUPER_ADMIN" && (
-          <form
-            className="inline-governance"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              const form=e.currentTarget;
-              const values = Object.fromEntries(new FormData(e.currentTarget));
-              if(await action({ action: "CREATE_SPACE", ...values }))form.reset();
-            }}
-          >
-            <input name="name" required placeholder="新空间名称" />
-            <input name="code" required placeholder="唯一编码" />
-            <button>创建空间</button>
-          </form>
-        )}
-        {!!platformSpaces.length&&<form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const values=Object.fromEntries(new FormData(form));if(await action({action:"CREATE_FOLDER",...values}))form.reset();}}>
-          <select name="spaceId" required defaultValue={String(platformSpaces[0]?.id??"")}>{platformSpaces.map(space=><option key={String(space.id)} value={String(space.id)}>{String(space.name)}</option>)}</select>
-          <input name="name" required placeholder="新目录名称" />
-          <button>创建目录</button>
-        </form>}
-      </section>
-      <section className="platform-card wide-card">
-        <header>
           <h2>审批与版本轨迹</h2>
           <span>{data.approvals.length} 条</span>
         </header>
@@ -2113,8 +2233,8 @@ function PlatformView({
       {role === "SUPER_ADMIN" && (
         <section className="platform-card wide-card">
           <header>
-            <h2>系统运行参数</h2>
-            <span>AI 权重请在平台管理中成组调整</span>
+            <h2>业务运行参数</h2>
+            <span>检索与自动化参数请在“系统运行与自动化”中统一调整</span>
           </header>
           {data.settings.filter(setting=>!["hybrid.vector_weight","hybrid.keyword_weight","rag.top_k"].includes(String(setting.key))).map((setting) => (
             <form
@@ -2145,8 +2265,8 @@ function PlatformView({
       )}
       <section className="platform-card wide-card" style={{marginTop:18}}>
         <header>
-          <h2>🤖 Agent 诊断</h2>
-          <span>AI 自主巡检知识库</span>
+          <h2>智能治理助手</h2>
+          <span>自动巡检知识质量并生成治理建议</span>
         </header>
         <div style={{padding:"0 18px 12px"}}>
           <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap"}}>
@@ -2174,15 +2294,16 @@ function EnterprisePanels({
   role,
   notify,
   onConfigurationChange,
+  section,
 }: {
   role: string;
   notify: (message: string) => void;
   onConfigurationChange: (data:Record<string,Record<string,unknown>[]>)=>void;
+  section: "knowledge" | "security" | "operations";
 }) {
   const [evalResult, setEvalResult] = useState<{total:number;passed:number;failed:number;results:Array<{caseId:number;question:string;recall:number;keyword:number;status:string}>}|null>(null);
   const [evalRunning, setEvalRunning] = useState(false);
   const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string;code?:string;deptId?:number|null;references?:number;targetId?:number}|null>(null);
-  const [editingGroup,setEditingGroup]=useState<Record<string,unknown>|null>(null);
   const [editingCategory,setEditingCategory]=useState<Record<string,unknown>|null>(null);
   const [data, setData] = useState<Record<
     string,
@@ -2231,10 +2352,10 @@ function EnterprisePanels({
     retention = data.retention ?? [];
   return (
     <>
-      <div className="platform-grid">
+      {section === "knowledge" && <div className="platform-grid">
         <section className="platform-card">
           <header>
-            <h2>分类与用户组</h2>
+            <h2>知识分类</h2>
             <span>
               {categories.length} 个分类
             </span>
@@ -2269,18 +2390,7 @@ function EnterprisePanels({
           </form>
         </section>
         <section className="platform-card">
-          <header><h2>用户组</h2><span>{groups.length} 个组</span></header>
-          {groups.map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.code)} · {item.dept_id?"部门级":"全局"} · {Number(item.member_count)||0} 人</small></div><button onClick={()=>setEditingGroup(item)}>成员</button><button onClick={()=>setPendingTaxonomyDelete({type:"GROUP",id:Number(item.id),name:String(item.name)})}>删除</button></div>)}
-          {!groups.length&&<p className="platform-empty">尚未配置用户组</p>}
-          <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const saved=await act({action:"SAVE_GROUP",...Object.fromEntries(new FormData(form))});if(saved)form.reset();}}>
-            <input name="name" required placeholder="用户组名称" />
-            <input name="code" required placeholder="用户组编码" />
-            <select name="deptId" defaultValue=""><option value="">全局用户组</option>{departments.map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}</option>)}</select>
-            <button>新增用户组</button>
-          </form>
-        </section>
-        <section className="platform-card">
-          <header><h2>业务标签</h2><span>{(data.tags??[]).length} 个标签</span></header>
+          <header><h2>知识标签</h2><span>{(data.tags??[]).length} 个标签</span></header>
           {(data.tags??[]).map(item=><div className="platform-row" key={String(item.id)}><div><b>{String(item.name)}</b><small>{String(item.department??"全局")} · 上传资料时自动联动</small></div><button onClick={()=>setPendingTaxonomyDelete({type:"TAG",id:Number(item.id),name:String(item.name)})}>删除</button></div>)}
           {!(data.tags??[]).length&&<p className="platform-empty">尚未配置业务标签</p>}
           <form className="inline-governance" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const saved=await act({action:"SAVE_TAG",...Object.fromEntries(new FormData(form))});if(saved)form.reset();}}>
@@ -2289,6 +2399,8 @@ function EnterprisePanels({
             <button>新增标签</button>
           </form>
         </section>
+      </div>}
+      {section === "security" && <div className="platform-grid">
         <section className="platform-card">
           <header>
             <h2>安全事件</h2>
@@ -2304,26 +2416,27 @@ function EnterprisePanels({
                   <small>
                     {String(item.severity)} · {String(item.detail)}
                   </small>
+                  <small>
+                    证据：{String(item.source_name || item.title || "平台操作记录")}
+                    {item.scan_status ? ` · 扫描 ${String(item.scan_status)}` : ""}
+                    {item.dlp_findings && String(item.dlp_findings) !== "[]" ? ` · ${String(item.dlp_findings)}` : ""}
+                  </small>
                 </div>
-                <button
-                  onClick={() =>
-                    act({ action: "RESOLVE_SECURITY", id: item.id })
-                  }
-                >
-                  关闭
-                </button>
+                {item.document_id && <button onClick={() => act({ action: "RESOLVE_SECURITY", id: item.id, resolution: "RESTRICT" })}>限制访问</button>}
+                {item.document_id && <button onClick={() => act({ action: "RESOLVE_SECURITY", id: item.id, resolution: "QUARANTINE" })}>隔离资料</button>}
+                <button onClick={() => act({ action: "RESOLVE_SECURITY", id: item.id, resolution: "ACKNOWLEDGE" })}>确认并关闭</button>
               </div>
             ))
           ) : (
             <p className="platform-empty">当前没有未处理安全事件</p>
           )}
         </section>
-      </div>
-      {role === "SUPER_ADMIN" && (
+      </div>}
+      {section === "operations" && role === "SUPER_ADMIN" && (
         <>
           <section className="platform-card wide-card">
             <header>
-              <h2>Prompt 版本与 RAG 评测</h2>
+              <h2>回答策略与效果评测</h2>
               <span>{cases.length} 条验收用例</span>
             </header>
             {prompts.map((item) => (
@@ -2425,7 +2538,7 @@ function EnterprisePanels({
           <div className="platform-grid">
             <section className="platform-card">
               <header>
-                <h2>外部知识连接器</h2>
+                <h2>数据源接入</h2>
             <span>{connectors.length} 个 · 可连接并测试</span>
               </header>
               {connectors.map((item) => (
@@ -2472,7 +2585,7 @@ function EnterprisePanels({
             </section>
             <section className="platform-card">
               <header>
-                <h2>备份与恢复验证</h2>
+                <h2>数据备份与恢复</h2>
                 <span>{backups.length} 份</span>
               </header>
               {backups.slice(0, 5).map((item) => (
@@ -2502,7 +2615,7 @@ function EnterprisePanels({
           </div>
           <section className="platform-card wide-card">
             <header>
-              <h2>Webhook 事件投递</h2>
+              <h2>事件通知集成</h2>
             <span>{webhooks.length} 个端点 · 支持签名投递与测试</span>
             </header>
             {webhooks.map((item) => (
@@ -2545,9 +2658,9 @@ function EnterprisePanels({
           </section>
         </>
       )}
-      <section className="platform-card wide-card">
+      {section === "security" && <section className="platform-card wide-card">
         <header>
-          <h2>保留期、法务留置与水印</h2>
+          <h2>数据保留与下载保护</h2>
           <span>{retention.length} 份资料</span>
         </header>
         {retention.slice(0, 12).map((item) => (
@@ -2586,14 +2699,13 @@ function EnterprisePanels({
                 type="checkbox"
                 defaultChecked={Boolean(item.watermark_enabled)}
               />{" "}
-              下载水印
+              下载追踪（PDF/文本写入水印）
             </label>
             <button>保存策略</button>
           </form>
         ))}
-      </section>
+      </section>}
       {pendingTaxonomyDelete&&<div className="modal-backdrop" onMouseDown={()=>setPendingTaxonomyDelete(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>×</button><span>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?"分类迁移":"配置删除确认"}</span><h2>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?`迁移“${pendingTaxonomyDelete.name}”下的资料`:`确认删除“${pendingTaxonomyDelete.name}”？`}</h2><p>{pendingTaxonomyDelete.type==="CATEGORY"?(pendingTaxonomyDelete.references?`当前关联 ${pendingTaxonomyDelete.references} 份有效资料。选择目标分类后，系统将批量迁移资料并停用原分类，全程记录审计。`:"该分类没有关联有效资料，可以直接删除。") :pendingTaxonomyDelete.type==="GROUP"?"未被权限引用的用户组将删除成员关系；已有权限引用时会安全停用，避免现有访问权限失效。":"未使用标签可直接删除；仍有关联资料时系统会阻止删除，避免历史标签静默丢失。"}</p>{pendingTaxonomyDelete.type==="CATEGORY"&&Boolean(pendingTaxonomyDelete.references)&&<label style={{display:"grid",gap:6,textAlign:"left"}}>迁移到<select value={pendingTaxonomyDelete.targetId??""} onChange={e=>setPendingTaxonomyDelete(current=>current?{...current,targetId:Number(e.target.value)}:null)}><option value="">请选择目标分类</option>{categories.filter(item=>Number(item.id)!==pendingTaxonomyDelete.id&&(!pendingTaxonomyDelete.deptId?!item.dept_id:(!item.dept_id||Number(item.dept_id)===pendingTaxonomyDelete.deptId))).map(item=><option key={String(item.id)} value={String(item.id)}>{String(item.name)}{item.dept_id?"（本部门）":"（全局）"}</option>)}</select></label>}<div><button type="button" onClick={()=>setPendingTaxonomyDelete(null)}>取消</button><button className="primary-action" disabled={pendingTaxonomyDelete.type==="CATEGORY"&&Boolean(pendingTaxonomyDelete.references)&&!pendingTaxonomyDelete.targetId} onClick={async()=>{const target=pendingTaxonomyDelete;const actionName=target.type==="CATEGORY"&&target.references?"MIGRATE_CATEGORY":target.type==="CATEGORY"?"DELETE_CATEGORY":target.type==="GROUP"?"DELETE_GROUP":"DELETE_TAG";const saved=await act({action:actionName,id:target.id,targetId:target.targetId});if(saved)setPendingTaxonomyDelete(null);}}>{pendingTaxonomyDelete.type==="CATEGORY"&&pendingTaxonomyDelete.references?"迁移并停用":"确认删除"}</button></div></section></div>}
-      {editingGroup&&<div className="modal-backdrop" onMouseDown={()=>setEditingGroup(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={async e=>{e.preventDefault();const fd=new FormData(e.currentTarget);const saved=await act({action:"SAVE_GROUP",id:editingGroup.id,name:editingGroup.name,code:editingGroup.code,deptId:editingGroup.dept_id??"",userIds:fd.getAll("userIds").map(Number)});if(saved)setEditingGroup(null);}}><button type="button" onClick={()=>setEditingGroup(null)}>×</button><span>用户组成员</span><h2>{String(editingGroup.name)}</h2><p>成员变化会立即影响该用户组后续授权；既有文档权限无需重复配置。</p><div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,maxHeight:260,overflow:"auto",textAlign:"left"}}>{(data.users??[]).filter(user=>!editingGroup.dept_id||Number(user.dept_id)===Number(editingGroup.dept_id)).map(user=><label key={`${user.id}-${user.dept_id}`} style={{display:"flex",alignItems:"center",gap:6}}><input type="checkbox" name="userIds" value={String(user.id)} defaultChecked={String(editingGroup.member_ids??"").split(",").includes(String(user.id))}/>{String(user.display_name)}</label>)}</div><div><button type="button" onClick={()=>setEditingGroup(null)}>取消</button><button className="primary-action">保存成员</button></div></form></div>}
       {editingCategory&&<div className="modal-backdrop" onMouseDown={()=>setEditingCategory(null)}><form className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()} onSubmit={async e=>{e.preventDefault();const name=String(new FormData(e.currentTarget).get("name")||"");const saved=await act({action:"RENAME_CATEGORY",id:editingCategory.id,name});if(saved)setEditingCategory(null);}}><button type="button" onClick={()=>setEditingCategory(null)}>×</button><span>分类重命名</span><h2>{String(editingCategory.name)}</h2><p>名称变更会同步到该分类下所有文档、目录筛选和上传表单，并写入审计日志。</p><input name="name" required defaultValue={String(editingCategory.name)} maxLength={60}/><div><button type="button" onClick={()=>setEditingCategory(null)}>取消</button><button className="primary-action">保存新名称</button></div></form></div>}
     </>
   );
@@ -2635,9 +2747,9 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
     <main className="workspace">
       <section className="admin-heading">
         <div>
-          <span className="page-kicker">PLATFORM ADMIN</span>
-          <h1>平台管理</h1>
-          <p>定时任务、AI 检索参数与语义索引维护。</p>
+          <span className="page-kicker">SYSTEM OPERATIONS</span>
+          <h1>系统运行与自动化</h1>
+          <p>统一管理知识库的自动任务、智能检索策略和语义索引运行状态。</p>
         </div>
         <div className="member-actions">
           <button className="outline-action" onClick={rebuildSemantic} disabled={Boolean(semanticProgress)}>
@@ -2646,7 +2758,7 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
         </div>
       </section>
       <section className="platform-card wide-card" style={{marginBottom:18}}>
-        <header><h2>⏰ 定时任务</h2></header>
+        <header><div><h2>自动化任务</h2><p>按计划执行到期检查、知识治理和系统维护；停用后对应任务将不再自动运行。</p></div></header>
         {tasks.map(t => (
           <div key={t.id} className="scan-item" style={{margin:"0 18px 8px",borderLeft:`3px solid ${t.enabled?"#16796d":"#ccc"}`}}>
             <div>
@@ -2669,29 +2781,46 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
       {role === "SUPER_ADMIN" && (
         <>
           <section className="platform-card wide-card" style={{marginBottom:18}}>
-            <header><h2>AI 检索参数</h2></header>
+            <header><div><h2>智能检索策略</h2><p>控制语义召回、关键词命中和交给模型的知识片段数量。</p></div></header>
             <form onSubmit={e=>{e.preventDefault();const fd=new FormData(e.currentTarget);action({action:"UPDATE_SETTINGS",settings:Object.fromEntries(fd)})}}>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,padding:12}}>
-                <label style={{fontSize:9}}>向量权重<input name="hybrid.vector_weight" value={aiSettings['hybrid.vector_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.vector_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
-                <label style={{fontSize:9}}>关键词权重<input name="hybrid.keyword_weight" value={aiSettings['hybrid.keyword_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.keyword_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
-                <label style={{fontSize:9}}>Top-K<input name="rag.top_k" value={aiSettings['rag.top_k']??''} onChange={e=>setAiSettings(current=>({...current,'rag.top_k':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>语义召回权重<small>理解相近表达，建议 0.6–0.8</small><input name="hybrid.vector_weight" value={aiSettings['hybrid.vector_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.vector_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>关键词命中权重<small>匹配标题和正文中的准确词语</small><input name="hybrid.keyword_weight" value={aiSettings['hybrid.keyword_weight']??''} onChange={e=>setAiSettings(current=>({...current,'hybrid.keyword_weight':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
+                <label style={{fontSize:9}}>引用片段数量<small>每次最多交给模型的知识片段，建议 3–8</small><input name="rag.top_k" value={aiSettings['rag.top_k']??''} onChange={e=>setAiSettings(current=>({...current,'rag.top_k':e.target.value}))} placeholder="读取中" style={{width:"100%",padding:4,border:"1px solid #d4dde2",borderRadius:4}} /></label>
               </div>
               <button style={{margin:"0 12px 12px",padding:"6px 14px",border:0,borderRadius:6,background:"#16796d",color:"white",fontSize:9,cursor:"pointer"}}>保存</button>
             </form>
           </section>
-          <EnterprisePanels role={role} notify={notify} onConfigurationChange={onConfigurationChange} />
+          <EnterprisePanels role={role} notify={notify} onConfigurationChange={onConfigurationChange} section="operations" />
         </>
       )}
     </main>
   );
 }
 
+function KnowledgeSystemView({role,notify,onConfigurationChange}:{role:string;notify:(message:string)=>void;onConfigurationChange:(data:Record<string,Record<string,unknown>[]>)=>void}){
+  return <main className="workspace"><section className="admin-heading"><div><span className="page-kicker">KNOWLEDGE ARCHITECTURE</span><h1>知识体系</h1><p>统一维护知识空间、目录、分类和标签，配置变化会同步到上传、筛选和资料详情。</p></div></section><KnowledgeSpacePanel role={role} notify={notify}/><EnterprisePanels role={role} notify={notify} onConfigurationChange={onConfigurationChange} section="knowledge" /></main>;
+}
+
+function KnowledgeSpacePanel({role,notify}:{role:string;notify:(message:string)=>void}){
+  const [spaces,setSpaces]=useState<Record<string,unknown>[]>([]);
+  async function load(){const response=await fetch("/api/platform",{cache:"no-store"}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"知识空间加载失败");setSpaces(payload.data.spaces??[]);}
+  useEffect(()=>{const timer=window.setTimeout(load,0);return()=>window.clearTimeout(timer);},[]);// eslint-disable-line react-hooks/exhaustive-deps
+  async function save(body:Record<string,unknown>,form:HTMLFormElement){const response=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"保存失败");form.reset();await load();notify("知识空间与目录已更新，并同步到上传表单");}
+  const unique=Array.from(new Map(spaces.map(item=>[Number(item.id),item])).values());
+  return <section className="platform-card wide-card" style={{marginBottom:18}}><header><div><h2>知识空间与目录</h2><p>空间用于部门或主题级隔离，目录用于空间内的层级组织。</p></div><span>{unique.length} 个空间</span></header><div className="space-grid">{spaces.map((space,index)=><div key={`${space.id}-${space.folder_id}-${index}`}><b>{String(space.name)}</b><span>{space.folder_name?String(space.folder_name):"根目录"}</span><small>{String(space.document_count??0)} 份资料</small></div>)}</div>{role==="SUPER_ADMIN"&&<form className="inline-governance" onSubmit={e=>{e.preventDefault();save({action:"CREATE_SPACE",...Object.fromEntries(new FormData(e.currentTarget))},e.currentTarget);}}><input name="name" required placeholder="新空间名称"/><input name="code" required placeholder="唯一编码"/><button>创建空间</button></form>}{Boolean(unique.length)&&<form className="inline-governance" onSubmit={e=>{e.preventDefault();save({action:"CREATE_FOLDER",...Object.fromEntries(new FormData(e.currentTarget))},e.currentTarget);}}><select name="spaceId" required defaultValue={String(unique[0]?.id??"")}>{unique.map(space=><option key={String(space.id)} value={String(space.id)}>{String(space.name)}</option>)}</select><input name="name" required placeholder="新目录名称"/><button>创建目录</button></form>}</section>;
+}
+
 function AuditView({
   logs,
   documents,
+  role,
+  notify,
 }: {
   logs: AuditLog[];
   documents: KnowledgeDocument[];
+  role: string;
+  notify: (message:string)=>void;
 }) {
   const action: Record<string, string> = {
     VIEW: "查看",
@@ -2712,8 +2841,8 @@ function AuditView({
       <section className="admin-heading">
         <div>
           <span className="page-kicker">AUDIT TRAIL</span>
-          <h1>审计日志</h1>
-          <p>追踪资料、成员与权限的全部关键操作。</p>
+          <h1>安全与审计</h1>
+          <p>处置知识安全风险、执行数据合规策略并追踪全部关键操作。</p>
         </div>
         <button
           className="outline-action"
@@ -2728,6 +2857,7 @@ function AuditView({
           导出 CSV
         </button>
       </section>
+      <EnterprisePanels role={role} notify={notify} onConfigurationChange={()=>undefined} section="security" />
       <section className="audit-card">
         {logs.map((log) => (
           <div className="audit-item" key={log.id}>
@@ -2753,6 +2883,26 @@ function AuditView({
       </section>
     </main>
   );
+}
+
+function GroupManagementPanel({notify}:{notify:(message:string)=>void}){
+  const [data,setData]=useState<{groups:Record<string,unknown>[];departments:Record<string,unknown>[];users:Record<string,unknown>[]}>({groups:[],departments:[],users:[]});
+  const [editor,setEditor]=useState<Record<string,unknown>|null>(null);
+  const [usage,setUsage]=useState<Record<string,unknown>|null>(null);
+  const [pendingDelete,setPendingDelete]=useState<Record<string,unknown>|null>(null);
+  async function load(){const response=await fetch("/api/enterprise",{cache:"no-store"}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"用户组加载失败");setData({groups:payload.data.groups??[],departments:payload.data.departments??[],users:payload.data.users??[]});}
+  useEffect(()=>{const timer=window.setTimeout(load,0);return()=>window.clearTimeout(timer);},[]);// eslint-disable-line react-hooks/exhaustive-deps
+  function newCode(){return `GROUP_${Date.now().toString(36).toUpperCase()}`.slice(0,30);}
+  function openEditor(group?:Record<string,unknown>){setEditor(group?{...group,userIds:String(group.member_ids??"").split(",").filter(Boolean).map(Number)}:{name:"",code:newCode(),dept_id:"",description:"",userIds:[]});}
+  async function saveGroup(){if(!editor)return;const response=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_GROUP",id:editor.id,name:editor.name,code:editor.code,deptId:editor.dept_id,description:editor.description,userIds:editor.userIds})}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"用户组保存失败");setEditor(null);await load();notify(payload.data?.message??"用户组已保存");}
+  async function deleteGroup(){if(!pendingDelete)return;const response=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"DELETE_GROUP",id:pendingDelete.id})}),payload=await response.json();if(!response.ok)return notify(payload.error?.message??"用户组停用失败");setPendingDelete(null);await load();notify(payload.data?.message??"用户组已停用");}
+  const selectedDept=Number(editor?.dept_id)||null;
+  const eligibleUsers=Array.from(new Map(data.users.filter(user=>!selectedDept||Number(user.dept_id)===selectedDept).map(user=>[Number(user.id),user])).values());
+  return <section className="platform-card wide-card" style={{marginTop:16,marginBottom:16}}><header><div><h2>用户组与批量授权</h2><p>将项目组、管理层等人员集合授权给文档或知识空间，成员变化后权限自动继承。</p></div><button className="primary-action" onClick={()=>openEditor()}>＋ 新建用户组</button></header>{data.groups.length?data.groups.map(group=><div className="platform-row" key={String(group.id)}><div><b>{String(group.name)}</b><small>{group.dept_id?"部门组":"全局组"} · {Number(group.member_count)||0} 名成员 · {Number(group.document_permission_count)||0} 份文档 · {Number(group.space_permission_count)||0} 个空间</small>{group.description&&<small>{String(group.description)}</small>}</div><button onClick={()=>setUsage(group)}>查看权限</button><button onClick={()=>openEditor(group)}>编辑</button><button onClick={()=>setPendingDelete(group)}>停用</button></div>):<p className="platform-empty">尚未创建用户组。只有需要跨人员批量授权时才需要配置。</p>}
+  {editor&&<div className="modal-backdrop" onMouseDown={()=>setEditor(null)}><section className="upload-modal" style={{width:"min(620px,94vw)",maxHeight:"86vh",overflow:"auto"}} onMouseDown={e=>e.stopPropagation()}><header><div><span className="page-kicker">ACCESS GROUP</span><h2>{editor.id?"编辑用户组":"新建用户组"}</h2><p>填写名称、适用范围和成员；系统编码已自动生成，一般无需修改。</p></div><button onClick={()=>setEditor(null)}>×</button></header><div className="form-grid"><label><span>用户组名称 *</span><input value={String(editor.name??"")} onChange={e=>setEditor({...editor,name:e.target.value})} placeholder="例如：融资项目组"/></label><label><span>系统编码 *</span><input value={String(editor.code??"")} onChange={e=>setEditor({...editor,code:e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g,"_")})}/><small>用于接口和审计，创建后建议保持稳定</small></label><label><span>适用范围</span><select value={String(editor.dept_id??"")} onChange={e=>setEditor({...editor,dept_id:e.target.value,userIds:[]})}><option value="">全局用户组（可选跨部门成员）</option>{data.departments.map(dept=><option key={String(dept.id)} value={String(dept.id)}>{String(dept.name)}（仅本部门）</option>)}</select></label><label><span>用途说明</span><input value={String(editor.description??"")} onChange={e=>setEditor({...editor,description:e.target.value})} placeholder="例如：融资尽调资料授权"/></label></div><div style={{marginTop:16}}><b>选择成员</b><p style={{fontSize:9,color:"#7b9089"}}>创建时即可配置，后续增减成员会自动影响用户组授权。</p><div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8,maxHeight:250,overflow:"auto",padding:10,border:"1px solid #e1ebe7",borderRadius:8}}>{eligibleUsers.map(user=><label key={String(user.id)} style={{display:"flex",gap:7,alignItems:"center"}}><input type="checkbox" checked={(editor.userIds as number[]??[]).includes(Number(user.id))} onChange={e=>{const ids=editor.userIds as number[]??[];setEditor({...editor,userIds:e.target.checked?[...ids,Number(user.id)]:ids.filter(id=>id!==Number(user.id))})}}/>{String(user.display_name)}</label>)}</div></div><footer><button onClick={()=>setEditor(null)}>取消</button><button className="primary-action" disabled={!String(editor.name??"").trim()||!String(editor.code??"").trim()} onClick={saveGroup}>保存用户组</button></footer></section></div>}
+  {usage&&<div className="modal-backdrop" onMouseDown={()=>setUsage(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button onClick={()=>setUsage(null)}>×</button><span>授权使用情况</span><h2>{String(usage.name)}</h2><p>文档授权：{Number(usage.document_permission_count)||0} 份<br/>{String(usage.document_names||"暂无")}</p><p>知识空间授权：{Number(usage.space_permission_count)||0} 个<br/>{String(usage.space_names||"暂无")}</p><div><button className="primary-action" onClick={()=>setUsage(null)}>知道了</button></div></section></div>}
+  {pendingDelete&&<div className="modal-backdrop" onMouseDown={()=>setPendingDelete(null)}><section className="feedback-modal workflow-modal" onMouseDown={e=>e.stopPropagation()}><button onClick={()=>setPendingDelete(null)}>×</button><span>停用用户组</span><h2>{String(pendingDelete.name)}</h2><p>{Number(pendingDelete.document_permission_count)+Number(pendingDelete.space_permission_count)>0?`该组仍有 ${Number(pendingDelete.document_permission_count)+Number(pendingDelete.space_permission_count)} 项授权。停用后保留既有权限，避免业务访问突然中断，但不再允许新增授权。`:"该组没有权限引用，停用时会同时清理成员关系。"}</p><div><button onClick={()=>setPendingDelete(null)}>取消</button><button className="primary-action" onClick={deleteGroup}>确认停用</button></div></section></div>}
+  </section>;
 }
 
 function AccountAdminView({ notify }: { notify: (message: string) => void }) {
@@ -2962,6 +3112,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
           身份由企业统一登录确认；系统按成员目录中的部门和角色授权，不保存员工密码。
         </p>
       </div>
+      <GroupManagementPanel notify={notify} />
       <section className="platform-card" style={{marginTop:16,marginBottom:16}}>
         <header><h2>角色管理</h2><span>{allRoles.length} 个角色</span></header>
         <div style={{display:"flex",flexWrap:"wrap",gap:8,padding:12}}>
@@ -3276,6 +3427,14 @@ function DocumentDrawer({
           <h2>{doc.title}</h2>
           <p>{doc.summary || "暂无摘要"}</p>
         </header>
+        {doc.tags && (
+          <div className="document-tag-strip" aria-label="知识标签">
+            <span>知识标签</span>
+            {doc.tags.split(",").map((tag) => tag.trim()).filter(Boolean).map((tag) => (
+              <b key={tag}>{tag}</b>
+            ))}
+          </div>
+        )}
         <div className="drawer-actions">
           {doc.canEdit && (
             <button onClick={() => setEditing((value) => !value)}>

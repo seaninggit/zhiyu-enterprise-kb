@@ -6,6 +6,8 @@ import { runGovernanceMaintenance } from "../../../lib/governance";
 import { deleteKnowledgeFile, hasKnowledgeFileStorage, putKnowledgeFile } from "../../../lib/knowledge-files";
 import { assertPublishReady } from "../../../lib/publish-readiness";
 import { resolveDocumentTransition, WorkflowAction, WorkflowStatus } from "../../../lib/workflow";
+import { notifyUser } from "../../../lib/notifications";
+import { resolvePublishedFeedback } from "../../../lib/governance-feedback";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
 
@@ -17,6 +19,12 @@ export async function GET(request: Request) {
     await runGovernanceMaintenance().catch(()=>undefined);
     const access=documentListScope(ctx,"d");const where=access.sql,binds=access.binds;
     const result = await db.prepare(`SELECT d.*, u.display_name AS creator_name, dep.name AS department_name,
+      (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action='SUBMIT') AS submitted_at,
+      (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action='APPROVE') AS approved_at,
+      (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action='REJECT') AS rejected_at,
+      (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action IN ('ARCHIVE','VOID')) AS voided_at,
+      (SELECT MAX(v.create_time) FROM document_versions v WHERE v.document_id=d.id) AS last_version_at,
+      (SELECT MAX(j.update_time) FROM ingestion_jobs j WHERE j.document_id=d.id AND j.status='COMPLETED') AS ingested_at,
       COALESCE((SELECT GROUP_CONCAT(t.name) FROM document_tags dt JOIN tags t ON t.id=dt.tag_id WHERE dt.document_id=d.id),'') AS tags
       FROM documents d JOIN users u ON u.id=d.create_user_id JOIN departments dep ON dep.id=d.dept_id
       WHERE ${where} ORDER BY d.update_time DESC, d.id DESC LIMIT 500`).bind(...binds).all();
@@ -128,8 +136,12 @@ export async function PATCH(request: Request) {
       db.prepare("UPDATE documents SET status=?,published_version=CASE WHEN ?='ARCHIVED_ACTIVE' THEN version ELSE published_version END,published_title=CASE WHEN ?='ARCHIVED_ACTIVE' THEN title ELSE published_title END,published_summary=CASE WHEN ?='ARCHIVED_ACTIVE' THEN summary ELSE published_summary END,published_content=CASE WHEN ?='ARCHIVED_ACTIVE' THEN content ELSE published_content END,verification_status=CASE WHEN ?='ARCHIVED_ACTIVE' THEN 'VERIFIED' ELSE verification_status END,verified_at=CASE WHEN ?='ARCHIVED_ACTIVE' THEN CURRENT_TIMESTAMP ELSE verified_at END,update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(target,target,target,target,target,target,target,ctx.userId,payload.id),
       db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, creatorId, ctx.userId, payload.action.toUpperCase(), comment),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.id, deptId, payload.action.toUpperCase(), ctx.userId, ctx.displayName, `状态更新为 ${target}`, rid),
-      db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,?,?,?,?)").bind(creatorId,payload.action.toUpperCase(),payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新",comment||String(doc.title),payload.id),
     ]);
+    const workflowTitle=payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新";
+    const workflowContent=payload.action==="approve"?`《${String(doc.title)}》已审批通过并发布，当前版本 V${String(doc.version)}.0。`:payload.action==="reject"?`《${String(doc.title)}》被驳回：${comment}`:`《${String(doc.title)}》状态已更新为 ${target}。`;
+    const recipients=Array.from(new Set([creatorId,Number(doc.owner_user_id||creatorId)])).filter(id=>id>0);
+    for(const userId of recipients)await notifyUser({userId,type:payload.action.toUpperCase(),title:workflowTitle,content:workflowContent,documentId:payload.id,requestId:rid,email:["approve","reject"].includes(payload.action)});
+    if(target==="ARCHIVED_ACTIVE")await resolvePublishedFeedback({documentId:payload.id,actorUserId:ctx.userId,actorName:ctx.displayName,requestId:rid});
     if (target === "ARCHIVED_ACTIVE") { const { processDocument }=await import("../../../lib/ingestion"); await processDocument(payload.id).catch(async error => {
       await db.prepare("UPDATE documents SET ai_index_status='FAILED' WHERE id=?").bind(payload.id).run();
       console.error(JSON.stringify({ level: "error", requestId: rid, action: "AI_INDEX", documentId: payload.id, message: error instanceof Error ? error.message : "索引失败" }));

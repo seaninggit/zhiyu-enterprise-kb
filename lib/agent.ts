@@ -8,7 +8,8 @@ import { env } from "cloudflare:workers";
 import { getD1 } from "../db";
 import { safeText } from "./api";
 import { type AuthContext } from "./authz";
-import { publishedDocumentScope } from "./document-access";
+import { canReadDocument, documentListScope, publishedDocumentScope } from "./document-access";
+import { notifyUser } from "./notifications";
 
 type RuntimeEnv = { AI_PROVIDER?: string; AI_CHAT_MODEL?: string; AI_BASE_URL?: string; DEEPSEEK_API_KEY?: string; OPENAI_API_KEY?: string; };
 function runtime() { return env as unknown as RuntimeEnv; }
@@ -103,7 +104,7 @@ const TOOLS = [
     type: "function" as const,
     function: {
       name: "batch_archive",
-      description: "批量作废指定文档。操作将写入审计日志。仅管理员可用。",
+      description: "提交批量作废建议并创建待人工确认的治理任务，不会由 Agent 直接作废文档。仅管理员可用。",
       parameters: {
         type: "object",
         properties: {
@@ -163,7 +164,7 @@ const TOOLS = [
 async function runSearchKnowledge(args: Record<string, unknown>, ctx: AuthContext) {
   const db = getD1();
   const query = safeText(args.query, 200);
-  const access = publishedDocumentScope(ctx, "d");
+  const access = documentListScope(ctx, "d");
   const chunks = await db
     .prepare(
       `SELECT c.id, c.content, c.chunk_index, d.id AS document_id, d.title, d.version, d.category, d.status, d.owner, d.update_time, dep.name AS department_name
@@ -222,16 +223,8 @@ async function runInspectDocument(args: Record<string, unknown>, ctx: AuthContex
 
   if (!doc) return JSON.stringify({ error: `文档 #${id} 不存在或已删除` });
 
-  // Check if user has access
-  const access = publishedDocumentScope(ctx, "d");
-  const hasAccess = await db
-    .prepare(
-      `SELECT 1 FROM documents d WHERE d.id = ? AND d.is_deleted = 0 AND (${access.sql})`,
-    )
-    .bind(id, ...access.binds)
-    .first();
-
-  if (!hasAccess) return JSON.stringify({ error: `无权访问文档 #${id}` });
+  if (!(await canReadDocument(doc, ctx)))
+    return JSON.stringify({ error: `无权访问文档 #${id}` });
 
   return JSON.stringify({
     id: doc.id,
@@ -261,7 +254,7 @@ async function runListDocuments(args: Record<string, unknown>, ctx: AuthContext)
 
   switch (status) {
     case "expired":
-      statusFilter = `AND d.status = 'EXPIRED_VOID' OR (d.review_due_at IS NOT NULL AND d.review_due_at < DATE('now'))`;
+      statusFilter = `AND (d.status = 'EXPIRED_VOID' OR (d.review_due_at IS NOT NULL AND d.review_due_at < DATE('now')))`;
       break;
     case "draft":
       statusFilter = `AND d.status = 'DRAFT'`;
@@ -273,7 +266,7 @@ async function runListDocuments(args: Record<string, unknown>, ctx: AuthContext)
       statusFilter = `AND d.status = 'ARCHIVED_ACTIVE'`;
       break;
     case "failed_parse":
-      statusFilter = `AND d.parse_status = 'FAILED'`;
+      statusFilter = `AND d.parse_status IN ('FAILED','OCR_FAILED','NEEDS_CONTENT')`;
       break;
   }
 
@@ -368,7 +361,7 @@ async function runBatchArchive(args: Record<string, unknown>, ctx: AuthContext) 
   if (!ids.length) return JSON.stringify({ error: "未提供有效的文档ID" });
   if (ids.length > 20) return JSON.stringify({ error: "单次最多作废20份文档" });
 
-  const results: { id: number; title: string; archived: boolean; error?: string }[] = [];
+  const results: { id: number; title: string; proposed: boolean; error?: string }[] = [];
 
   for (const id of ids) {
     try {
@@ -378,44 +371,29 @@ async function runBatchArchive(args: Record<string, unknown>, ctx: AuthContext) 
         .first<Record<string, unknown>>();
 
       if (!doc) {
-        results.push({ id, title: `#${id}`, archived: false, error: "不存在" });
+        results.push({ id, title: `#${id}`, proposed: false, error: "不存在" });
         continue;
       }
       if (ctx.role !== "SUPER_ADMIN" && !ctx.deptIds.includes(Number(doc.dept_id))) {
-        results.push({ id, title: String(doc.title), archived: false, error: "无权管理该部门" });
+        results.push({ id, title: String(doc.title), proposed: false, error: "无权管理该部门" });
         continue;
       }
       if (String(doc.status) === "EXPIRED_VOID") {
-        results.push({ id, title: String(doc.title), archived: false, error: "已作废" });
+        results.push({ id, title: String(doc.title), proposed: false, error: "已作废" });
         continue;
       }
 
+      const assignee=Number(doc.owner_user_id||doc.create_user_id);
       await db.batch([
-        db
-          .prepare(
-            "UPDATE documents SET status = 'EXPIRED_VOID', update_user_id = ?, update_time = CURRENT_TIMESTAMP WHERE id = ?",
-          )
-          .bind(ctx.userId, id),
-        db
-          .prepare(
-            "INSERT INTO approval_records(document_id, applicant_user_id, approver_user_id, action, comment) VALUES(?, ?, ?, 'REJECT', ?)",
-          )
-          .bind(id, Number(doc.create_user_id), ctx.userId, `[Agent 批量作废] ${reason}`),
-        db
-          .prepare(
-            "INSERT INTO audit_logs(document_id, dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?, ?, 'AGENT_ARCHIVE', ?, ?, ?, ?)",
-          )
-          .bind(id, doc.dept_id, ctx.userId, ctx.displayName, `${reason}（Agent 执行）`, `agent-${Date.now()}`),
-        db
-          .prepare(
-            "UPDATE document_chunks SET is_active = 0 WHERE document_id = ?",
-          )
-          .bind(id),
+        db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('EXPIRED','OPEN',?,?,?,?,?,?)")
+          .bind(doc.dept_id,id,ctx.userId,assignee,"Agent 建议作废",reason),
+        db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'AGENT_ARCHIVE_PROPOSED',?,?,?,?)")
+          .bind(id,doc.dept_id,ctx.userId,ctx.displayName,reason,`agent-${Date.now()}`),
       ]);
-
-      results.push({ id, title: String(doc.title), archived: true });
+      await notifyUser({userId:assignee,type:"GOVERNANCE",title:"收到 Agent 作废建议",content:`《${String(doc.title)}》被识别为待作废资料：${reason}。请核查后由管理员执行。`,documentId:id,requestId:`agent-${Date.now()}`,email:false});
+      results.push({ id, title: String(doc.title), proposed: true });
     } catch (e) {
-      results.push({ id, title: `#${id}`, archived: false, error: e instanceof Error ? e.message : "作废失败" });
+      results.push({ id, title: `#${id}`, proposed: false, error: e instanceof Error ? e.message : "建议生成失败" });
     }
   }
 
@@ -431,28 +409,34 @@ async function runCreateGovernanceTask(args: Record<string, unknown>, ctx: AuthC
 
   if (!reason) return JSON.stringify({ error: "任务原因不能为空" });
 
+  let deptId=ctx.primaryDeptId,assignee=ctx.userId;
+  if(documentId){
+    const doc=await db.prepare("SELECT dept_id,owner_user_id,create_user_id FROM documents WHERE id=? AND is_deleted=0").bind(documentId).first<Record<string,unknown>>();
+    if(!doc)return JSON.stringify({error:"关联文档不存在"});
+    if(ctx.role!=="SUPER_ADMIN"&&!ctx.deptIds.includes(Number(doc.dept_id)))return JSON.stringify({error:"无权为该部门创建治理任务"});
+    deptId=Number(doc.dept_id);assignee=Number(doc.owner_user_id||doc.create_user_id||ctx.userId);
+  }
   const result = await db
     .prepare(
-      "INSERT INTO knowledge_governance_tasks(type, status, dept_id, source_document_id, reporter_user_id, reason, detail) VALUES(?, 'OPEN', ?, ?, ?, ?, ?)",
+      "INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,reporter_user_id,assignee_user_id,reason,detail) VALUES(?,'OPEN',?,?,?,?,?,?,?)",
     )
-    .bind(type, ctx.primaryDeptId, documentId, ctx.userId, reason, detail)
+    .bind(type,deptId,documentId,ctx.userId,assignee,reason,detail)
     .run();
 
-  // 发送通知给任务创建人
-  await db.prepare("INSERT INTO notifications(user_id, type, title, content, document_id) VALUES(?, 'GOVERNANCE', ?, ?, ?)")
-    .bind(ctx.userId, `治理任务：${reason}`, detail, documentId).run();
+  await notifyUser({userId:assignee,type:"GOVERNANCE",title:`治理任务：${reason}`,content:detail||"请核查并处理该知识治理任务。",documentId,requestId:`agent-${Date.now()}`,email:false});
 
   await db
     .prepare(
       "INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(?, 'AGENT_GOVERNANCE_TASK', ?, ?, ?, ?)",
     )
-    .bind(ctx.primaryDeptId, ctx.userId, ctx.displayName, `${type}: ${reason}`, `agent-${Date.now()}`)
+    .bind(deptId, ctx.userId, ctx.displayName, `${type}: ${reason}`, `agent-${Date.now()}`)
     .run();
 
   return JSON.stringify({
     task_id: Number(result.meta.last_row_id),
     type,
     reason,
+    assignee_user_id:assignee,
     status: "OPEN",
   });
 }
@@ -523,7 +507,7 @@ const SYSTEM_PROMPT = `你是知域企业知识中台的治理智能助手。你
 核心原则：
 1. 每次回复简洁、可操作，用中文
 2. 先搜索/巡检了解情况，再提出建议，最后执行操作
-3. 批量操作前先向用户确认
+3. 高风险操作只生成治理建议，必须由管理员在业务页面确认执行
 4. 执行操作后汇报结果
 5. 治理任务类型：EXPIRED=过期, DUPLICATE=重复, QUALITY=质量, MISSING=缺失
 
@@ -531,7 +515,7 @@ const SYSTEM_PROMPT = `你是知域企业知识中台的治理智能助手。你
 - 巡检：用 list_documents 查看各状态文档 → 分析 → 给出治理建议
 - 通知：发现问题后用 send_email 发送邮件给管理员（邮箱 yangshanpm@163.com）
 - 诊断：用 inspect_document + find_similar 深入分析问题文档
-- 执行：用 batch_archive 作废、create_governance_task 建待办、send_email 发邮件通知
+- 执行：用 batch_archive 生成待人工确认的作废建议、create_governance_task 建待办、send_email 发邮件通知
 - 问答：用 search_knowledge 查找相关制度`;
 
 const MAX_ITERATIONS = 5;
@@ -701,4 +685,3 @@ export async function runAgent(
 
   return { answer: finalAnswer, toolCalls: toolCallLog, iterations };
 }
-

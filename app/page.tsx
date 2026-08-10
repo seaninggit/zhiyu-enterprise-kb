@@ -30,6 +30,12 @@ type View =
   | "audit"
   | "accounts"
   | "settings";
+const MIN_ACTION_FEEDBACK_MS = 360;
+const waitForVisibleFeedback = async (startedAt: number) => {
+  const remaining = MIN_ACTION_FEEDBACK_MS - (Date.now() - startedAt);
+  if (remaining > 0)
+    await new Promise((resolve) => window.setTimeout(resolve, remaining));
+};
 type DocumentStatus =
   | "draft"
   | "review"
@@ -386,6 +392,8 @@ export default function Home() {
   });
   const [notifications, setNotifications] = useState<Notice[]>([]);
   const [noticeOpen, setNoticeOpen] = useState(false);
+  const noticeButtonRef = useRef<HTMLButtonElement>(null);
+  const noticePanelRef = useRef<HTMLDivElement>(null);
   const [searchResults, setSearchResults] = useState<
     KnowledgeDocument[] | null
   >(null);
@@ -394,6 +402,7 @@ export default function Home() {
   const [searchCorrection, setSearchCorrection] =
     useState<QueryCorrection | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadOpening, setUploadOpening] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [toast, setToast] = useState("");
@@ -424,6 +433,30 @@ export default function Home() {
   const [governanceDialog, setGovernanceDialog] =
     useState<GovernanceTask | null>(null);
   const [governanceSubmitting, setGovernanceSubmitting] = useState(false);
+  useEffect(() => {
+    if (!noticeOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !noticePanelRef.current?.contains(target) &&
+        !noticeButtonRef.current?.contains(target)
+      )
+        setNoticeOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setNoticeOpen(false);
+        noticeButtonRef.current?.focus();
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [noticeOpen]);
+  useEffect(() => setNoticeOpen(false), [view]);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({
     departments: [
       {
@@ -550,6 +583,9 @@ export default function Home() {
     window.setTimeout(() => setToast(""), 2300);
   }
   async function openUpload(){
+    if(uploadOpening)return;
+    const feedbackStartedAt=Date.now();
+    setUploadOpening(true);
     try{
       const response=await fetch("/api/documents",{cache:"no-store"}),payload=await response.json();if(!response.ok)throw new Error(payload.error?.message??"上传配置加载失败");const data=payload.data??{};
       if(data.uploadOptions?.departments?.length)setUploadOptions(data.uploadOptions);
@@ -558,6 +594,7 @@ export default function Home() {
       if(Array.isArray(data.spaces))setKnowledgeSpaces(data.spaces.map((item:Record<string,unknown>)=>({id:Number(item.id),dept_id:item.dept_id?Number(item.dept_id):null,name:String(item.name),folder_id:item.folder_id?Number(item.folder_id):null,folder_name:item.folder_name?String(item.folder_name):null,parent_id:item.parent_id?Number(item.parent_id):null})));
       if(data.uploadConfig)setUploadConfig(data.uploadConfig);setUploadOpen(true);
     }catch(error){notify(error instanceof Error?error.message:"上传配置加载失败");}
+    finally{await waitForVisibleFeedback(feedbackStartedAt);setUploadOpening(false);}
   }
   async function refreshGovernanceTasks() {
     const response = await fetch("/api/documents", { cache: "no-store" });
@@ -643,6 +680,7 @@ export default function Home() {
       setSearchCorrection(null);
       return;
     }
+    const feedbackStartedAt = Date.now();
     setSearchLoading(true);
     try {
       const queryEmbedding = (await embedLocally([query]).catch(() => []))[0];
@@ -667,6 +705,7 @@ export default function Home() {
     } catch (error) {
       notify(error instanceof Error ? error.message : "检索失败");
     } finally {
+      await waitForVisibleFeedback(feedbackStartedAt);
       setSearchLoading(false);
     }
   }
@@ -1111,18 +1150,28 @@ export default function Home() {
               }}
               placeholder="搜索标题、正文、标签、负责人..."
             />
-            <button onClick={() => runSearch()}>
-              {searchLoading ? "检索中" : "搜索"}
+            <button
+              className={searchLoading ? "is-loading" : undefined}
+              disabled={searchLoading || !query.trim()}
+              aria-busy={searchLoading}
+              onClick={() => runSearch()}
+            >
+              {searchLoading && <i className="button-spinner" aria-hidden="true" />}
+              {searchLoading ? "检索中…" : "搜索"}
             </button>
           </div>
           <button
+            ref={noticeButtonRef}
             className="header-icon"
+            aria-label="查看消息"
+            aria-haspopup="dialog"
+            aria-expanded={noticeOpen}
             onClick={() => setNoticeOpen((value) => !value)}
           >
             ♢{notifications.some((n) => !n.is_read) && <i />}
           </button>
           {noticeOpen && (
-            <div className="notice-panel">
+            <div className="notice-panel" ref={noticePanelRef} role="dialog" aria-label="消息中心">
               <header>
                 <b>消息中心</b>
                 <button onClick={() => markNoticesRead()}>全部已读</button>
@@ -1149,10 +1198,13 @@ export default function Home() {
             </div>
           )}
           <button
-            className="primary-action"
+            className={`primary-action${uploadOpening ? " is-loading" : ""}`}
+            disabled={uploadOpening}
+            aria-busy={uploadOpening}
             onClick={openUpload}
           >
-            ＋ 上传资料
+            {uploadOpening && <i className="button-spinner" aria-hidden="true" />}
+            {uploadOpening ? "加载上传配置…" : "＋ 上传资料"}
           </button>
         </header>
 

@@ -32,7 +32,7 @@ const DEMO_DEPARTMENT: Record<
 > = {
   SUPER_ADMIN: { deptId: 1, code: "GENERAL", name: "综合管理部", isDeptAdmin: 0 },
   DEPT_ADMIN: { deptId: 2, code: "PRODUCT", name: "产品研发部", isDeptAdmin: 1 },
-  EMPLOYEE: { deptId: 3, code: "HR", name: "组织人事部", isDeptAdmin: 0 },
+  EMPLOYEE: { deptId: 2, code: "PRODUCT", name: "产品研发部", isDeptAdmin: 0 },
 };
 
 function demoRoleCode(role: DemoRole): string {
@@ -42,9 +42,22 @@ function demoRoleCode(role: DemoRole): string {
 async function ensureIdentityRecord(email: string, displayName: string) {
   const db = getDb();
   const found = await db.select().from(users).where(eq(users.email, email)).limit(1);
-  if (found.length) return;
   const d1 = getD1();
   const demoRole = demoRoleFromEmail(email);
+  if (found.length && demoRole) {
+    const dept = DEMO_DEPARTMENT[demoRole];
+    const roleCode = demoRoleCode(demoRole);
+    await d1.batch([
+      d1.prepare("DELETE FROM user_departments WHERE user_id=(SELECT id FROM users WHERE email=?)").bind(email),
+      d1.prepare("INSERT INTO user_departments(user_id,dept_id,is_primary,is_dept_admin) SELECT id,?,1,? FROM users WHERE email=?").bind(dept.deptId,dept.isDeptAdmin,email),
+      d1.prepare("DELETE FROM user_roles WHERE user_id=(SELECT id FROM users WHERE email=?)").bind(email),
+      d1.prepare("INSERT INTO user_roles(user_id,role_id) SELECT u.id,r.id FROM users u CROSS JOIN roles r WHERE u.email=? AND r.code=?").bind(email,roleCode),
+      d1.prepare("UPDATE documents SET dept_id=?,update_time=CURRENT_TIMESTAMP WHERE create_user_id=(SELECT id FROM users WHERE email=?) AND status IN ('DRAFT','PENDING_DEPT_REVIEW')").bind(dept.deptId,email),
+      d1.prepare("UPDATE knowledge_governance_tasks SET dept_id=? WHERE source_document_id IN (SELECT id FROM documents WHERE create_user_id=(SELECT id FROM users WHERE email=?)) AND status IN ('OPEN','IN_PROGRESS')").bind(dept.deptId,email),
+    ]);
+    return;
+  }
+  if (found.length) return;
   if (demoRole) {
     const dept = DEMO_DEPARTMENT[demoRole];
     const roleCode = demoRoleCode(demoRole);

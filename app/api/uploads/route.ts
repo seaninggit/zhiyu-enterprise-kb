@@ -1,5 +1,5 @@
 import { ApiError, fail, ok, requestId } from "../../../lib/api";
-import { enforceRateLimit, requireApiUser } from "../../../lib/authz";
+import { enforceRateLimit, hasPermission, requireApiUser } from "../../../lib/authz";
 import { deleteKnowledgeFile, hasKnowledgeFileStorage, putKnowledgeFile } from "../../../lib/knowledge-files";
 
 export async function PUT(request: Request) {
@@ -7,6 +7,7 @@ export async function PUT(request: Request) {
   let sourceKey: string | null = null;
   try {
     const ctx = await requireApiUser();
+    if (!hasPermission(ctx,"knowledge:upload")) throw new ApiError(403,"UPLOAD_FORBIDDEN","当前角色没有资料上传权限");
     await enforceRateLimit(ctx, "file-upload", 20, 60);
     const deptId = Number(request.headers.get("x-dept-id") || ctx.primaryDeptId);
     if (!ctx.deptIds.includes(deptId) && ctx.role !== "SUPER_ADMIN") throw new ApiError(403, "DEPARTMENT_FORBIDDEN", "只能向所属部门上传文件");

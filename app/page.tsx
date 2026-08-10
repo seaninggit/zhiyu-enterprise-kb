@@ -23,6 +23,7 @@ if (typeof window !== "undefined") {
 
 type View =
   | "library"
+  | "contributions"
   | "admin"
   | "platform"
   | "taxonomy"
@@ -44,6 +45,7 @@ type DocumentStatus =
   | "archived";
 type KnowledgeDocument = {
   id: number;
+  creatorUserId?: number;
   title: string;
   summary: string;
   content: string;
@@ -77,6 +79,12 @@ type KnowledgeDocument = {
   extractionDetail?: string;
   ocrStatus?: string;
   aiIndexStatus?: string;
+  latestApprovalAction?: string;
+  latestApprovalComment?: string;
+  feedbackCount?: number;
+  latestFeedback?: string;
+  latestFeedbackAt?: string | null;
+  openFeedbackCount?: number;
   spaceId?: number | null;
   folderId?: number | null;
   canEdit?: boolean;
@@ -207,12 +215,16 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
           : "draft";
   return {
     id: Number(row.id),
+    creatorUserId: Number(row.create_user_id ?? 0),
     title: String(row.title ?? ""),
     summary: String(row.summary ?? ""),
     content: String(row.content ?? ""),
     category: String(row.category ?? "未分类"),
     tags: String(row.tags ?? ""),
-    status,
+    status:
+      rawStatus === "DRAFT" && String(row.latest_approval_action) === "REJECT"
+        ? "rejected"
+        : status,
     securityLevel: String(
       row.securityLevel ?? row.security_level ?? "INTERNAL",
     ),
@@ -243,6 +255,12 @@ function normalizeDocument(row: Record<string, unknown>): KnowledgeDocument {
     extractionDetail: String(row.extraction_detail ?? ""),
     ocrStatus: String(row.ocr_status ?? "NOT_REQUIRED"),
     aiIndexStatus: String(row.ai_index_status ?? "PENDING"),
+    latestApprovalAction: String(row.latest_approval_action ?? ""),
+    latestApprovalComment: String(row.latest_approval_comment ?? ""),
+    feedbackCount: Number(row.feedback_count ?? 0),
+    latestFeedback: String(row.latest_feedback ?? ""),
+    latestFeedbackAt: (row.latest_feedback_at as string) ?? null,
+    openFeedbackCount: Number(row.open_feedback_count ?? 0),
     spaceId: row.space_id ? Number(row.space_id) : null,
     folderId: row.folder_id ? Number(row.folder_id) : null,
   };
@@ -556,6 +574,9 @@ export default function Home() {
   }, []);
 
   const published = documents.filter((item) => item.status === "published");
+  const contributions = documents.filter(
+    (item) => item.creatorUserId === Number(currentUser.userId),
+  );
   const searchBase = searchResults ?? published;
   const filtered = useMemo(
     () =>
@@ -883,7 +904,7 @@ export default function Home() {
         created,
         ...current.filter((item) => item.id !== created.id),
       ]);
-      setView("admin");
+      setView("contributions");
       setLoading(false);
       setPipelineProgress(null);
       setUploadOpen(false);
@@ -1016,6 +1037,12 @@ export default function Home() {
             onClick={() => setView("favorites")}
           >
             <i>☆</i>我的收藏 <em>{favorites.length}</em>
+          </button>
+          <button
+            className={view === "contributions" ? "active" : ""}
+            onClick={() => setView("contributions")}
+          >
+            <i>▤</i>我的上传 <em>{contributions.length}</em>
           </button>
           {hasPerm("governance:admin") && (
             <>
@@ -1208,7 +1235,18 @@ export default function Home() {
           </button>
         </header>
 
-        {view === "admin" && hasPerm("governance:admin") ? (
+        {view === "contributions" ? (
+          <ContributionView
+            documents={contributions}
+            onUpload={openUpload}
+            onSelect={(doc) =>
+              openDocument(doc).catch((error) =>
+                notify(error instanceof Error ? error.message : "资料加载失败"),
+              )
+            }
+            onSubmit={(id) => updateStatus(id, "submit")}
+          />
+        ) : view === "admin" && hasPerm("governance:admin") ? (
           <AdminView
             documents={documents}
             metrics={metrics}
@@ -1614,6 +1652,30 @@ export default function Home() {
       )}
     </div>
   );
+}
+
+function ContributionView({documents,onUpload,onSelect,onSubmit}:{documents:KnowledgeDocument[];onUpload:()=>void;onSelect:(doc:KnowledgeDocument)=>void;onSubmit:(id:number)=>void}){
+  const pending=documents.filter(item=>item.status==="review").length;
+  const feedback=documents.reduce((sum,item)=>sum+Number(item.openFeedbackCount||0),0);
+  return <main className="workspace contribution-view">
+    <section className="admin-heading"><div><span className="page-kicker">MY CONTRIBUTIONS</span><h1>我的上传</h1><p>查看从上传、解析、提交审批到发布生效的完整状态，并处理后续反馈。</p></div><button className="primary-action" onClick={onUpload}>＋ 上传资料</button></section>
+    <section className="contribution-summary"><div><b>{documents.length}</b><span>累计上传</span></div><div><b>{pending}</b><span>审批中</span></div><div><b>{documents.filter(item=>item.status==="published").length}</b><span>已发布</span></div><div className={feedback?"attention":""}><b>{feedback}</b><span>待补充反馈</span></div></section>
+    {documents.length?<section className="contribution-list">{documents.map(doc=>{
+      const canSubmit=doc.status==="draft"||doc.status==="rejected";
+      return <article className="contribution-card" key={doc.id}>
+        <header><div><span className={`doc-status ${doc.status}`}>{statusLabel[doc.status]}</span><h2>{doc.title}</h2><small>{doc.sourceName||"在线资料"} · V{doc.version}.0 · {doc.category}</small></div><button className="outline-action" onClick={()=>onSelect(doc)}>查看并补充</button></header>
+        <div className="contribution-flow" aria-label="审批进度">
+          <span className="done">已上传<small>{fmtBusinessTime(doc.createdAt)}</small></span>
+          <span className={doc.parseStatus==="COMPLETED"?"done":"current"}>资料解析<small>{parseStatusLabel(doc.parseStatus)}</small></span>
+          <span className={doc.submittedAt?"done":canSubmit?"current":""}>提交审核<small>{fmtBusinessTime(doc.submittedAt)}</small></span>
+          <span className={doc.approvedAt?"done":doc.status==="review"?"current":""}>部门审批<small>{doc.rejectedAt?`驳回于 ${fmtBusinessTime(doc.rejectedAt)}`:fmtBusinessTime(doc.approvedAt)}</small></span>
+          <span className={doc.status==="published"?"done":""}>发布生效<small>{fmtBusinessTime(doc.approvedAt)}</small></span>
+        </div>
+        {doc.latestApprovalAction==="REJECT"&&<div className="contribution-alert"><b>审批驳回</b><span>{doc.latestApprovalComment||"请根据审批意见补充后重新提交"}</span></div>}
+        {Number(doc.feedbackCount)>0&&<div className={`contribution-feedback${Number(doc.openFeedbackCount)>0?" open":""}`}><div><b>{Number(doc.openFeedbackCount)>0?"收到待处理建议":"历史反馈已处理"}</b><span>{doc.latestFeedback}</span><small>{fmtBusinessTime(doc.latestFeedbackAt)} · 累计 {doc.feedbackCount} 条</small></div><button onClick={()=>onSelect(doc)}>{Number(doc.openFeedbackCount)>0?"补充资料":"查看记录"}</button></div>}
+        {canSubmit&&<footer><span>{doc.parseStatus==="COMPLETED"?"资料已解析，可发起部门审批":"资料仍在解析，完成后可提交审核"}</span><button className="primary-action" disabled={doc.parseStatus!=="COMPLETED"} onClick={()=>onSubmit(doc.id)}>提交部门审核</button></footer>}
+      </article>})}</section>:<section className="empty-state"><span>▤</span><h3>还没有上传记录</h3><p>上传后可在这里持续跟踪解析、审批、发布和反馈状态。</p><button className="primary-action" onClick={onUpload}>上传第一份资料</button></section>}
+  </main>
 }
 
 function LibraryView({

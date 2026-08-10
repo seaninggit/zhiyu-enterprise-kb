@@ -1,6 +1,6 @@
 import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, requiredText, safeText } from "../../../lib/api";
-import { canManageDepartment, enforceRateLimit, requireApiUser } from "../../../lib/authz";
+import { canManageDepartment, enforceRateLimit, hasPermission, requireApiUser } from "../../../lib/authz";
 import { documentListScope } from "../../../lib/document-access";
 import { runGovernanceMaintenance } from "../../../lib/governance";
 import { deleteKnowledgeFile, hasKnowledgeFileStorage, putKnowledgeFile } from "../../../lib/knowledge-files";
@@ -25,6 +25,12 @@ export async function GET(request: Request) {
       (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action IN ('ARCHIVE','VOID')) AS voided_at,
       (SELECT MAX(v.create_time) FROM document_versions v WHERE v.document_id=d.id) AS last_version_at,
       (SELECT MAX(j.update_time) FROM ingestion_jobs j WHERE j.document_id=d.id AND j.status='COMPLETED') AS ingested_at,
+      (SELECT a.action FROM approval_records a WHERE a.document_id=d.id ORDER BY a.id DESC LIMIT 1) AS latest_approval_action,
+      (SELECT a.comment FROM approval_records a WHERE a.document_id=d.id ORDER BY a.id DESC LIMIT 1) AS latest_approval_comment,
+      (SELECT COUNT(*) FROM feedback f WHERE f.document_id=d.id) AS feedback_count,
+      (SELECT f.content FROM feedback f WHERE f.document_id=d.id ORDER BY f.id DESC LIMIT 1) AS latest_feedback,
+      (SELECT f.create_time FROM feedback f WHERE f.document_id=d.id ORDER BY f.id DESC LIMIT 1) AS latest_feedback_at,
+      (SELECT COUNT(*) FROM knowledge_governance_tasks t WHERE t.source_document_id=d.id AND t.type='DOCUMENT_FEEDBACK' AND t.status IN ('OPEN','IN_PROGRESS')) AS open_feedback_count,
       COALESCE((SELECT GROUP_CONCAT(t.name) FROM document_tags dt JOIN tags t ON t.id=dt.tag_id WHERE dt.document_id=d.id),'') AS tags
       FROM documents d JOIN users u ON u.id=d.create_user_id JOIN departments dep ON dep.id=d.dept_id
       WHERE ${where} ORDER BY d.update_time DESC, d.id DESC LIMIT 500`).bind(...binds).all();
@@ -57,7 +63,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const rid = requestId(request); let sourceKey: string | null = null;
   try {
-    const ctx = await requireApiUser(); await enforceRateLimit(ctx, "upload", 20, 60);const db=getD1();
+    const ctx = await requireApiUser();if(!hasPermission(ctx,"knowledge:upload"))throw new ApiError(403,"UPLOAD_FORBIDDEN","当前角色没有资料上传权限");await enforceRateLimit(ctx, "upload", 20, 60);const db=getD1();
     const settingRows=await db.prepare("SELECT key,value FROM system_settings WHERE key IN ('retention.default_days','security.max_file_bytes','security.allowed_mime')").all<{key:string,value:string}>();const settings=Object.fromEntries(settingRows.results.map(item=>[item.key,item.value]));
     const contentType = request.headers.get("content-type") || "";
     const input = contentType.includes("application/json") ? await request.json() as Record<string, unknown> : Object.fromEntries(await request.formData());

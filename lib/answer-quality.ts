@@ -6,7 +6,21 @@ export function validatedGroundedAnswer(generated:string|undefined,sources:Array
 }
 
 export function deterministicGroundedSummary(sources:Array<{citation:number;title:string;version:number;excerpt:string}>){
-  return `${sources.map(source=>`[${source.citation}] 《${source.title}》V${source.version}.0：${source.excerpt}`).join("\n\n")}\n\n以上结论来自当前有权访问的已生效知识，请以引用原文为准。`;
+  return `公司知识依据\n\n${sources.map(source=>`[${source.citation}] 《${source.title}》V${source.version}.0：${source.excerpt}`).join("\n\n")}\n\n以上结论来自当前有权访问的已生效知识，请以引用原文为准。`;
+}
+
+/** 删除模型未实际使用的来源，并按首次出现顺序连续重排引用编号。 */
+export function normalizeUsedCitations<T extends {citation:number}>(answer:string,sources:T[]){
+  const used:number[]=[];
+  for(const match of answer.matchAll(/\[(\d+)\]/g)){
+    const citation=Number(match[1]);
+    if(sources.some(source=>source.citation===citation)&&!used.includes(citation))used.push(citation);
+  }
+  if(!used.length)return {answer,sources:[] as T[]};
+  const numberMap=new Map(used.map((citation,index)=>[citation,index+1]));
+  const normalizedAnswer=answer.replace(/\[(\d+)\]/g,(whole,value)=>numberMap.has(Number(value))?`[${numberMap.get(Number(value))}]`:whole);
+  const normalizedSources=used.map((citation,index)=>({...sources.find(source=>source.citation===citation)!,citation:index+1}));
+  return {answer:normalizedAnswer,sources:normalizedSources};
 }
 
 /** 相关性校验：检查检索到的引用是否真的跟问题有关。

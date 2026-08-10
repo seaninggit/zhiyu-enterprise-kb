@@ -5,7 +5,7 @@ import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } fr
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../../lib/document-access";
 import { correctEnterpriseQuery } from "../../../../lib/query-correction";
-import { areSourcesRelevant, deterministicGroundedSummary, validatedGroundedAnswer } from "../../../../lib/answer-quality";
+import { areSourcesRelevant, deterministicGroundedSummary, normalizeUsedCitations, validatedGroundedAnswer } from "../../../../lib/answer-quality";
 import { classifyIntent } from "../../../../lib/intent-classifier";
 import { runAgent, type AgentMessage } from "../../../../lib/agent";
 
@@ -188,6 +188,12 @@ export async function POST(request: Request) {
       const grounded=validatedGroundedAnswer(generated?.text,sources);answer = grounded || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : deterministicGroundedSummary(sources));
       const usedComparableVector=relevant.some(item=>item.hasComparableVector);mode = grounded ? (usedComparableVector ? "rag_local_vector" : "rag_keyword_fallback") : (usedComparableVector ? "retrieval_local_vector" : "retrieval_keyword_fallback");
     }
+    if(sources.length>0){
+      const normalized=normalizeUsedCitations(answer,sources);
+      answer=normalized.answer;
+      sources.splice(0,sources.length,...normalized.sources);
+    }
+    if(mode==="no_evidence"||/没有足够依据|没有找到.*相关|没有.*直接相关|未能找到/.test(answer))sources.length=0;
     const inputTokens=generated?.inputTokens||Math.ceil((question.length+sources.reduce((n,s)=>n+s.excerpt.length,0))/4),outputTokens=generated?.outputTokens||Math.ceil(answer.length/4),model=generated?.model||"local-retrieval",cost=generated?.provider==="deepseek"?Number(((inputTokens*.00000014)+(outputTokens*.00000028)).toFixed(6)):mode==="rag"?Number(((inputTokens*.00000025)+(outputTokens*.000002)).toFixed(6)):0;
     const log = await db.prepare("INSERT INTO ai_query_logs(user_id,dept_id,question,answer,mode,source_document_ids,request_id,latency_ms,input_tokens,output_tokens,model,estimated_cost) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").bind(ctx.userId, ctx.primaryDeptId, question, answer, mode, JSON.stringify(sources.map(source => source.documentId)), rid,Date.now()-started,inputTokens,outputTokens,model,cost).run();
     const messageResults = await db.batch([
@@ -196,12 +202,6 @@ export async function POST(request: Request) {
       db.prepare("UPDATE ai_conversations SET title=CASE WHEN title='新会话' THEN ? ELSE title END,update_time=CURRENT_TIMESTAMP WHERE id=? AND user_id=?").bind(question.slice(0, 32), conversationId, ctx.userId),
     ]);
     const assistantMessageId=Number(messageResults[1].meta.last_row_id);
-    // 只保留答案中实际引用了的文档
-    if(sources.length>0){
-      const cited=new Set([...answer.matchAll(/\[(\d+)\]/g)].map(m=>Number(m[1])));
-      if(cited.size>0)for(let i=sources.length-1;i>=0;i--){if(!cited.has(sources[i].citation))sources.splice(i,1);}
-    }
-    if(mode==="no_evidence"||/没有足够依据|没有找到.*相关|没有.*直接相关|未能找到/.test(answer))sources.length=0;
     return ok({ answer, sources, mode, provider:generated?.provider||"local",model,correction, queryLogId: log.meta.last_row_id, conversationId, messageId: assistantMessageId, trust: { permissionScope: ctx.role, citationCount: sources.length, contextMessages: conversationId ? 8 : 0 } }, rid);
   } catch (error) { return fail(error, rid); }
 }

@@ -5,8 +5,17 @@ export function validatedGroundedAnswer(generated:string|undefined,sources:Array
   return generated.trim();
 }
 
-export function deterministicGroundedSummary(sources:Array<{citation:number;title:string;version:number;excerpt:string}>){
-  return `公司知识依据\n\n${sources.map(source=>`[${source.citation}] 《${source.title}》V${source.version}.0：${source.excerpt}`).join("\n\n")}\n\n以上结论来自当前有权访问的已生效知识，请以引用原文为准。`;
+export function deterministicGroundedSummary(sources:Array<{citation:number;title:string;version:number;excerpt:string}>,_question=""){
+  return `公司知识依据\n\n${sources.map(source=>`[${source.citation}] 《${source.title}》V${source.version}.0：${source.excerpt}`).join("\n\n")}\n\n以上是当前检索到的企业知识。资料未明确写出的地区、人群或业务范围不能据此推定，请以引用原文为准。`;
+}
+
+export function deterministicFollowUpSummary(_question:string,sources:Array<{citation:number;title:string;version:number;excerpt:string}>){
+  const question=_question.trim().replace(/[“”"'，。！？?；;：:\s]/g,"");
+  const corpus=sources.map(source=>`${source.title}${source.excerpt}`).join("\n");
+  const isScopeConfirmation=/^(是|属于|针对|适用)/.test(question)||/(的吗|范围|地区|区域|人群)$/.test(question)||(question.length<=6&&question.endsWith("的"));
+  const scopeProbe=question.replace(/^(是|属于|针对|适用|请问)/,"").replace(/(的|的吗|吗|呢|范围|地区|区域|人群)$/g,"");
+  if(isScopeConfirmation&&scopeProbe&&scopeProbe.length<=12&&!corpus.includes(scopeProbe))return `当前有权访问的资料中没有明确出现“${scopeProbe}”，因此无法确认上一轮内容是否适用于该范围。请补充相应制度，或联系资料负责人确认。`;
+  return "当前模型暂不可用，无法完成本轮追问的归纳。系统已保留下方相关引用供核对，不会用资料中没有写明的内容补充答案。";
 }
 
 /** 删除模型未实际使用的来源，并按首次出现顺序连续重排引用编号。 */

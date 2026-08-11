@@ -19,7 +19,7 @@ test("employees can trace their uploads, approvals and feedback", () => {
   assert.match(page, /我的上传/);
   assert.match(page, /MY CONTRIBUTIONS/);
   assert.match(page, /收到待处理建议/);
-  assert.match(page, /提交部门审核/);
+  assert.match(page, /提交审批/);
   assert.match(page, /查看并补充/);
   assert.match(documents, /latest_approval_action/);
   assert.match(documents, /latest_approval_comment/);

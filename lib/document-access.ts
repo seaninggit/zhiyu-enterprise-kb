@@ -1,6 +1,6 @@
 import { getD1 } from "../db";
 import type { AuthContext } from "./authz";
-import { hasScope } from "./authz";
+import { hasPermission, hasScope } from "./authz";
 
 function placeholders(values:number[]){return values.map(()=>"?").join(",");}
 function published(alias:string){return `(${alias}.status='ARCHIVED_ACTIVE' OR (${alias}.status IN ('DRAFT','PENDING_DEPT_REVIEW') AND ${alias}.published_version IS NOT NULL))`;}
@@ -30,7 +30,7 @@ export function documentListScope(ctx:AuthContext,alias="d"){
   if(hasScope(ctx,"global"))return{sql:`${alias}.is_deleted=0`,binds:[] as unknown[]};
   const access=grantedAccess(ctx,alias,"VIEW");
   if(ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))return{sql:`${alias}.is_deleted=0 AND (${alias}.dept_id IN (${placeholders(ctx.deptIds)}) OR (${published(alias)} AND ${access.sql}))`,binds:[...ctx.deptIds,...access.binds]};
-  return{sql:`${alias}.is_deleted=0 AND ((${alias}.create_user_id=? AND ${alias}.dept_id IN (${placeholders(ctx.deptIds)})) OR (${published(alias)} AND ${access.sql}))`,binds:[ctx.userId,...ctx.deptIds,...access.binds]};
+  return{sql:`${alias}.is_deleted=0 AND ((${alias}.create_user_id=? AND ${alias}.dept_id IN (${placeholders(ctx.deptIds)})) OR EXISTS(SELECT 1 FROM approval_instances ai JOIN approval_steps aps ON aps.instance_id=ai.id WHERE ai.document_id=${alias}.id AND aps.assignee_user_id=?) OR (${published(alias)} AND ${access.sql}))`,binds:[ctx.userId,...ctx.deptIds,ctx.userId,...access.binds]};
 }
 
 async function explicitPermission(documentId:number,spaceId:number|null,permission:"VIEW"|"EDIT",ctx:AuthContext){
@@ -45,6 +45,8 @@ export async function canReadDocument(doc:Record<string,unknown>,ctx:AuthContext
   if(hasScope(ctx,"global"))return true;
   const ownDept=ctx.deptIds.includes(Number(doc.dept_id)),creator=Number(doc.create_user_id)===ctx.userId;
   if(((ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))&&ownDept)||(creator&&ownDept))return true;
+  const assigned=await getD1().prepare("SELECT 1 allowed FROM approval_instances ai JOIN approval_steps aps ON aps.instance_id=ai.id WHERE ai.document_id=? AND aps.assignee_user_id=? LIMIT 1").bind(Number(doc.id),ctx.userId).first();
+  if(assigned)return true;
   const hasPublished=String(doc.status)==="ARCHIVED_ACTIVE"||(Number(doc.published_version||0)>0&&["DRAFT","PENDING_DEPT_REVIEW"].includes(String(doc.status)));
   if(!hasPublished)return false;
   if(ownDept||doc.share_scope==="CROSS_DEPT")return true;
@@ -52,8 +54,8 @@ export async function canReadDocument(doc:Record<string,unknown>,ctx:AuthContext
 }
 
 export async function canEditDocument(doc:Record<string,unknown>,ctx:AuthContext){
-  if(hasScope(ctx,"global"))return true;
-  const ownDept=ctx.deptIds.includes(Number(doc.dept_id));
-  if(((ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))&&ownDept)||(ownDept&&Number(doc.create_user_id)===ctx.userId))return true;
+  if(!hasPermission(ctx,"knowledge:edit"))return false;
+  const ownDept=ctx.deptIds.includes(Number(doc.dept_id)),ownerId=Number(doc.owner_user_id||doc.create_user_id),responsible=ownerId===ctx.userId;
+  if((hasScope(ctx,"global")||ownDept)&&responsible)return true;
   return explicitPermission(Number(doc.id),doc.space_id?Number(doc.space_id):null,"EDIT",ctx);
 }

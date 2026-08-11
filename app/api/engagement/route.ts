@@ -14,7 +14,7 @@ export async function POST(request: Request) {
   const rid = requestId(request);
   try {
     const ctx = await requireApiUser(); await enforceRateLimit(ctx, "engagement", 60, 60);
-    const payload = await request.json() as { action?: "VIEW" | "EXPORT" | "SHARE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "CONTACT_OWNER" | "AI_HELPFUL" | "FAVORITE_TOGGLE" | "NOTIFICATION_READ" | "SEARCH_CLICK"; documentId?: number; notificationId?: number; searchLogId?: number; queryLogId?: number; messageId?: number; helpful?: boolean; reason?: string; detail?: string };
+    const payload = await request.json() as { action?: "VIEW" | "EXPORT" | "SHARE" | "SUBSCRIBE" | "UNSUBSCRIBE" | "AI_HELPFUL" | "FAVORITE_TOGGLE" | "NOTIFICATION_READ" | "SEARCH_CLICK"; documentId?: number; notificationId?: number; searchLogId?: number; queryLogId?: number; messageId?: number; helpful?: boolean; reason?: string; detail?: string };
     if (!payload.action) throw new ApiError(400, "VALIDATION_ERROR", "操作类型不能为空"); const db = getD1();
     if (payload.action === "AI_HELPFUL") {
       if (!payload.queryLogId) throw new ApiError(400, "VALIDATION_ERROR", "问答记录不能为空");
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       const owner=sourceDocumentId?await db.prepare("SELECT owner_user_id,create_user_id FROM documents WHERE id=?").bind(sourceDocumentId).first<Record<string,unknown>>():null;
       await db.batch([
         db.prepare("INSERT INTO ai_answer_feedback(query_log_id,user_id,helpful,reason) VALUES(?,?,?,?) ON CONFLICT(query_log_id,user_id) DO UPDATE SET helpful=excluded.helpful,reason=excluded.reason,create_time=CURRENT_TIMESTAMP").bind(payload.queryLogId, ctx.userId, payload.helpful ? 1 : 0, [reason, detail].filter(Boolean).join("：")),
-        ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,dept_id,source_document_id,source_message_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',?,?,?,?,?,?,?)").bind(ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId,Number(owner?.owner_user_id||owner?.create_user_id)||null, reason, detail)] : []),
+        ...(!payload.helpful ? [db.prepare("INSERT INTO knowledge_governance_tasks(type,status,workflow_stage,dept_id,source_document_id,source_message_id,reporter_user_id,assignee_user_id,reason,detail) VALUES('AI_UNRESOLVED','OPEN',? ,?,?,?,?,?,?,?)").bind(sourceDocumentId?"WAITING_OWNER":"ADMIN_TRIAGE",ctx.primaryDeptId, sourceDocumentId, message ? payload.messageId : null, ctx.userId,Number(owner?.create_user_id)||null, reason, detail)] : []),
       ]);
       // 没解决：发邮件给管理员
       if(!payload.helpful){
@@ -57,11 +57,8 @@ export async function POST(request: Request) {
       await db.prepare("INSERT INTO knowledge_subscriptions(document_id,user_id,is_active) VALUES(?,?,1) ON CONFLICT(document_id,user_id) DO UPDATE SET is_active=1,update_time=CURRENT_TIMESTAMP").bind(payload.documentId, ctx.userId).run();
     }
     if (payload.action === "UNSUBSCRIBE") await db.prepare("UPDATE knowledge_subscriptions SET is_active=0,update_time=CURRENT_TIMESTAMP WHERE document_id=? AND user_id=?").bind(payload.documentId, ctx.userId).run();
-    if (payload.action === "CONTACT_OWNER") {
-      const owner = doc.owner_user_id?{id:Number(doc.owner_user_id)}:await db.prepare("SELECT id FROM users WHERE display_name=? AND status='ACTIVE' LIMIT 1").bind(doc.owner).first<{ id: number }>();
-      if (owner) await db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) VALUES(?,'OWNER_CONTACT','有用户咨询你负责的资料',?,?)").bind(owner.id, `${ctx.displayName} 咨询《${doc.title}》`, payload.documentId).run();
-    }
-    await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.documentId, doc.dept_id, payload.action, ctx.userId, ctx.displayName, payload.action === "CONTACT_OWNER" ? `联系知识负责人：${doc.owner}` : "复制内部知识链接", rid).run();
+    const detail=payload.action==="SHARE"?"复制内部知识链接":payload.action==="SUBSCRIBE"?"订阅资料更新":"取消资料更新订阅";
+    await db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.documentId, doc.dept_id, payload.action, ctx.userId, ctx.displayName, detail, rid).run();
     const subscription=await db.prepare("SELECT is_active FROM knowledge_subscriptions WHERE document_id=? AND user_id=?").bind(payload.documentId,ctx.userId).first<{is_active:number}>();
     return ok({ recorded: true,subscribed:Boolean(subscription?.is_active) }, rid, 201);
   } catch (error) { return fail(error, rid); }

@@ -4,8 +4,8 @@ import { enforceRateLimit, hasPermission, requireApiUser } from "../../../../lib
 import { cosine, embedTexts, generateGroundedAnswer, indexPublishedDocument } from "../../../../lib/rag";
 import { isValidEmbedding } from "../../../../lib/text-chunks";
 import { publishedDocumentScope } from "../../../../lib/document-access";
-import { correctEnterpriseQuery } from "../../../../lib/query-correction";
-import { areSourcesRelevant, deterministicGroundedSummary, normalizeUsedCitations, validatedGroundedAnswer } from "../../../../lib/answer-quality";
+import { correctEnterpriseQuery, explicitUserCorrection } from "../../../../lib/query-correction";
+import { areSourcesRelevant, deterministicFollowUpSummary, deterministicGroundedSummary, normalizeUsedCitations, validatedGroundedAnswer } from "../../../../lib/answer-quality";
 import { classifyIntent } from "../../../../lib/intent-classifier";
 import { runAgent, type AgentMessage } from "../../../../lib/agent";
 
@@ -14,7 +14,8 @@ function platformIntent(question:string,displayName:string,role:string,publicVie
   const raw=question.trim();const normalized=raw.replace(/[？?。！!，,\s]/g,"").toLowerCase();
   // 正则仅保留3条核心快速路径，其余全部走语义分类
   if(/^(你好|您好|hi|hello|在吗)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
-  if(/^(谢谢|感谢|好的谢谢|多谢|好的|好|ok|收到)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。有其他问题随时问我。"};
+  if(/^(谢谢|感谢|好的谢谢|多谢)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"不客气。有其他问题随时问我。"};
+  if(/^(好的|好|好吧|行|行吧|可以|收到|知道了|明白了|了解了|懂了|没问题|ok)$/.test(normalized))return{mode:"assistant_acknowledgement",answer:"好的。如有其他企业制度或流程问题，可以继续问我。"};
   if(/^(再见|拜拜|bye|Bye|结束|先这样|就这样|不聊了|晚安)$/.test(normalized))return{mode:"assistant_farewell",answer:"好的，我先结束本轮问答。之后需要查询企业制度、业务流程或办事材料时，随时叫我。"};
   const crisisWords=["不想活","想死","自杀","自残","活不下去","绝望","没希望","想不开","结束生命","死了算了","活着没意义"];
   if(crisisWords.some(w=>raw.includes(w)))return{mode:"assistant_redirect",answer:"如果你正在经历困难时刻，请立即拨打心理援助热线：400-161-9995（24小时），或联系身边信任的人。作为企业知识助手，我无法提供心理咨询，但我真心希望你得到帮助。"};
@@ -149,15 +150,22 @@ export async function POST(request: Request) {
       const assistantMessageId=Number(messageResults[1].meta.last_row_id);
       return ok({answer:direct.answer,sources:[],mode:direct.mode,provider:"platform",model,queryLogId:log.meta.last_row_id,conversationId,messageId:assistantMessageId,trust:{permissionScope:ctx.role,citationCount:0,contextMessages:conversationId?8:0}},rid);
     }
-    const correction=await correctEnterpriseQuery(db,question);
     const historyRows=await db.prepare("SELECT role,content,source_payload FROM ai_messages WHERE conversation_id=? AND user_id=? ORDER BY sequence_no DESC,id DESC LIMIT 8").bind(conversationId,ctx.userId).all<Record<string,unknown>>();
+    const clarifiedQuestion=hasContext?explicitUserCorrection(question):"";
+    const questionIntent=clarifiedQuestion||question;
+    const correction=await correctEnterpriseQuery(db,questionIntent);
     const previousUserMessage=historyRows.results.find(item=>item.role==="user");
-    const contextualFollowUp=isContextualFollowUp(question)&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:question;const retrievalQuestion=contextualFollowUp?`${safeText(previousUserMessage?.content,500)}\n${correctedQuestion}\n原始输入：${question}`:`${correctedQuestion}\n原始输入：${question}`;
-    const previousAssistant=historyRows.results.find(item=>item.role==="assistant");const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(previousAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
+    const anchoredAssistantIndex=historyRows.results.findIndex(item=>{if(item.role!=="assistant")return false;try{return JSON.parse(String(item.source_payload||"[]")).some((source:{documentId?:unknown})=>Number(source.documentId)>0);}catch{return false;}});
+    const anchoredAssistant=anchoredAssistantIndex>=0?historyRows.results[anchoredAssistantIndex]:undefined;
+    const anchoredUser=anchoredAssistantIndex>=0?historyRows.results.slice(anchoredAssistantIndex+1).find(item=>item.role==="user"):undefined;
+    const contextualFollowUp=(Boolean(clarifiedQuestion)||isContextualFollowUp(question))&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:questionIntent;const topicAnchor=safeText(anchoredUser?.content||previousUserMessage?.content,500);const retrievalQuestion=contextualFollowUp?`${topicAnchor}\n${correctedQuestion}\n当前原始输入：${question}`:`${correctedQuestion}\n原始输入：${question}`;
+    const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(anchoredAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
     const access=publishedDocumentScope(ctx,"d");const scope=access.sql;const binds:unknown[]=[...access.binds];
-    const useContextFilter=contextualFollowUp&&contextDocumentIds.size>0;
-    const chunkScope=useContextFilter?scope+` AND d.id IN (${[...contextDocumentIds].map(()=>"?").join(",")})`:scope;
-    const chunkBinds=useContextFilter?[...binds,...contextDocumentIds]:binds;
+    // Follow-ups must re-retrieve across the caller's full permission scope. Previous
+    // citations are a ranking signal, not a hard filter: a scope-changing question
+    // such as “北京的呢” may need evidence from a different published document.
+    const chunkScope=scope;
+    const chunkBinds=binds;
     const [settings,activePrompt]=await Promise.all([
       db.prepare("SELECT key,value FROM system_settings WHERE key IN ('hybrid.vector_weight','hybrid.keyword_weight','rag.top_k')").all<{key:string,value:string}>(),
       db.prepare("SELECT strategy_json FROM prompt_templates WHERE code='enterprise_rag' AND status='PUBLISHED' ORDER BY version DESC LIMIT 1").first<{strategy_json:string}>(),
@@ -176,19 +184,20 @@ export async function POST(request: Request) {
     const scored = result.results.map(row => { let vector = 0,hasComparableVector=false; try { if (queryEmbedding && row.embedding) {const stored=JSON.parse(String(row.embedding));hasComparableVector=Array.isArray(stored)&&stored.length===queryEmbedding.length;if(hasComparableVector)vector=cosine(queryEmbedding,stored);} } catch { /* malformed legacy vector */ } const keyword = keywordScore(retrievalQuestion, String(row.content),corpus);let score=hasComparableVector ? vector * vectorWeight + keyword * keywordWeight : keyword;if(contextualFollowUp&&contextDocumentIds.size)score=contextDocumentIds.has(Number(row.document_id))?Math.min(1,score+.25):score*.2;return { ...row,hasComparableVector, score }; }).sort((a, b) => b.score - a.score);
     const ranked:typeof scored=[];const seenDocuments=new Set<number>();for(const item of scored){const documentId=Number(item.document_id);if(seenDocuments.has(documentId))continue;seenDocuments.add(documentId);ranked.push(item);if(ranked.length>=topK)break;}
     const relevant = ranked.filter(item => item.score >= (item.hasComparableVector ? .18 : .15));
-    const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).slice(0, 220), score: Number(item.score.toFixed(4)) }));
+    const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).replace(/\\n/g,"\n").slice(0, 220), score: Number(item.score.toFixed(4)) }));
     const relevantChecked=sources.length&&(contextualFollowUp||areSourcesRelevant(correctedQuestion,sources));
     const looksLikeKnowledge=contextualFollowUp||question.length>=4||/[？?]/.test(question);
-    const shortAmbiguous=!contextualFollowUp&&question.length<=4&&!/[？?]/.test(question); let noEvidenceAnswer=shortAmbiguous?"不确定你想了解什么，可以说具体一点吗？":looksLikeKnowledge?"抱歉，知识库里暂时没有找到跟这个问题直接相关的内容。试试换个关键词，或者问问其他方面？":`你好，${ctx.displayName}。我是企业知识库的智能助手，有什么想了解的企业知识吗？`;
+    const shortAmbiguous=!contextualFollowUp&&question.length<=4&&!/[？?]/.test(question); const noEvidenceAnswer=shortAmbiguous?"不确定你想了解什么，可以说具体一点吗？":looksLikeKnowledge?"当前已生效的企业资料中没有找到足以确认该问题的直接依据，因此不能把通用规定推定为特定地区、部门或材料要求。你可以补充地区、业务名称或制度标题，也可以提交知识缺口，由管理员分诊并联系对应资料负责人补充。":`你好，${ctx.displayName}。我是企业知识库的智能助手，有什么想了解的企业知识吗？`;
     let answer = noEvidenceAnswer; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
     if (sources.length && relevantChecked) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
-      const correctionContext=correction.applied&&correction.corrected!==question?`用户原始输入：${question}\n系统识别意图：${correctedQuestion}\n请自然地按识别后的意图回答，不要先否定原始词。`:"";
-      const generationQuestion=[recent,correctionContext,`当前问题：${correctedQuestion}`].filter(Boolean).join("\n");
+      const correctionContext=clarifiedQuestion?`用户明确纠正上一轮表达，当前真实意图是：${clarifiedQuestion}。必须以本轮纠正为准，不得沿用上一轮被否定的词。`:correction.applied&&correction.corrected!==question?`用户原始输入：${question}\n系统识别意图：${correctedQuestion}\n请自然地按识别后的意图回答，不要先否定原始词。`:"";
+      const followUpContext=contextualFollowUp?"这是基于上文的追问。只回答本轮新增问题，不要重复上一轮完整答案；若本轮是在补充地区、人群、部门、版本或其他适用范围，必须先核对引用原文是否明确支持该限定条件，不得把公司通用规定表述为该范围的专项规定。":"";
+      const generationQuestion=[recent,correctionContext,followUpContext,`当前问题：${correctedQuestion}`].filter(Boolean).join("\n");
       generated = await generateGroundedAnswer(generationQuestion, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);
-      const grounded=validatedGroundedAnswer(generated?.text,sources);answer = grounded || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : deterministicGroundedSummary(sources));
+      const grounded=validatedGroundedAnswer(generated?.text,sources);answer = grounded || (wantsChecklist ? `办理清单\n\n${sources.map((source, index) => `${index + 1}. 查阅《${source.title}》V${source.version}.0，确认适用范围与最新要求。[${source.citation}]\n   核心依据：${source.excerpt.slice(0, 100)}`).join("\n\n")}\n\n提交或执行前，请由对应知识负责人确认例外事项。` : contextualFollowUp?deterministicFollowUpSummary(correctedQuestion,sources):deterministicGroundedSummary(sources,correctedQuestion));
       const usedComparableVector=relevant.some(item=>item.hasComparableVector);mode = grounded ? (usedComparableVector ? "rag_local_vector" : "rag_keyword_fallback") : (usedComparableVector ? "retrieval_local_vector" : "retrieval_keyword_fallback");
     }
     if(sources.length>0){

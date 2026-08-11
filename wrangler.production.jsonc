@@ -13,7 +13,8 @@
     {
       "binding": "DB",
       "database_name": "zhiyu-kb-prod",
-      "database_id": "e8ecf08a-f694-49a5-b8b4-91a75ea3f491"
+      "database_id": "e8ecf08a-f694-49a5-b8b4-91a75ea3f491",
+      "migrations_dir": "drizzle"
     }
   ],
   "kv_namespaces": [

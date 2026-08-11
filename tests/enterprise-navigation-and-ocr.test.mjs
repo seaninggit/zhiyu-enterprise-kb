@@ -29,8 +29,16 @@ test("employee and administrator lists support scale controls",()=>{
 test("department scope never grants department administrator capability",()=>{
   const auth=read("lib/authz.ts"),access=read("lib/document-access.ts"),detail=read("app/api/documents/[id]/route.ts");
   assert.doesNotMatch(auth,/hasScope\(ctx, "department"\) && ctx\.deptIds\.includes/);
-  assert.match(auth,/ctx\.role==="DEPT_ADMIN"/);assert.match(access,/ctx\.role==="DEPT_ADMIN"/);
-  assert.match(detail,/const privileged=manager\|\|creator/);assert.match(detail,/version<=\?/);assert.match(detail,/approvals=privileged/);
+  assert.match(auth,/hasPermission\(ctx,"governance:admin"\)/);assert.match(access,/ctx\.role==="DEPT_ADMIN"/);
+  assert.match(detail,/const privileged=manager\|\|responsible/);assert.match(detail,/version<=\?/);assert.match(detail,/approvals=privileged/);
+});
+
+test("document responsibility is transferred instead of administrator editing",()=>{
+  const access=read("lib/document-access.ts"),detail=read("app/api/documents/[id]/route.ts"),page=read("app/page.tsx");
+  assert.match(access,/ownerId=Number\(doc\.owner_user_id\|\|doc\.create_user_id\)/);
+  assert.match(detail,/TRANSFER_OWNER/);assert.match(detail,/OWNER_TRANSFER/);assert.match(detail,/SUCCESSOR_NOT_ELIGIBLE/);
+  assert.doesNotMatch(detail,/ADMIN_OVERRIDE_EDIT/);assert.doesNotMatch(page,/代为修订原因/);
+  assert.match(page,/责任转交/);assert.match(page,/原上传人、历史版本和审批记录保持不变/);
 });
 
 test("identity documents are forced into confidential traced department storage",()=>{

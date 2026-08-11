@@ -1073,7 +1073,7 @@ export async function POST(request: Request) {
             String(target.instructions),
             `评测问题：${question}\n\n知识片段：\n${context || "无匹配知识"}`,
             ctx.userId,
-            generationOptions,
+            {...generationOptions,sceneCode:"PROMPT_EVAL"},
           ).catch(() => null),
           answer = generated?.text || "",
           normalizeEvalText = (value: string) =>
@@ -1198,7 +1198,7 @@ export async function POST(request: Request) {
         target.instructions,
         `用户问题：${question}\n\n测试知识片段：\n${context || "无匹配片段"}`,
         ctx.userId,
-        promptStrategy(target.strategy_json),
+        {...promptStrategy(target.strategy_json),sceneCode:"PROMPT_EVAL"},
       );
       return ok(
         {

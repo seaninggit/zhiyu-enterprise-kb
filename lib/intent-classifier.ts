@@ -33,7 +33,7 @@ const TEMPLATES: Record<string, string[]> = {
     "thank you", "thanks", "thx",
   ],
   acknowledge: [
-    "好的", "知道了", "明白了", "懂了", "收到", "了解", "行", "可以",
+    "好的", "好吧", "行吧", "知道了", "明白了", "了解了", "懂了", "收到", "了解", "行", "可以",
     "没问题", "got it", "OK", "好的谢谢", "好",
   ],
   account: [

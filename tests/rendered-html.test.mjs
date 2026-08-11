@@ -10,7 +10,10 @@ test("enterprise knowledge hub metadata and product copy are configured", async 
   ]);
   assert.match(layout, /知域 · 企业知识库/);
   assert.match(page, /文档管理/);
-  assert.match(page, /待我审批/);
+  assert.match(page, /我的审批/);
+  assert.match(page, /待我处理/);
+  assert.match(page, /我发起的/);
+  assert.match(page, /已处理/);
   assert.match(page, /反馈治理/);
   assert.match(page, /上传并生成记录/);
   assert.match(page, /下载原件/);
@@ -139,7 +142,8 @@ test("enterprise identity lifecycle requires explicit authorization", async () =
   assert.match(authz, /ACCOUNT_PENDING/);
   assert.match(authz, /ACCOUNT_DISABLED/);
   assert.doesNotMatch(authz, /isFirst/);
-  assert.match(admin, /requireSuper/);
+  assert.match(admin, /requireAccountAdmin/);
+  assert.match(admin, /system:accounts/);
   assert.match(admin, /OFFBOARDED/);
   assert.match(admin, /不能在当前会话中修改自己的权限或状态/);
   assert.match(schema, /identityProvider/);

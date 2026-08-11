@@ -20,7 +20,7 @@ const PUBLIC_SESSION_COOKIE = "zhiyu_public_session";
 export const DEMO_ROLE_COOKIE = "zhiyu_demo_role";
 const DEMO_ROLE_HEADER = "x-zhiyu-demo-role";
 const PUBLIC_ACCESS_DOMAIN = "public.zhiyu.invalid";
-const DEMO_ROLES = ["SUPER_ADMIN", "DEPT_ADMIN", "EMPLOYEE"] as const;
+const DEMO_ROLES = ["SUPER_ADMIN", "DEPT_ADMIN", "EMPLOYEE", "KNOWLEDGE_REVIEWER", "BUSINESS_REVIEWER", "ENTERPRISE_KNOWLEDGE_ADMIN", "COMPLIANCE_REVIEWER"] as const;
 export type DemoRole = (typeof DEMO_ROLES)[number];
 
 const DEMO_ROLE_PROFILE: Record<
@@ -39,6 +39,22 @@ const DEMO_ROLE_PROFILE: Record<
     email: "demo.employee@public.zhiyu.invalid",
     displayName: "演示普通员工",
   },
+  KNOWLEDGE_REVIEWER: {
+    email: "demo.knowledge@public.zhiyu.invalid",
+    displayName: "演示知识审核员",
+  },
+  BUSINESS_REVIEWER: {
+    email: "demo.business@public.zhiyu.invalid",
+    displayName: "演示业务审核员",
+  },
+  ENTERPRISE_KNOWLEDGE_ADMIN: {
+    email: "demo.enterprise@public.zhiyu.invalid",
+    displayName: "演示企业知识管理员",
+  },
+  COMPLIANCE_REVIEWER: {
+    email: "demo.compliance@public.zhiyu.invalid",
+    displayName: "演示合规审核员",
+  },
 };
 
 function publicViewerEnabled() {
@@ -47,6 +63,10 @@ function publicViewerEnabled() {
 
 export function demoModeEnabled() {
   return (env as unknown as { PUBLIC_DEMO_MODE?: string }).PUBLIC_DEMO_MODE !== "false";
+}
+
+export function demoRoleSwitchEnabled() {
+  return demoModeEnabled() && (env as unknown as { PUBLIC_DEMO_ROLE_SWITCH?: string }).PUBLIC_DEMO_ROLE_SWITCH !== "false";
 }
 
 export function isPublicViewerEmail(email: string) {
@@ -83,6 +103,13 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const email = requestHeaders.get(USER_EMAIL_HEADER);
   if (!email) {
     if (!publicViewerEnabled()) return null;
+    if (demoModeEnabled() && !demoRoleSwitchEnabled()) {
+      return {
+        displayName: DEMO_ROLE_PROFILE.SUPER_ADMIN.displayName,
+        email: DEMO_ROLE_PROFILE.SUPER_ADMIN.email,
+        fullName: null,
+      };
+    }
     const cookie = requestHeaders.get("cookie") ?? "";
     const roleFromCookie = cookie.match(
       new RegExp(`(?:^|;\\s*)${DEMO_ROLE_COOKIE}=([A-Z_]+)`, "i"),

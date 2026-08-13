@@ -27,17 +27,19 @@ function json(value: unknown, fallback: unknown = []) {
 }
 function promptStrategy(value: unknown) {
   const raw = typeof value === "string" ? json(value, {}) : value || {};
-  const v = raw as Record<string, any>;
+  const v = raw as Record<string, unknown>;
+  const sections = (typeof v.sections === "object" && v.sections ? v.sections : {}) as Record<string, unknown>;
+  const facts = (typeof v.facts === "object" && v.facts ? v.facts : {}) as Record<string, unknown>;
   return {
     sections: {
-      companyEvidence: v.sections?.companyEvidence !== false,
-      generalAdvice: v.sections?.generalAdvice !== false,
-      pendingConfirmation: v.sections?.pendingConfirmation !== false,
+      companyEvidence: sections.companyEvidence !== false,
+      generalAdvice: sections.generalAdvice !== false,
+      pendingConfirmation: sections.pendingConfirmation !== false,
     },
     facts: {
-      citationRequired: v.facts?.citationRequired !== false,
-      noInternalGuess: v.facts?.noInternalGuess !== false,
-      generalAdviceLabel: v.facts?.generalAdviceLabel !== false,
+      citationRequired: facts.citationRequired !== false,
+      noInternalGuess: facts.noInternalGuess !== false,
+      generalAdviceLabel: facts.generalAdviceLabel !== false,
     },
     style: ["PROFESSIONAL", "FRIENDLY", "STRICT"].includes(v.style)
       ? v.style
@@ -99,11 +101,7 @@ export async function GET(request: Request) {
         "仅知识管理员可访问企业治理能力",
       );
     const db = getD1();
-    const scoped =
-        ctx.role === "SUPER_ADMIN"
-          ? "1=1"
-          : `(dept_id IS NULL OR dept_id IN (${ph(ctx.deptIds.length)}))`,
-      groupScoped =
+    const groupScoped =
         ctx.role === "SUPER_ADMIN"
           ? "1=1"
           : `(g.dept_id IS NULL OR g.dept_id IN (${ph(ctx.deptIds.length)}))`;
@@ -1073,7 +1071,7 @@ export async function POST(request: Request) {
             String(target.instructions),
             `评测问题：${question}\n\n知识片段：\n${context || "无匹配知识"}`,
             ctx.userId,
-            generationOptions,
+            {...generationOptions,sceneCode:"PROMPT_EVAL"},
           ).catch(() => null),
           answer = generated?.text || "",
           normalizeEvalText = (value: string) =>
@@ -1198,7 +1196,7 @@ export async function POST(request: Request) {
         target.instructions,
         `用户问题：${question}\n\n测试知识片段：\n${context || "无匹配片段"}`,
         ctx.userId,
-        promptStrategy(target.strategy_json),
+        {...promptStrategy(target.strategy_json),sceneCode:"PROMPT_EVAL"},
       );
       return ok(
         {

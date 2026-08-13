@@ -16,13 +16,13 @@ export async function resolvePublishedFeedback(input: {
     return { resolved: 0, deliveries: [] as unknown[] };
 
   const tasks = await db
-    .prepare("SELECT id,reporter_user_id,reason FROM knowledge_governance_tasks WHERE (source_document_id=? OR target_document_id=?) AND status IN ('OPEN','IN_PROGRESS')")
+    .prepare("SELECT id,reporter_user_id,reason FROM knowledge_governance_tasks WHERE type='DOCUMENT_FEEDBACK' AND (source_document_id=? OR target_document_id=?) AND workflow_stage='WAITING_APPROVAL' AND status IN ('OPEN','IN_PROGRESS')")
     .bind(document.id, document.id)
     .all<{ id: number; reporter_user_id: number; reason: string }>();
   const deliveries: unknown[] = [];
   for (const task of tasks.results) {
     await db.batch([
-      db.prepare("UPDATE knowledge_governance_tasks SET status='RESOLVED',target_document_id=?,resolution='关联文档已审核发布，系统自动闭环',resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=? AND status IN ('OPEN','IN_PROGRESS')")
+      db.prepare("UPDATE knowledge_governance_tasks SET status='RESOLVED',workflow_stage='RESOLVED',target_document_id=?,resolution='关联文档已审核发布，系统自动闭环',resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=? AND status IN ('OPEN','IN_PROGRESS')")
         .bind(document.id, input.actorUserId, task.id),
       db.prepare("UPDATE feedback SET status='RESOLVED' WHERE document_id=? AND reporter_user_id=? AND status='OPEN'")
         .bind(document.id, task.reporter_user_id),

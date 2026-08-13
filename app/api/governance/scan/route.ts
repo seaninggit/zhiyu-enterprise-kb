@@ -1,5 +1,5 @@
 import { getD1 } from "../../../../db";
-import { canManageDepartment, requireApiUser } from "../../../../lib/authz";
+import { requireApiUser } from "../../../../lib/authz";
 import { ApiError, fail, ok, requestId } from "../../../../lib/api";
 import { runAgent } from "../../../../lib/agent";
 

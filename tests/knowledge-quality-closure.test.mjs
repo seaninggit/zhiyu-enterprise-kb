@@ -21,7 +21,25 @@ test("homophone correction is persisted, dual-retrieved and visible to users", a
   assert.match(page, /猜你想查“\{correction\.corrected\}”/);
   assert.match(page, /仍搜索“\{correction\.original\}”/);
   assert.match(ask, /系统识别意图：\$\{correctedQuestion\}/);
-  assert.match(ask, /embedTexts\(\[correctedQuestion\]\)/);
+  assert.match(ask, /embedTexts\(\[retrievalIntent\]\)/);
+});
+
+test("automatic homophone inference cannot overwrite explicit user intent", async()=>{
+  const [correction,ask]=await Promise.all([read("lib/query-correction.ts"),read("app/api/ai/ask/route.ts")]);
+  assert.match(correction,/语料自动推断只作为检索扩展/);
+  assert.match(correction,/explicitUserCorrection/);
+  assert.match(ask,/clarifiedQuestion/);
+  assert.match(ask,/必须以本轮纠正为准/);
+  assert.match(ask,/deterministicFollowUpSummary/);
+  assert.match(correction,/拼音相似候选仅用于检索/);
+  assert.match(ask,/const retrievalIntent=/);
+});
+
+test("conversation acknowledgements never enter enterprise knowledge retrieval", async()=>{
+  const [ask,intents]=await Promise.all([read("app/api/ai/ask/route.ts"),read("lib/intent-classifier.ts")]);
+  for(const phrase of ["好吧","行吧","知道了","明白了"])assert.match(ask,new RegExp(phrase));
+  assert.match(ask,/assistant_acknowledgement/);
+  assert.match(intents,/好吧/);
 });
 
 test("publication readiness blocks unparsed, unscanned or unindexed knowledge", async () => {
@@ -32,7 +50,7 @@ test("publication readiness blocks unparsed, unscanned or unindexed knowledge", 
   assert.match(route, /const status = "DRAFT"/);
   assert.match(route, /assertPublishReady\(document\)/);
   assert.match(route, /assertPublishReady\(doc\)/);
-  assert.match(bulk, /assertPublishReady/);
+  assert.match(bulk, /BULK_APPROVAL_FORBIDDEN/);
 });
 
 test("document and space permissions share one row-level policy", async () => {
@@ -54,7 +72,8 @@ test("negative feedback cannot be falsely closed without a remediation record", 
   assert.match(platform, /RESOLUTION_REQUIRED/);
   assert.match(platform, /KNOWLEDGE_UPDATE_REQUIRED/);
   assert.match(platform, /GOVERNANCE_RESOLVED/);
-  assert.match(governance, /OWNER_TRANSFER/);
+  assert.match(governance, /ownerTransferRequired/);
+  assert.doesNotMatch(governance, /ORDER BY ud\.is_dept_admin DESC/);
   assert.match(governance, /EXPIRED_VOID/);
   assert.match(quality, /citations\.some/);
   assert.match(page, /提交并通知反馈人/);

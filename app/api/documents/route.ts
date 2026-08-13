@@ -2,12 +2,14 @@ import { getD1 } from "../../../db";
 import { ApiError, fail, ok, requestId, requiredText, safeText } from "../../../lib/api";
 import { canManageDepartment, enforceRateLimit, hasPermission, requireApiUser } from "../../../lib/authz";
 import { documentListScope } from "../../../lib/document-access";
+import { canEditDocument } from "../../../lib/document-access";
 import { runGovernanceMaintenance } from "../../../lib/governance";
 import { deleteKnowledgeFile, hasKnowledgeFileStorage, putKnowledgeFile } from "../../../lib/knowledge-files";
 import { assertPublishReady } from "../../../lib/publish-readiness";
 import { resolveDocumentTransition, WorkflowAction, WorkflowStatus } from "../../../lib/workflow";
 import { notifyUser } from "../../../lib/notifications";
 import { resolvePublishedFeedback } from "../../../lib/governance-feedback";
+import { assertCurrentReviewer, createDepartmentApproval, nextApprovalStep } from "../../../lib/approval-routing";
 
 function placeholders(values: number[]) { return values.map(() => "?").join(","); }
 
@@ -55,7 +57,7 @@ export async function GET(request: Request) {
     const favorites=await db.prepare(`SELECT f.document_id FROM user_favorites f JOIN documents d ON d.id=f.document_id WHERE f.user_id=? AND ${access.sql}`).bind(ctx.userId,...access.binds).all<{document_id:number}>();
     const notifications=await db.prepare("SELECT * FROM notifications WHERE user_id=? ORDER BY create_time DESC LIMIT 30").bind(ctx.userId).all();
     const spaces=await db.prepare(`SELECT s.*,f.id folder_id,f.name folder_name,f.parent_id,f.sort_order,(SELECT COUNT(*) FROM documents d WHERE d.space_id=s.id AND d.is_deleted=0) document_count FROM knowledge_spaces s LEFT JOIN knowledge_folders f ON f.space_id=s.id WHERE s.is_active=1 AND (${ctx.role === "SUPER_ADMIN" ? "1=1" : `s.dept_id IS NULL OR s.dept_id IN (${placeholders(ctx.deptIds)})`}) ORDER BY s.id,f.sort_order`).bind(...(ctx.role === "SUPER_ADMIN"?[]:ctx.deptIds)).all();
-    const metrics=await db.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN d.status='PENDING_DEPT_REVIEW' THEN 1 ELSE 0 END) pending,SUM(CASE WHEN d.parse_status IN ('FAILED','OCR_FAILED','NEEDS_CONTENT') THEN 1 ELSE 0 END) parse_failed,SUM(CASE WHEN d.review_due_at IS NOT NULL AND d.review_due_at<=date('now','+30 day') AND d.status='ARCHIVED_ACTIVE' THEN 1 ELSE 0 END) due_soon,SUM(CASE WHEN d.verification_status='VERIFIED' THEN 1 ELSE 0 END) verified FROM documents d WHERE ${access.sql}`).bind(...access.binds).first();
+    const metrics=await db.prepare(`SELECT COUNT(*) total,SUM(CASE WHEN d.status='PENDING_DEPT_REVIEW' THEN 1 ELSE 0 END) pending,SUM(CASE WHEN EXISTS(SELECT 1 FROM approval_instances ai JOIN approval_steps aps ON aps.instance_id=ai.id WHERE ai.document_id=d.id AND ai.status='PENDING' AND aps.status='PENDING' AND aps.assignee_user_id=?) THEN 1 ELSE 0 END) pending_for_me,SUM(CASE WHEN d.parse_status IN ('FAILED','OCR_FAILED','NEEDS_CONTENT') THEN 1 ELSE 0 END) parse_failed,SUM(CASE WHEN d.review_due_at IS NOT NULL AND d.review_due_at<=date('now','+30 day') AND d.status='ARCHIVED_ACTIVE' THEN 1 ELSE 0 END) due_soon,SUM(CASE WHEN d.verification_status='VERIFIED' THEN 1 ELSE 0 END) verified FROM documents d WHERE ${access.sql}`).bind(ctx.userId,...access.binds).first();
     const visibleSpaceCounts=new Map<number,number>();for(const document of visibleDocuments){const sid=Number(document.space_id||0);if(sid)visibleSpaceCounts.set(sid,(visibleSpaceCounts.get(sid)||0)+1);}const visibleSpaces=(spaces.results as Record<string,unknown>[]).map(space=>({...space,document_count:visibleSpaceCounts.get(Number(space.id))||0}));
     return ok({ documents: visibleDocuments, logs: logs.results, governanceTasks: governanceTasks.results, currentUser: ctx, favorites:favorites.results.map(row=>Number(row.document_id)), notifications:notifications.results, spaces:visibleSpaces, metrics, categoryOptions:categoryOptions.results, tagOptions:tagOptions.results, uploadConfig, uploadOptions: { departments: departments.results, members: members.results } }, rid);
   } catch (error) { return fail(error, rid); }
@@ -86,12 +88,12 @@ export async function POST(request: Request) {
       await putKnowledgeFile(sourceKey, file.stream(), { contentType: mimeType, size: file.size });
     }
     const extractedContent = safeText(value("content"), 500000); const extractionMethod = safeText(value("extractionMethod") || (extractedContent ? "MANUAL" : "NONE"), 40); const extractionDetail = safeText(value("extractionDetail"), 500); const ocrStatus = safeText(value("ocrStatus") || "NOT_REQUIRED", 40);
-    const sensitiveIdentity=/身份证|居民身份|公民身份号码|签发机关|有效期限/.test(`${title} ${sourceName||""} ${extractedContent.slice(0,2000)}`);const securityLevel=sensitiveIdentity?"CONFIDENTIAL":safeText(value("securityLevel") || "INTERNAL", 30);const effectiveShareScope=sensitiveIdentity?"DEPT":shareScope;
+    const sensitiveIdentity=/身份证|居民身份|公民身份号码|签发机关|有效期限/.test(`${title} ${sourceName||""} ${extractedContent.slice(0,2000)}`);const securityLevel=sensitiveIdentity?"CONFIDENTIAL":safeText(value("securityLevel") || "INTERNAL", 30);const effectiveShareScope=sensitiveIdentity?"DEPT":shareScope;const documentType=["NORMAL","POLICY"].includes(safeText(value("documentType"),20))?safeText(value("documentType"),20):"NORMAL",riskLevel=["NORMAL","HIGH"].includes(safeText(value("riskLevel"),20))?safeText(value("riskLevel"),20):"NORMAL";
     const initialParseStatus = extractedContent ? "COMPLETED" : (ocrStatus === "FAILED" ? "OCR_FAILED" : sourceKey ? "PENDING" : "NEEDS_CONTENT");
     const id = crypto.getRandomValues(new Uint32Array(1))[0];const ownerUser=await db.prepare("SELECT u.id FROM users u JOIN user_departments ud ON ud.user_id=u.id WHERE u.status='ACTIVE' AND ud.dept_id=? AND u.display_name=? LIMIT 1").bind(deptId,owner).first<{id:number}>();const retentionDays=Math.max(1,Math.min(36500,Number(settings['retention.default_days']||1095)));
     await db.batch([
-      db.prepare(`INSERT INTO documents(id,dept_id,space_id,folder_id,create_user_id,update_user_id,owner_user_id,title,summary,content,category,status,share_scope,security_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,retention_until,is_deleted,parse_status,extraction_method,extraction_detail,ocr_status,watermark_enabled)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,date('now',?),0,?,?,?,?,?)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, ownerUser?.id||ctx.userId, title, safeText(value("summary"), 1000), extractedContent, category, status, effectiveShareScope, securityLevel, owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null,`+${retentionDays} day`, initialParseStatus, extractionMethod, extractionDetail, ocrStatus,sensitiveIdentity?1:0),
+      db.prepare(`INSERT INTO documents(id,dept_id,space_id,folder_id,create_user_id,update_user_id,owner_user_id,title,summary,content,category,status,share_scope,security_level,document_type,risk_level,owner,uploader,source_name,source_key,mime_type,size,version,review_due_at,retention_until,is_deleted,parse_status,extraction_method,extraction_detail,ocr_status,watermark_enabled)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,date('now',?),0,?,?,?,?,?)`).bind(id, deptId, Number(value("spaceId"))||null, Number(value("folderId"))||null, ctx.userId, ctx.userId, ownerUser?.id||ctx.userId, title, safeText(value("summary"), 1000), extractedContent, category, status, effectiveShareScope, securityLevel,documentType,riskLevel, owner, ctx.displayName, sourceName, sourceKey, mimeType, size, 1, safeText(value("reviewDueAt"), 30) || null,`+${retentionDays} day`, initialParseStatus, extractionMethod, extractionDetail, ocrStatus,sensitiveIdentity?1:0),
       db.prepare("INSERT INTO document_versions(document_id,version,title,content,change_note,operator_user_id,operator) VALUES(?,1,?,?,?,?,?)").bind(id, title, extractedContent, "上传并创建知识", ctx.userId, ctx.displayName),
       db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'CREATE',?,?,?,?)").bind(id, deptId, ctx.userId, ctx.displayName, `${sourceName ? `上传文件 ${sourceName}` : "创建在线文档"}${sensitiveIdentity?" · 识别为身份敏感资料，自动设为机密、部门可见并启用下载追踪":""}`, rid),
       db.prepare("INSERT INTO ingestion_jobs(document_id,document_version,status,stage) VALUES(?,1,'QUEUED','EXTRACT')").bind(id),
@@ -115,11 +117,13 @@ export async function POST(request: Request) {
     if(wantsReview&&document){
       try{
         await assertPublishReady(document);
+        const routed=await createDepartmentApproval({documentId:id,version:1,deptId,submittedBy:ctx.userId,modifierUserId:ctx.userId,securityLevel,shareScope:effectiveShareScope,documentType,riskLevel});
         await db.batch([
           db.prepare("UPDATE documents SET status='PENDING_DEPT_REVIEW',update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(ctx.userId,id),
-          db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,action,comment) VALUES(?,?,'SUBMIT','上传后提交部门审核')").bind(id,ctx.userId),
-          db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'SUBMIT',?,?,?,?)").bind(id,deptId,ctx.userId,ctx.displayName,"发布门禁校验通过，进入部门审核",rid),
+          db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,'SUBMIT',?)").bind(id,ctx.userId,routed.reviewerId,`已生成 ${routed.steps.length} 级审批路线，当前：${routed.reviewerName}`),
+          db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,'SUBMIT',?,?,?,?)").bind(id,deptId,ctx.userId,ctx.displayName,`发布门禁校验通过，生成 ${routed.routeType} 审批路线`,rid),
         ]);
+        await notifyUser({userId:routed.reviewerId,type:"SUBMIT",title:"收到资料审批待办",content:`《${title}》V1.0 已进入你的审批环节。`,documentId:id,requestId:rid,email:true});
         document=await db.prepare("SELECT * FROM documents WHERE id=?").bind(id).first<Record<string,unknown>>();
       }catch(error){readinessWarning=error instanceof Error?error.message:"资料尚未达到发布条件，已保存为草稿";}
     }
@@ -138,19 +142,30 @@ export async function PATCH(request: Request) {
     if (!payload.id || !payload.action) throw new ApiError(400, "VALIDATION_ERROR", "文档与操作不能为空");
     const db = getD1(); const doc = await db.prepare("SELECT * FROM documents WHERE id=? AND is_deleted=0").bind(payload.id).first<Record<string, unknown>>();
     if (!doc) throw new ApiError(404, "NOT_FOUND", "文档不存在"); const deptId = Number(doc.dept_id); const creatorId = Number(doc.create_user_id);
-    const manager = canManageDepartment(ctx, deptId); const creatorInDepartment=creatorId===ctx.userId&&ctx.deptIds.includes(deptId);if (payload.action === "submit" ? !(manager || creatorInDepartment) : !manager) throw new ApiError(403, "FORBIDDEN", "无权执行该状态操作");
+    const manager = canManageDepartment(ctx, deptId);if (payload.action === "submit" ? !await canEditDocument(doc,ctx) : !["approve","reject"].includes(payload.action)&&!manager) throw new ApiError(403, "FORBIDDEN", payload.action==="submit"?"仅当前资料负责人或获得编辑授权的成员可以提交审批":"无权执行该状态操作");
     const comment=safeText(payload.comment,1000);if(["reject","archive","void"].includes(payload.action)&&comment.length<2)throw new ApiError(400,"COMMENT_REQUIRED","驳回或作废必须填写原因");
     if(["submit","approve"].includes(payload.action))await assertPublishReady(doc);
-    const target = resolveDocumentTransition(String(doc.status) as WorkflowStatus,payload.action as WorkflowAction);
+    const modifierId=Number(doc.update_user_id||creatorId);
+    const directTarget=["submit","approve","reject"].includes(payload.action)?resolveDocumentTransition(String(doc.status) as WorkflowStatus,payload.action as WorkflowAction):null;
+    const routed=payload.action==="submit"?await createDepartmentApproval({documentId:Number(payload.id),version:Number(doc.version),deptId,submittedBy:ctx.userId,modifierUserId:modifierId,securityLevel:String(doc.security_level),shareScope:String(doc.share_scope),documentType:String(doc.document_type||"NORMAL"),riskLevel:String(doc.risk_level||"NORMAL")}):null;
+    const approvalStep=["approve","reject"].includes(payload.action)?await assertCurrentReviewer(Number(payload.id),ctx.userId):null;
+    const nextStep=payload.action==="approve"&&approvalStep?await nextApprovalStep(Number(approvalStep.instance_id),Number(approvalStep.stage_no)):null;
+    const isIntermediateApproval=payload.action==="approve"&&Boolean(nextStep);
+    const target=isIntermediateApproval?"PENDING_DEPT_REVIEW":directTarget??resolveDocumentTransition(String(doc.status) as WorkflowStatus,payload.action as WorkflowAction);
     await db.batch([
       db.prepare("UPDATE documents SET status=?,published_version=CASE WHEN ?='ARCHIVED_ACTIVE' THEN version ELSE published_version END,published_title=CASE WHEN ?='ARCHIVED_ACTIVE' THEN title ELSE published_title END,published_summary=CASE WHEN ?='ARCHIVED_ACTIVE' THEN summary ELSE published_summary END,published_content=CASE WHEN ?='ARCHIVED_ACTIVE' THEN content ELSE published_content END,verification_status=CASE WHEN ?='ARCHIVED_ACTIVE' THEN 'VERIFIED' ELSE verification_status END,verified_at=CASE WHEN ?='ARCHIVED_ACTIVE' THEN CURRENT_TIMESTAMP ELSE verified_at END,update_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?").bind(target,target,target,target,target,target,target,ctx.userId,payload.id),
-      db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, creatorId, ctx.userId, payload.action.toUpperCase(), comment),
-      db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.id, deptId, payload.action.toUpperCase(), ctx.userId, ctx.displayName, `状态更新为 ${target}`, rid),
+      db.prepare("INSERT INTO approval_records(document_id,applicant_user_id,approver_user_id,action,comment) VALUES(?,?,?,?,?)").bind(payload.id, routed?ctx.userId:Number(approvalStep?.modifier_user_id||creatorId), routed?.reviewerId??ctx.userId, isIntermediateApproval?"APPROVE_STAGE":payload.action.toUpperCase(), routed?`已生成 ${routed.steps.length} 级审批路线，当前：${routed.reviewerName}`:comment),
+      db.prepare("INSERT INTO audit_logs(document_id,dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,?,?,?,?,?,?)").bind(payload.id, deptId, payload.action.toUpperCase(), ctx.userId, ctx.displayName, routed?`V${String(doc.version)} 已分配部门备审人 ${routed.reviewerName}`:`状态更新为 ${target}`, rid),
+      ...(payload.action==="submit"?[db.prepare("UPDATE knowledge_governance_tasks SET status='IN_PROGRESS',workflow_stage='WAITING_APPROVAL',target_document_id=?,update_time=CURRENT_TIMESTAMP WHERE source_document_id=? AND assignee_user_id=? AND status IN ('OPEN','IN_PROGRESS')").bind(payload.id,payload.id,ctx.userId)]:[]),
+      ...(payload.action==="reject"?[db.prepare("UPDATE knowledge_governance_tasks SET status='OPEN',workflow_stage='WAITING_OWNER',update_time=CURRENT_TIMESTAMP WHERE source_document_id=? AND status IN ('OPEN','IN_PROGRESS')").bind(payload.id)]:[]),
+      ...(approvalStep?[db.prepare("UPDATE approval_steps SET status=?,action_user_id=?,comment=?,action_time=CURRENT_TIMESTAMP WHERE id=?").bind(payload.action==="approve"?"APPROVED":"REJECTED",ctx.userId,comment,approvalStep.id),...(nextStep&&payload.action==="approve"?[db.prepare("UPDATE approval_steps SET status='PENDING' WHERE id=?").bind(nextStep.id),db.prepare("UPDATE approval_instances SET current_stage=? WHERE id=?").bind(nextStep.stage_no,approvalStep.instance_id)]:[db.prepare("UPDATE approval_instances SET status=?,complete_time=CURRENT_TIMESTAMP WHERE id=?").bind(payload.action==="approve"?"APPROVED":"REJECTED",approvalStep.instance_id)])]:[]),
     ]);
-    const workflowTitle=payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新";
-    const workflowContent=payload.action==="approve"?`《${String(doc.title)}》已审批通过并发布，当前版本 V${String(doc.version)}.0。`:payload.action==="reject"?`《${String(doc.title)}》被驳回：${comment}`:`《${String(doc.title)}》状态已更新为 ${target}。`;
+    const workflowTitle=isIntermediateApproval?"资料已进入下一审批环节":payload.action==="approve"?"资料已审批发布":payload.action==="reject"?"资料被驳回":"资料状态已更新";
+    const workflowContent=isIntermediateApproval?`《${String(doc.title)}》已完成当前审批，进入下一环节。`:payload.action==="approve"?`《${String(doc.title)}》已审批通过并发布，当前版本 V${String(doc.version)}.0。`:payload.action==="reject"?`《${String(doc.title)}》被驳回：${comment}`:`《${String(doc.title)}》状态已更新为 ${target}。`;
     const recipients=Array.from(new Set([creatorId,Number(doc.owner_user_id||creatorId)])).filter(id=>id>0);
     for(const userId of recipients)await notifyUser({userId,type:payload.action.toUpperCase(),title:workflowTitle,content:workflowContent,documentId:payload.id,requestId:rid,email:["approve","reject"].includes(payload.action)});
+    if(routed)await notifyUser({userId:routed.reviewerId,type:"SUBMIT",title:"收到资料审批待办",content:`《${String(doc.title)}》V${String(doc.version)}.0 已进入你的审批环节（${routed.steps[0].duty}）。`,documentId:payload.id,requestId:rid,email:true});
+    if(nextStep)await notifyUser({userId:Number(nextStep.assignee_user_id),type:"APPROVAL_STAGE",title:"收到下一阶段审批待办",content:`《${String(doc.title)}》已完成上一环节，现进入你的审批阶段。`,documentId:payload.id,requestId:rid,email:true});
     if(target==="ARCHIVED_ACTIVE")await resolvePublishedFeedback({documentId:payload.id,actorUserId:ctx.userId,actorName:ctx.displayName,requestId:rid});
     if (target === "ARCHIVED_ACTIVE") { const { processDocument }=await import("../../../lib/ingestion"); await processDocument(payload.id).catch(async error => {
       await db.prepare("UPDATE documents SET ai_index_status='FAILED' WHERE id=?").bind(payload.id).run();
@@ -159,6 +174,6 @@ export async function PATCH(request: Request) {
       await db.prepare("INSERT INTO notifications(user_id,type,title,content,document_id) SELECT user_id,'SUBSCRIPTION_UPDATE','订阅资料已发布',?,? FROM knowledge_subscriptions WHERE document_id=? AND is_active=1 AND user_id<>?").bind(String(doc.title),payload.id,payload.id,ctx.userId).run();
       const {dispatchWebhook}=await import("../../../lib/webhooks");await dispatchWebhook("DOCUMENT_PUBLISHED",{documentId:payload.id,deptId,title:doc.title,version:doc.version}).catch(()=>undefined);
     }
-    return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(payload.id).first() }, rid);
+    return ok({ document: await db.prepare("SELECT * FROM documents WHERE id=?").bind(payload.id).first(),approval:routed?{routeType:routed.routeType,totalStages:routed.steps.length,currentApprover:routed.reviewerName}:nextStep?{intermediate:true,nextApprover:String(nextStep.assignee_name),nextDuty:String(nextStep.duty_code)}:{intermediate:false} }, rid);
   } catch (error) { return fail(error, rid); }
 }

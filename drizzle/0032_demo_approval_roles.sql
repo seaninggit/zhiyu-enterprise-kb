@@ -1,0 +1,4 @@
+-- Compatibility placeholder.
+-- Approval roles and duties are configured by a super administrator through
+-- the role and member screens. Production migrations must not create demo
+-- identities or appoint approval duties automatically.

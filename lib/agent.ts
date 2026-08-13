@@ -4,15 +4,12 @@
  * 给 DeepSeek 配上 6 个企业知识操作工具，让它能从"回答问题"升级为"执行治理任务"。
  * 核心：tool-use loop — AI 调用工具 → 系统执行 → AI 分析结果 → 决定下一步 → 最终回复。
  */
-import { env } from "cloudflare:workers";
 import { getD1 } from "../db";
 import { safeText } from "./api";
 import { type AuthContext } from "./authz";
 import { canReadDocument, documentListScope, publishedDocumentScope } from "./document-access";
 import { notifyUser } from "./notifications";
-
-type RuntimeEnv = { AI_PROVIDER?: string; AI_CHAT_MODEL?: string; AI_BASE_URL?: string; DEEPSEEK_API_KEY?: string; OPENAI_API_KEY?: string; };
-function runtime() { return env as unknown as RuntimeEnv; }
+import { chatRuntimes } from "./ai-provider";
 
 // ---- Agent Request/Response Types ----
 
@@ -525,6 +522,9 @@ export async function runAgent(
   history: AgentMessage[],
   ctx: AuthContext,
 ): Promise<AgentResult> {
+  const routes=await chatRuntimes("GOVERNANCE_AGENT");let route=routes[0];
+  if(route.status!=="ACTIVE")return{answer:"知识治理 Agent 当前已停用，请联系系统管理员检查场景路由。",toolCalls:[],iterations:0};
+  if(!route.configured)return{answer:`当前模型路由为 ${route.provider} / ${route.model}，但服务器尚未配置对应密钥。请由超级管理员完成密钥托管。`,toolCalls:[],iterations:0};
   const messages: Array<{ role: string; content: string; tool_calls?: unknown[]; tool_call_id?: string }> = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history.map((m) => {
@@ -543,27 +543,14 @@ export async function runAgent(
   while (iterations < MAX_ITERATIONS) {
     iterations++;
 
-    const c = runtime();
-    const baseUrl = (c.AI_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
-    const apiKeyEnv = c.DEEPSEEK_API_KEY || "";
-    const model = c.AI_CHAT_MODEL || "deepseek-v4-flash";
-
-    if (!apiKeyEnv) {
-      return {
-        answer: "Agent 需要配置 DEEPSEEK_API_KEY 才能运行。请在环境变量中设置密钥。",
-        toolCalls: [],
-        iterations: 0,
-      };
-    }
-
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    let response = await fetch(`${route.baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKeyEnv}`,
+        Authorization: `Bearer ${route.apiKey}`,
       },
       body: JSON.stringify({
-        model,
+        model:route.model,
         messages,
         tools: TOOLS,
         tool_choice: "auto",
@@ -572,6 +559,7 @@ export async function runAgent(
       }),
     });
 
+    if(!response.ok&&routes[1]){route=routes[1];response=await fetch(`${route.baseUrl}/chat/completions`,{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${route.apiKey}`},body:JSON.stringify({model:route.model,messages,tools:TOOLS,tool_choice:"auto",temperature:.3,max_tokens:2000})});}
     if (!response.ok) {
       await response.text().catch(() => "");
       return {
@@ -657,20 +645,15 @@ export async function runAgent(
       content: "请根据以上工具执行结果，用中文给出简洁的总结和建议。",
     });
 
-    const c2 = runtime();
-    const baseUrl2 = (c2.AI_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
-    const apiKey2 = c2.DEEPSEEK_API_KEY || "";
-    const model2 = c2.AI_CHAT_MODEL || "deepseek-v4-flash";
-
     try {
-      const summary = await fetch(`${baseUrl2}/chat/completions`, {
+      const summary = await fetch(`${route.baseUrl}/chat/completions`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey2}`,
+          Authorization: `Bearer ${route.apiKey}`,
         },
         body: JSON.stringify({
-          model: model2,
+          model: route.model,
           messages: messages.filter((m) => m.role !== "tool" || m.tool_call_id).slice(-15),
           temperature: 0.5,
           max_tokens: 1500,

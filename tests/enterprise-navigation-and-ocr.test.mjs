@@ -9,9 +9,9 @@ test("navigation is role-configurable and management duties are separated",()=>{
   assert.match(page,/hasPerm\("page:approval_pending"\)/);assert.match(page,/feedbackGovernance/);assert.match(page,/lifecycleGovernance/);assert.match(roles,/expandPermissionTree/);
 });
 
-test("OCR enhances images and blocks low-confidence text for human review",()=>{
+test("OCR enhances images and requires human review even when aggregate confidence is high",()=>{
   const client=read("lib/client-knowledge.ts"),page=read("app/page.tsx");
-  assert.match(client,/preprocessImage/);assert.match(client,/normalizeOcrText/);assert.match(client,/needsReview:confidence<82/);assert.match(page,/请先校对“正文 \/ 解析补充”/);
+  assert.match(client,/preprocessImage/);assert.match(client,/normalizeOcrText/);assert.match(client,/needsReview:true/);assert.match(client,/needsReview:result\.usedOcr/);assert.match(page,/请先校对“正文 \/ 解析补充”/);
 });
 
 test("external employees are not enrolled into every department",()=>{
@@ -29,12 +29,20 @@ test("employee and administrator lists support scale controls",()=>{
 test("department scope never grants department administrator capability",()=>{
   const auth=read("lib/authz.ts"),access=read("lib/document-access.ts"),detail=read("app/api/documents/[id]/route.ts");
   assert.doesNotMatch(auth,/hasScope\(ctx, "department"\) && ctx\.deptIds\.includes/);
-  assert.match(auth,/ctx\.role==="DEPT_ADMIN"/);assert.match(access,/ctx\.role==="DEPT_ADMIN"/);
-  assert.match(detail,/const privileged=manager\|\|creator/);assert.match(detail,/version<=\?/);assert.match(detail,/approvals=privileged/);
+  assert.match(auth,/hasPermission\(ctx,"governance:admin"\)/);assert.match(access,/ctx\.role==="DEPT_ADMIN"/);
+  assert.match(detail,/const privileged=manager\|\|responsible/);assert.match(detail,/version<=\?/);assert.match(detail,/approvals=privileged/);
+});
+
+test("document responsibility is transferred instead of administrator editing",()=>{
+  const access=read("lib/document-access.ts"),detail=read("app/api/documents/[id]/route.ts"),page=read("app/page.tsx");
+  assert.match(access,/ownerId=Number\(doc\.owner_user_id\|\|doc\.create_user_id\)/);
+  assert.match(detail,/TRANSFER_OWNER/);assert.match(detail,/OWNER_TRANSFER/);assert.match(detail,/SUCCESSOR_NOT_ELIGIBLE/);
+  assert.doesNotMatch(detail,/ADMIN_OVERRIDE_EDIT/);assert.doesNotMatch(page,/代为修订原因/);
+  assert.match(page,/责任转交/);assert.match(page,/原上传人、历史版本和审批记录保持不变/);
 });
 
 test("identity documents are forced into confidential traced department storage",()=>{
   const route=read("app/api/documents/route.ts"),page=read("app/page.tsx");
   assert.match(route,/sensitiveIdentity/);assert.match(route,/"CONFIDENTIAL"/);assert.match(route,/effectiveShareScope/);assert.match(route,/watermark_enabled/);
-  assert.match(page,/需要人工校对后再提交/);assert.match(page,/身份资料将自动设为机密/);
+  assert.match(page,/需要人工处理后再提交/);assert.match(page,/人工确认后的正文将用于摘要和检索/);
 });

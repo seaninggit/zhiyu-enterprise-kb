@@ -32,4 +32,12 @@ test("UI has no fallback injection after authenticated empty responses",async()=
 test("member onboarding supports enterprise single, bulk and directory flows",async()=>{
   const [admin,page,scim]=await Promise.all([readFile(new URL("../app/api/admin/users/route.ts",import.meta.url),"utf8"),readFile(new URL("../app/page.tsx",import.meta.url),"utf8"),readFile(new URL("../app/api/scim/v2/Users/route.ts",import.meta.url),"utf8")]);
   assert.match(admin,/Array\.isArray\(payload\.members\)/);assert.match(admin,/IMPORT_VALIDATION_ERROR/);assert.match(admin,/IMPORT_DUPLICATE/);assert.match(admin,/ACCOUNT_IMPORT/);assert.match(page,/添加并授权/);assert.match(page,/待首次登录/);assert.doesNotMatch(page,/预开通/);assert.match(scim,/SCIM_BEARER_TOKEN/);
+  assert.match(admin,/findAssignableRole/);assert.doesNotMatch(admin,/\["SUPER_ADMIN","DEPT_ADMIN","EMPLOYEE"\]\.includes\(role\)/);
+});
+
+test("approval routing separates modifier, configured duty and assigned reviewer",async()=>{
+  const [routing,documents,query,migration]=await Promise.all([readFile(new URL("../lib/approval-routing.ts",import.meta.url),"utf8"),readFile(new URL("../app/api/documents/route.ts",import.meta.url),"utf8"),readFile(new URL("../app/api/documents/query/route.ts",import.meta.url),"utf8"),readFile(new URL("../drizzle/0027_approval_routing.sql",import.meta.url),"utf8")]);
+  for(const token of ["approval_duties","approval_instances","approval_steps","NO_\\$\\{duty\\}","SELF_APPROVAL_FORBIDDEN"])assert.match(`${routing}\n${migration}`,new RegExp(token));
+  for(const token of ["BUSINESS_COMPLIANCE","DEPARTMENT_COMPLIANCE","DEPARTMENT_ENTERPRISE"])assert.match(routing,new RegExp(token));
+  assert.match(documents,/createDepartmentApproval/);assert.match(documents,/assertCurrentReviewer/);assert.match(query,/approvalForMe/);assert.match(query,/assignee_user_id=\?/);
 });

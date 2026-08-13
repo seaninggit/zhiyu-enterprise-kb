@@ -19,7 +19,7 @@ const DROP_HEADERS = [
   "oai-authenticated-user-full-name-encoding",
 ];
 
-export default {
+const worker = {
   async fetch(request) {
     const incomingUrl = new URL(request.url);
     const targetUrl = new URL(`${incomingUrl.pathname}${incomingUrl.search}`, UPSTREAM);
@@ -53,3 +53,5 @@ export default {
     });
   },
 };
+
+export default worker;

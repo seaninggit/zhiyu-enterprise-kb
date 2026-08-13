@@ -5,6 +5,8 @@ import { processDocument } from "../../../lib/ingestion";
 import { runGovernanceMaintenance } from "../../../lib/governance";
 import { notifyUser } from "../../../lib/notifications";
 import { resolvePublishedFeedback } from "../../../lib/governance-feedback";
+import { chatRuntime, generateChat } from "../../../lib/ai-provider";
+import { env } from "cloudflare:workers";
 function placeholders(values: number[]) {
   return values.map(() => "?").join(",");
 }
@@ -34,6 +36,8 @@ export async function GET(request: Request) {
       spaces,
       approvals,
       settings,
+      modelServices,
+      modelRoutes,
     ] = await Promise.all([
       db
         .prepare(
@@ -77,6 +81,12 @@ export async function GET(request: Request) {
       ctx.role === "SUPER_ADMIN"
         ? db.prepare("SELECT * FROM system_settings ORDER BY key").all()
         : Promise.resolve({ results: [] }),
+      ctx.role === "SUPER_ADMIN"
+        ? db.prepare("SELECT s.*,COUNT(r.scene_code) route_count FROM ai_model_services s LEFT JOIN ai_scene_routes r ON r.primary_service_id=s.id OR r.fallback_service_id=s.id GROUP BY s.id ORDER BY s.status DESC,s.id").all()
+        : Promise.resolve({results:[]}),
+      ctx.role === "SUPER_ADMIN"
+        ? db.prepare("SELECT r.*,p.name primary_service_name,p.model_code primary_model_code,f.name fallback_service_name FROM ai_scene_routes r JOIN ai_model_services p ON p.id=r.primary_service_id LEFT JOIN ai_model_services f ON f.id=r.fallback_service_id ORDER BY r.scene_code").all()
+        : Promise.resolve({results:[]}),
     ]);
     const total = Number((metrics as Record<string, unknown>)?.documents || 0);
     const verified = Number(
@@ -96,6 +106,14 @@ export async function GET(request: Request) {
           ),
         )
       : 100;
+    const runtimeEnv=env as unknown as Record<string,string|undefined>,registeredModels=modelServices.results as Record<string,unknown>[],deepSeek=registeredModels.find(item=>String(item.provider).toLowerCase()==="deepseek");
+    const aiCapabilities=ctx.role==="SUPER_ADMIN"?[
+      {code:"GENERATION",name:"企业知识生成",engine:"DeepSeek",model:String(deepSeek?.model_code||runtimeEnv.AI_CHAT_MODEL||"deepseek-v4-flash"),purpose:"智能问答、知识治理 Agent、PromptOps 评测",status:runtimeEnv.DEEPSEEK_API_KEY?"AVAILABLE":"NOT_CONFIGURED",serviceId:Number(deepSeek?.id||0)||null},
+      {code:"CLOUD_EMBEDDING",name:"云端语义向量",engine:"阿里云百炼",model:"qwen3.7-text-embedding",purpose:"知识索引、语义检索、短问题意图识别",status:runtimeEnv.DASHSCOPE_API_KEY?"AVAILABLE":"NOT_CONFIGURED"},
+      {code:"LOCAL_EMBEDDING",name:"本地语义向量",engine:"Transformers.js",model:"paraphrase-multilingual-MiniLM-L12-v2",purpose:"浏览器本地索引与无云端向量时的降级",status:"AVAILABLE"},
+      {code:"LOCAL_OCR",name:"本地文字识别",engine:"Tesseract.js",model:"浏览器本地 OCR",purpose:"图片文字识别，不向云端发送原图",status:"AVAILABLE"},
+      {code:"DOCUMENT_AI",name:"云端文档解析",engine:"OpenAI",model:String(runtimeEnv.OPENAI_CHAT_MODEL||"gpt-5.6-terra"),purpose:"仅在本地未提取到文本时解析图片或文件",status:runtimeEnv.OPENAI_API_KEY?"AVAILABLE":"NOT_CONFIGURED"},
+    ]:[];
     return ok(
       {
         metrics: { ...metrics, health },
@@ -106,6 +124,9 @@ export async function GET(request: Request) {
         spaces: spaces.results,
         approvals: approvals.results,
         settings: settings.results,
+        modelServices: modelServices.results,
+        modelRoutes: modelRoutes.results,
+        aiCapabilities,
       },
       rid,
     );
@@ -207,10 +228,11 @@ export async function POST(request: Request) {
         .first<{ id: number; dept_id: number; reason: string; source_document_id: number | null }>();
       if (!task || !canManageDepartment(ctx, task.dept_id))
         throw new ApiError(403, "FORBIDDEN", "无权处理该治理任务");
+      if(task.source_document_id)throw new ApiError(409,"OWNER_REVISION_REQUIRED","关联文档反馈已自动指派上传人修订，管理员只负责监控和后续审批");
       await db.batch([
         db
           .prepare(
-            "UPDATE knowledge_governance_tasks SET status='IN_PROGRESS',assignee_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?",
+            "UPDATE knowledge_governance_tasks SET status='IN_PROGRESS',workflow_stage='ADMIN_TRIAGE',assignee_user_id=?,update_time=CURRENT_TIMESTAMP WHERE id=?",
           )
           .bind(ctx.userId, task.id),
         db
@@ -272,7 +294,7 @@ export async function POST(request: Request) {
       await db.batch([
         db
           .prepare(
-            "UPDATE knowledge_governance_tasks SET status='RESOLVED',assignee_user_id=COALESCE(assignee_user_id,?),target_document_id=?,resolution=?,resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?",
+            "UPDATE knowledge_governance_tasks SET status='RESOLVED',workflow_stage='RESOLVED',assignee_user_id=COALESCE(assignee_user_id,?),target_document_id=?,resolution=?,resolved_by=?,resolved_at=CURRENT_TIMESTAMP,update_time=CURRENT_TIMESTAMP WHERE id=?",
           )
           .bind(ctx.userId, targetId, resolution, ctx.userId, task.id),
         ...(task.source_document_id
@@ -468,6 +490,16 @@ export async function POST(request: Request) {
         )
         .run();
       return ok({ removed: true }, rid);
+    }
+    if(action==="TEST_MODEL_ROUTE"){
+      if(ctx.role!=="SUPER_ADMIN")throw new ApiError(403,"SUPER_ADMIN_REQUIRED","仅超级管理员可测试模型路由");
+      const serviceId=payload.serviceId?Number(payload.serviceId):undefined,route=await chatRuntime("KNOWLEDGE_QA",serviceId);
+      if(!route.configured)throw new ApiError(409,"MODEL_KEY_MISSING",`服务器尚未配置凭证别名 ${route.secretKey||"对应的访问凭证"}`);
+      if(route.status!=="ACTIVE")throw new ApiError(409,"MODEL_SERVICE_INACTIVE","请先启用该模型服务后再执行连接检测");
+      const started=Date.now(),generated=await generateChat("你是企业模型连接检测器，只回复：连接成功。","执行一次最小连接测试。",ctx.userId,{temperature:0,maxTokens:300,serviceId});
+      if(!generated)throw new ApiError(503,"MODEL_UNAVAILABLE","模型连接失败");
+      await db.prepare("INSERT INTO audit_logs(dept_id,action,actor_user_id,actor,detail,request_id) VALUES(?,'MODEL_CONNECTION_TEST',?,?,?,?)").bind(ctx.primaryDeptId,ctx.userId,ctx.displayName,`${generated.provider} · ${generated.model} · ${Date.now()-started}ms`,rid).run();
+      return ok({available:true,provider:generated.provider,model:generated.model,latencyMs:Date.now()-started},rid);
     }
     if (action === "UPDATE_SETTINGS") {
       if(ctx.role!=="SUPER_ADMIN")throw new ApiError(403,"SUPER_ADMIN_REQUIRED","仅超级管理员可修改系统参数");

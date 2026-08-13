@@ -17,7 +17,8 @@ test("employees can trace their uploads, approvals and feedback", () => {
   const documents = read("app/api/documents/route.ts");
   const uploads = read("app/api/uploads/route.ts");
   assert.match(page, /我的上传/);
-  assert.match(page, /MY CONTRIBUTIONS/);
+  assert.match(page, /我的资料/);
+  assert.match(page, /上传、解析、提交审批到发布生效/);
   assert.match(page, /收到待处理建议/);
   assert.match(page, /提交审批/);
   assert.match(page, /查看并补充/);

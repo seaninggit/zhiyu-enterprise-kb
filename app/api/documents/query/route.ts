@@ -12,7 +12,7 @@ export async function GET(request:Request){const rid=requestId(request);try{
   if(mode==="mine"){where.push("(d.create_user_id=? OR COALESCE(d.owner_user_id,d.create_user_id)=?)");binds.push(ctx.userId,ctx.userId);}
   if(mode==="manage"&&ctx.scope!=="global"){where.push(`d.dept_id IN (${ctx.deptIds.map(()=>"?").join(",")})`);binds.push(...ctx.deptIds);}
   const optionClause=where.join(" AND "),optionBinds=[...binds];
-  if(url.searchParams.get("lifecycle")==="1")where.push("(d.status='EXPIRED_VOID' OR d.review_due_at IS NOT NULL)");
+  if(url.searchParams.get("lifecycle")==="1")where.push("d.status IN ('ARCHIVED_ACTIVE','EXPIRED_VOID') AND (d.status='EXPIRED_VOID' OR d.review_due_at IS NOT NULL)");
   const lifecycleStage=safeText(url.searchParams.get("lifecycleStage"),30);
   if(lifecycleStage==="overdue")where.push("d.status<>'EXPIRED_VOID' AND date(d.review_due_at)<date('now')");
   if(lifecycleStage==="dueSoon")where.push("d.status<>'EXPIRED_VOID' AND date(d.review_due_at) BETWEEN date('now') AND date('now','+30 day')");
@@ -37,7 +37,7 @@ export async function GET(request:Request){const rid=requestId(request);try{
     SUM(CASE WHEN d.status<>'EXPIRED_VOID' AND date(d.review_due_at)<date('now') THEN 1 ELSE 0 END) overdue,
     SUM(CASE WHEN d.status<>'EXPIRED_VOID' AND date(d.review_due_at) BETWEEN date('now') AND date('now','+30 day') THEN 1 ELSE 0 END) due_soon,
     SUM(CASE WHEN d.status<>'EXPIRED_VOID' AND date(d.review_due_at)>date('now','+30 day') THEN 1 ELSE 0 END) scheduled
-    FROM documents d WHERE ${optionClause} AND (d.status='EXPIRED_VOID' OR d.review_due_at IS NOT NULL)`).bind(...optionBinds).first():null;
+    FROM documents d WHERE ${optionClause} AND d.status IN ('ARCHIVED_ACTIVE','EXPIRED_VOID') AND (d.status='EXPIRED_VOID' OR d.review_due_at IS NOT NULL)`).bind(...optionBinds).first():null;
   const filterOptions=mode==="manage"?(await db.prepare(`SELECT DISTINCT d.dept_id,dep.name department_name,d.category,d.uploader FROM documents d JOIN departments dep ON dep.id=d.dept_id WHERE ${optionClause} ORDER BY dep.name,d.category,d.uploader`).bind(...optionBinds).all()).results:[];
   const rows=await db.prepare(`SELECT d.*,u.display_name creator_name,dep.name department_name,
     (SELECT MAX(a.create_time) FROM approval_records a WHERE a.document_id=d.id AND a.action='SUBMIT') submitted_at,

@@ -131,7 +131,7 @@ export async function extractKnowledgeFile(file: File, onProgress?: (progress: E
     if (textLike) return { text: await file.text(), method: "TEXT", ocrStatus: "NOT_REQUIRED", detail: "浏览器本地文本解析" };
     if (extension === "pdf" || file.type === "application/pdf") {
       const result = await parsePdf(file, onProgress);
-      return { text: result.text, method: result.usedOcr ? "OCR" : "PDF_TEXT", ocrStatus: result.usedOcr ? "COMPLETED" : "NOT_REQUIRED", detail: result.usedOcr ? "PDF 文本层与本地 OCR 混合解析" : "PDF 文本层解析" };
+      return { text: result.text, method: result.usedOcr ? "OCR" : "PDF_TEXT", ocrStatus: result.usedOcr ? "COMPLETED" : "NOT_REQUIRED", needsReview:result.usedOcr, detail: result.usedOcr ? "PDF 文本层与本地 OCR 混合解析，需人工确认识别结果" : "PDF 文本层解析" };
     }
     if (extension === "docx") {
       const mammoth = await import("mammoth"); const result = await mammoth.extractRawText({ arrayBuffer: await file.arrayBuffer() });
@@ -141,7 +141,7 @@ export async function extractKnowledgeFile(file: File, onProgress?: (progress: E
     if (extension === "pptx") return { text: await parsePptx(await file.arrayBuffer()), method: "PPTX", ocrStatus: "NOT_REQUIRED", detail: "PowerPoint 幻灯片解析" };
     if (file.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"].includes(extension)) {
       const worker = await createOcrWorker(onProgress);
-      try { const result = await worker.recognize(await preprocessImage(file)); const confidence=Math.round(result.data.confidence); return { text: normalizeOcrText(result.data.text), method: "OCR", ocrStatus: "COMPLETED", confidence, needsReview:confidence<82, detail: `图片增强与本地中英文 OCR，识别置信度 ${confidence}%${confidence<82?"，需人工校对":""}` }; }
+      try { const result = await worker.recognize(await preprocessImage(file)); const confidence=Math.round(result.data.confidence); return { text: normalizeOcrText(result.data.text), method: "OCR", ocrStatus: "COMPLETED", confidence, needsReview:true, detail: `图片增强与本地中英文 OCR，识别置信度 ${confidence}%，需人工确认识别结果` }; }
       finally { await worker.terminate(); }
     }
     return { text: "", method: "NONE", ocrStatus: "NOT_REQUIRED", detail: "当前格式保留原件，需补充可检索正文" };

@@ -9,8 +9,8 @@ import { areSourcesRelevant, deterministicFollowUpSummary, deterministicGrounded
 import { classifyIntent } from "../../../../lib/intent-classifier";
 import { runAgent, type AgentMessage } from "../../../../lib/agent";
 
-function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|时限|材料|步骤|流程|根据以上|根据当前|基于以上|基于当前|请根据|按照以上|按照当前|根据上述|生成|办理|以上)/.test(compact)||compact.length<=6;}
-function platformIntent(question:string,displayName:string,role:string,publicViewer=false){
+function isContextualFollowUp(question:string){const compact=question.replace(/[\s，。！？、,.!?：:；;]/g,"");return /^(那|那么|这个|这些|它|其|上述|前面|刚才|还有|然后|具体|为什么|怎么办|根据以上|根据当前|基于以上|基于当前|请根据|按照以上|按照当前|根据上述|以上)/.test(compact)||compact.length<=6;}
+function platformIntent(question:string,displayName:string){
   const raw=question.trim();const normalized=raw.replace(/[？?。！!，,\s]/g,"").toLowerCase();
   // 正则仅保留3条核心快速路径，其余全部走语义分类
   if(/^(你好|您好|hi|hello|在吗)$/.test(normalized))return{mode:"assistant_greeting",answer:`你好，${displayName}。我是问问小知。你可以问我企业制度、业务流程、所需材料或岗位规范，我会从你有权限查看的已生效知识中寻找答案并标注来源。`};
@@ -21,7 +21,6 @@ function platformIntent(question:string,displayName:string,role:string,publicVie
   if(crisisWords.some(w=>raw.includes(w)))return{mode:"assistant_redirect",answer:"如果你正在经历困难时刻，请立即拨打心理援助热线：400-161-9995（24小时），或联系身边信任的人。作为企业知识助手，我无法提供心理咨询，但我真心希望你得到帮助。"};
   // 极短（≤3字）且不含问号、不含"什么/怎么/如何" → 引导
   const strippedLen=raw.replace(/[？?。！!，,、：:；;""''（）()【】{}《》\s\.…～~]+/g,"").length;
-  const hasQuestionWord=/什么|怎么|如何|哪些|是否|为什么|怎么办/.test(raw);
   if(strippedLen<=1&&!/[？?]/.test(raw))return{mode:"assistant_redirect",answer:`你好，${displayName}。我是企业知识库的智能助手，专注帮你查询制度和流程。有什么想了解的企业知识吗？比如差旅报销、入职流程、合同审批。`};
   return null;
 }
@@ -119,7 +118,7 @@ export async function POST(request: Request) {
       const lastMsg=await db.prepare("SELECT content FROM ai_messages WHERE conversation_id=? AND role='assistant' ORDER BY sequence_no DESC LIMIT 1").bind(conversationId).first<{content:string}>();
       aiWasAsking=lastMsg?/吗[？?]|\?$|是否需要|是否还需要|还需要|想了解/.test(lastMsg.content):false;
     }
-    let direct=platformIntent(question,ctx.displayName,ctx.role,ctx.isPublicViewer);
+    let direct=platformIntent(question,ctx.displayName);
     // AI 刚问过"需要吗？"→ "需要""不用"是回应，不是独立意图
     if(aiWasAsking){
       const n=question.replace(/[？?。！!，,\s]/g,"").toLowerCase();
@@ -158,7 +157,7 @@ export async function POST(request: Request) {
     const anchoredAssistantIndex=historyRows.results.findIndex(item=>{if(item.role!=="assistant")return false;try{return JSON.parse(String(item.source_payload||"[]")).some((source:{documentId?:unknown})=>Number(source.documentId)>0);}catch{return false;}});
     const anchoredAssistant=anchoredAssistantIndex>=0?historyRows.results[anchoredAssistantIndex]:undefined;
     const anchoredUser=anchoredAssistantIndex>=0?historyRows.results.slice(anchoredAssistantIndex+1).find(item=>item.role==="user"):undefined;
-    const contextualFollowUp=(Boolean(clarifiedQuestion)||isContextualFollowUp(question))&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:questionIntent;const topicAnchor=safeText(anchoredUser?.content||previousUserMessage?.content,500);const retrievalQuestion=contextualFollowUp?`${topicAnchor}\n${correctedQuestion}\n当前原始输入：${question}`:`${correctedQuestion}\n原始输入：${question}`;
+    const contextualFollowUp=(Boolean(clarifiedQuestion)||isContextualFollowUp(question))&&Boolean(previousUserMessage);const correctedQuestion=correction.applied?correction.corrected:questionIntent;const retrievalIntent=correction.corrected!==correction.original?correction.corrected:correctedQuestion;const topicAnchor=safeText(anchoredUser?.content||previousUserMessage?.content,500);const retrievalQuestion=contextualFollowUp?`${topicAnchor}\n${retrievalIntent}\n当前原始输入：${question}`:`${retrievalIntent}\n原始输入：${question}`;
     const contextDocumentIds=new Set<number>();try{for(const source of JSON.parse(String(anchoredAssistant?.source_payload||"[]")))contextDocumentIds.add(Number(source.documentId));}catch{/* ignore malformed historical sources */}
     const access=publishedDocumentScope(ctx,"d");const scope=access.sql;const binds:unknown[]=[...access.binds];
     // Follow-ups must re-retrieve across the caller's full permission scope. Previous
@@ -179,13 +178,13 @@ export async function POST(request: Request) {
       for (const candidate of candidates.results) await indexPublishedDocument(Number(candidate.id)).catch(() => undefined);
       result = await loadChunks();
     }
-    const localQueryEmbedding = !correction.applied&&isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const queryEmbedding = localQueryEmbedding || (await embedTexts([correctedQuestion]))[0];
+    const localQueryEmbedding = correction.corrected===correction.original&&isValidEmbedding(payload.queryEmbedding) ? payload.queryEmbedding : undefined; const queryEmbedding = localQueryEmbedding || (await embedTexts([retrievalIntent]))[0];
     const corpus=result.results.map(row=>String(row.content).toLowerCase());
     const scored = result.results.map(row => { let vector = 0,hasComparableVector=false; try { if (queryEmbedding && row.embedding) {const stored=JSON.parse(String(row.embedding));hasComparableVector=Array.isArray(stored)&&stored.length===queryEmbedding.length;if(hasComparableVector)vector=cosine(queryEmbedding,stored);} } catch { /* malformed legacy vector */ } const keyword = keywordScore(retrievalQuestion, String(row.content),corpus);let score=hasComparableVector ? vector * vectorWeight + keyword * keywordWeight : keyword;if(contextualFollowUp&&contextDocumentIds.size)score=contextDocumentIds.has(Number(row.document_id))?Math.min(1,score+.25):score*.2;return { ...row,hasComparableVector, score }; }).sort((a, b) => b.score - a.score);
     const ranked:typeof scored=[];const seenDocuments=new Set<number>();for(const item of scored){const documentId=Number(item.document_id);if(seenDocuments.has(documentId))continue;seenDocuments.add(documentId);ranked.push(item);if(ranked.length>=topK)break;}
     const relevant = ranked.filter(item => item.score >= (item.hasComparableVector ? .18 : .15));
     const sources = relevant.map((item, index) => ({ citation: index + 1, documentId: Number(item.document_id), title: String(item.title), version: Number(item.version), department: String(item.department_name), excerpt: String(item.content).replace(/\\n/g,"\n").slice(0, 220), score: Number(item.score.toFixed(4)) }));
-    const relevantChecked=sources.length&&(contextualFollowUp||areSourcesRelevant(correctedQuestion,sources));
+    const relevantChecked=sources.length&&(contextualFollowUp||areSourcesRelevant(retrievalIntent,sources));
     const looksLikeKnowledge=contextualFollowUp||question.length>=4||/[？?]/.test(question);
     const shortAmbiguous=!contextualFollowUp&&question.length<=4&&!/[？?]/.test(question); const noEvidenceAnswer=shortAmbiguous?"不确定你想了解什么，可以说具体一点吗？":looksLikeKnowledge?"当前已生效的企业资料中没有找到足以确认该问题的直接依据，因此不能把通用规定推定为特定地区、部门或材料要求。你可以补充地区、业务名称或制度标题，也可以提交知识缺口，由管理员分诊并联系对应资料负责人补充。":`你好，${ctx.displayName}。我是企业知识库的智能助手，有什么想了解的企业知识吗？`;
     let answer = noEvidenceAnswer; let mode = "no_evidence";let generated:Awaited<ReturnType<typeof generateGroundedAnswer>>=null;
@@ -193,7 +192,7 @@ export async function POST(request: Request) {
       const context = relevant.map((item, index) => `[${index + 1}] 文档：${item.title}；版本：V${item.version}.0；内容：${item.content}`).join("\n\n");
       const recent = historyRows.results.reverse().map(item => `${item.role === "assistant" ? "助手" : "用户"}：${safeText(item.content, 800)}`).join("\n");
       const correctionContext=clarifiedQuestion?`用户明确纠正上一轮表达，当前真实意图是：${clarifiedQuestion}。必须以本轮纠正为准，不得沿用上一轮被否定的词。`:correction.applied&&correction.corrected!==question?`用户原始输入：${question}\n系统识别意图：${correctedQuestion}\n请自然地按识别后的意图回答，不要先否定原始词。`:"";
-      const followUpContext=contextualFollowUp?"这是基于上文的追问。只回答本轮新增问题，不要重复上一轮完整答案；若本轮是在补充地区、人群、部门、版本或其他适用范围，必须先核对引用原文是否明确支持该限定条件，不得把公司通用规定表述为该范围的专项规定。":"";
+      const followUpContext=contextualFollowUp?`这是基于上文的追问。请先从最近一轮用户问题和助手回答中识别已经明确的对象、地区、人群、部门、版本及其他适用范围；除非当前问题明确替换或否定，否则这些限定条件必须继续适用于当前问题。只回答本轮新增问题，不要重复上一轮完整答案。继承后的限定条件仍必须由本轮引用原文直接支持，不得把公司通用规定表述为专项规定。最近一轮用户问题：${safeText(previousUserMessage?.content,500)}\n最近一轮助手回答：${safeText(anchoredAssistant?.content,1000)}`:"";
       const generationQuestion=[recent,correctionContext,followUpContext,`当前问题：${correctedQuestion}`].filter(Boolean).join("\n");
       generated = await generateGroundedAnswer(generationQuestion, context, ctx.userId).catch(() => null);
       const wantsChecklist = /清单|步骤|怎么办|如何办理/.test(question);

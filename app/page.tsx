@@ -458,13 +458,13 @@ export default function Home() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [tagFilter, setTagFilter] = useState("全部标签");
-  const [knowledgeCategories, setKnowledgeCategories] = useState(DEFAULT_CATEGORIES);
+  const [, setKnowledgeCategories] = useState(DEFAULT_CATEGORIES);
   const [categoryOptions, setCategoryOptions] = useState<TaxonomyOption[]>(DEFAULT_CATEGORIES.filter(item=>item!=="全部").map((name,index)=>({id:-(index+1),dept_id:null,name})));
   const [tagOptions, setTagOptions] = useState<TaxonomyOption[]>([]);
   const [knowledgeSpaces,setKnowledgeSpaces]=useState<UploadSpace[]>([]);
   const [uploadConfig,setUploadConfig]=useState<Record<string,string>>({});
   const [selected, setSelected] = useState<KnowledgeDocument | null>(null);
-  const [focusedAdminDocumentId, setFocusedAdminDocumentId] = useState<number | null>(null);
+  const [focusedAdminDocumentId] = useState<number | null>(null);
   const [favorites, setFavorites] = useState<number[]>([]);
   const [metrics, setMetrics] = useState<Metrics>({
     total: 0,
@@ -517,7 +517,7 @@ export default function Home() {
   const [governanceDialog, setGovernanceDialog] =
     useState<GovernanceTask | null>(null);
   const [governanceSubmitting, setGovernanceSubmitting] = useState(false);
-  useEffect(()=>{if(!currentUser.email)return;const required:Partial<Record<View,string>>={library:"page:library",favorites:"page:favorites",contributions:"page:contributions",approval:"page:approval_pending",approvalHistory:"page:approval_history",admin:"page:document_admin",feedbackGovernance:"page:feedback_governance",lifecycleGovernance:"page:lifecycle_governance",taxonomy:"page:taxonomy",platform:"page:ai_ops",accounts:"page:accounts",settings:"page:runtime",audit:"page:audit"};if(required[view]&&hasPerm(required[view]!))return;const fallback=(["library","contributions","approval","approvalHistory","admin","feedbackGovernance","lifecycleGovernance","taxonomy","platform","accounts","settings","audit"] as View[]).find(item=>!required[item]||hasPerm(required[item]!));if(fallback){notify("当前页面未授权，已进入你有权限的首个功能");setView(fallback);}},[currentUser.email,currentUser.permissions,currentUser.scope,view]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(()=>{if(!currentUser.email)return;const required:Partial<Record<View,string>>={library:"page:library",favorites:"page:favorites",contributions:"page:contributions",approval:"page:approval_pending",approvalHistory:"page:approval_history",admin:"page:document_admin",feedbackGovernance:"page:feedback_governance",lifecycleGovernance:"page:lifecycle_governance",taxonomy:"page:taxonomy",platform:"page:ai_ops",accounts:"page:accounts",settings:"page:runtime",audit:"page:audit"};if(required[view]&&hasPerm(required[view]!))return;const fallback=(["library","contributions","approval","approvalHistory","admin","feedbackGovernance","lifecycleGovernance","taxonomy","platform","accounts","settings","audit"] as View[]).find(item=>!required[item]||hasPerm(required[item]!));if(fallback){const timer=window.setTimeout(()=>{notify("当前页面未授权，已进入你有权限的首个功能");setView(fallback)},0);return()=>window.clearTimeout(timer)}},[currentUser.email,currentUser.permissions,currentUser.scope,view]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!noticeOpen) return;
     const closeOnOutside = (event: PointerEvent) => {
@@ -541,7 +541,7 @@ export default function Home() {
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [noticeOpen]);
-  useEffect(() => setNoticeOpen(false), [view]);
+  useEffect(() => {const timer=window.setTimeout(()=>setNoticeOpen(false),0);return()=>window.clearTimeout(timer)}, [view]);
   const [uploadOptions, setUploadOptions] = useState<UploadOptions>({
     departments: [
       {
@@ -847,14 +847,6 @@ export default function Home() {
     action: "submit" | "approve" | "reject" | "archive",
     providedComment = "",
   ) {
-    const next: DocumentStatus =
-      action === "submit"
-        ? "review"
-        : action === "approve"
-          ? "published"
-          : action === "reject"
-            ? "draft"
-            : "archived";
     try {
       const comment = providedComment.trim();
       if (action !== "submit" && !providedComment) {
@@ -910,6 +902,8 @@ export default function Home() {
     try {
       const file = data.get("file");
       let stored: Record<string, unknown> = {};
+      if (file instanceof File && file.name && file.size === 0)
+        throw new Error("所选文件为空，请选择包含内容的文件后重试");
       if (file instanceof File && file.size > 0) {
         const hadManualContent = Boolean(String(data.get("content") ?? "").trim());
         const extraction = await extractKnowledgeFile(
@@ -918,22 +912,30 @@ export default function Home() {
         );
         if (!String(data.get("content") ?? "").trim() && extraction.text.trim())
           data.set("content", extraction.text.slice(0, 500000));
-        if (!String(data.get("summary") ?? "").trim() && extraction.text.trim())
+        const contentForSummary = String(data.get("content") ?? "").trim();
+        if (!String(data.get("summary") ?? "").trim() && contentForSummary)
           data.set(
             "summary",
-            extraction.text.replace(/\s+/g, " ").trim().slice(0, 180),
+            contentForSummary.replace(/\s+/g, " ").slice(0, 180),
           );
         data.set("extractionMethod", extraction.method);
         data.set("extractionDetail", extraction.detail);
         data.set("ocrStatus", extraction.ocrStatus);
+        if (extraction.method === "NONE" && !hadManualContent) {
+          const contentField=form.elements.namedItem("content") as HTMLTextAreaElement|null;
+          setLoading(false); setPipelineProgress(null);
+          setOcrReviewNotice("当前文件格式无法自动提取可检索内容。请在正文中补充核心内容，确认后再次提交；原件仍会随记录保存。");
+          notify("当前格式无法自动解析，请补充“正文 / 解析补充”后再次提交");
+          contentField?.focus();
+          return;
+        }
         if (extraction.needsReview && !hadManualContent) {
           const contentField=form.elements.namedItem("content") as HTMLTextAreaElement|null;
-          const summaryField=form.elements.namedItem("summary") as HTMLTextAreaElement|null;
           if(contentField) contentField.value=extraction.text.slice(0,500000);
-          if(summaryField&&!summaryField.value) summaryField.value=extraction.text.replace(/\s+/g," ").slice(0,180);
           setLoading(false); setPipelineProgress(null);
-          setOcrReviewNotice(`OCR 识别置信度 ${extraction.confidence ?? 0}%。系统已将结果填入正文，请对照原图核对姓名、证件号码、签发机关和有效期限；确认无误后再次提交。`);
-          notify(`OCR 置信度 ${extraction.confidence ?? 0}%，请先校对“正文 / 解析补充”，确认后再次提交`);
+          const confidenceText=typeof extraction.confidence==="number"?`识别置信度 ${extraction.confidence}%`:`扫描页 OCR 已完成`;
+          setOcrReviewNotice(`${confidenceText}。系统已将结果填入正文，请对照原件核对关键名称、数字、日期和表格字段；确认或修正后再次提交。`);
+          notify(`${confidenceText}，请先校对“正文 / 解析补充”，确认后再次提交`);
           contentField?.focus();
           return;
         }
@@ -1747,13 +1749,13 @@ export default function Home() {
   );
 }
 
-function ContributionView({documents,onUpload:_,onSelect,onSubmit}:{documents:KnowledgeDocument[];onUpload:()=>void;onSelect:(doc:KnowledgeDocument)=>void;onSubmit:(id:number)=>void}){
+function ContributionView({documents,onSelect,onSubmit}:{documents:KnowledgeDocument[];onUpload:()=>void;onSelect:(doc:KnowledgeDocument)=>void;onSubmit:(id:number)=>void}){
   const [status,setStatus]=useState("all"),[keyword,setKeyword]=useState(""),[order,setOrder]=useState("updated"),[page,setPage]=useState(1),[from,setFrom]=useState(""),[to,setTo]=useState(""),[serverDocs,setServerDocs]=useState(documents),[serverTotal,setServerTotal]=useState(documents.length);const pageSize=10;
   useEffect(()=>{const controller=new AbortController(),params=new URLSearchParams({mode:"mine",page:String(page),pageSize:String(pageSize),order});if(status!=="all")params.set("status",status);if(keyword.trim())params.set("keyword",keyword.trim());if(from)params.set("from",from);if(to)params.set("to",to);const timer=setTimeout(()=>fetch(`/api/documents/query?${params}`,{cache:"no-store",signal:controller.signal}).then(r=>r.json()).then(payload=>{if(payload.data?.documents){setServerDocs(payload.data.documents.map(normalizeDocument));setServerTotal(Number(payload.data.pagination?.total||0));}}).catch(()=>undefined),180);return()=>{clearTimeout(timer);controller.abort()}},[status,keyword,order,page,from,to,documents]);
   const pending=documents.filter(item=>item.status==="review").length;
   const feedback=documents.reduce((sum,item)=>sum+Number(item.openFeedbackCount||0),0);
   const filtered=serverDocs, pages=Math.max(1,Math.ceil(serverTotal/pageSize)),shown=serverDocs;
-  useEffect(()=>{if(page>pages)setPage(pages)},[page,pages]);
+  useEffect(()=>{if(page<=pages)return;const timer=window.setTimeout(()=>setPage(pages),0);return()=>window.clearTimeout(timer)},[page,pages]);
   return <main className="workspace contribution-view">
     <section className="admin-heading"><div><span className="page-kicker">MY CONTRIBUTIONS</span><h1>我的上传</h1><p>查看从上传、解析、提交审批到发布生效的完整状态，并处理后续反馈。</p></div></section>
     <section className="contribution-summary"><div><b>{documents.length}</b><span>累计上传</span></div><div><b>{pending}</b><span>审批中</span></div><div><b>{documents.filter(item=>item.status==="published").length}</b><span>已发布</span></div><div className={feedback?"attention":""}><b>{feedback}</b><span>待补充反馈</span></div></section>
@@ -1987,7 +1989,6 @@ function AdminView({
   focusedDocumentId,
   metrics,
   governanceTasks,
-  role,
   onUpload,
   onSelect,
   onStatus,
@@ -2031,15 +2032,8 @@ function AdminView({
   }
   useEffect(()=>{
     if(mode!=="admin" || !focusedDocumentId)return;
-    setStatusFilter("ALL");
-    setAdminKeyword("");
-    setAdminCategory("ALL");
-    setAdminDept("ALL");
-    setAdminUploader("ALL");
-    setAdminFrom("");
-    setAdminTo("");
-    setAdminOrder("updated");
-    setAdminPage(1);
+    const timer=window.setTimeout(()=>{setStatusFilter("ALL");setAdminKeyword("");setAdminCategory("ALL");setAdminDept("ALL");setAdminUploader("ALL");setAdminFrom("");setAdminTo("");setAdminOrder("updated");setAdminPage(1)},0);
+    return()=>window.clearTimeout(timer);
   },[mode,focusedDocumentId]);
   async function startGovernanceTask(task: GovernanceTask) {
     if (startingTaskId !== null) return;
@@ -2082,8 +2076,8 @@ function AdminView({
   ];
   const canApprove = mode === "approval" && approvalSection === "pending";
   useEffect(()=>{if(mode==="feedbackGovernance")return;const controller=new AbortController(),params=new URLSearchParams({mode:"manage",page:String(adminPage),pageSize:String(adminPageSize),order:adminOrder});if(mode==="lifecycleGovernance"){params.set("lifecycle","1");if(lifecycleStage!=="ALL")params.set("lifecycleStage",lifecycleStage)}if(mode==="approvalHistory")params.set("approvalHistory","1");if(mode==="approvalHistory"&&approvalAction!=="ALL")params.set("approvalAction",approvalAction);if(mode==="approval"){if(approvalSection==="pending")params.set("approvalForMe","1");if(approvalSection==="submitted")params.set("approvalSubmittedByMe","1");if(approvalSection==="processed")params.set("approvalProcessedByMe","1");}const effectiveStatus=mode==="approval"&&approvalSection==="pending"?"review":statusFilter!=="ALL"?statusFilter:"";if(effectiveStatus)params.set("status",effectiveStatus);if(adminCategory!=="ALL")params.set("category",adminCategory);if(adminDept!=="ALL")params.set("deptId",adminDept);if(adminUploader!=="ALL")params.set("uploader",adminUploader);if(adminKeyword.trim())params.set("keyword",adminKeyword.trim());if(adminFrom)params.set("from",adminFrom);if(adminTo)params.set("to",adminTo);const timer=setTimeout(()=>fetch(`/api/documents/query?${params}`,{cache:"no-store",signal:controller.signal}).then(r=>r.json()).then(payload=>{if(payload.data?.documents){setAdminDocs(payload.data.documents.map(normalizeDocument));setAdminTotal(Number(payload.data.pagination?.total||0));setManageFilterOptions(payload.data.filterOptions||[]);if(payload.data.lifecycleSummary)setLifecycleSummary(payload.data.lifecycleSummary);}}).catch(()=>undefined),180);return()=>{clearTimeout(timer);controller.abort()}},[mode,approvalSection,statusFilter,adminCategory,adminDept,adminUploader,adminKeyword,adminFrom,adminTo,approvalAction,lifecycleStage,adminOrder,adminPage,documents]);
-  const filteredDocuments=adminDocs,adminPages=Math.max(1,Math.ceil(adminTotal/adminPageSize)),shown=adminDocs;
-  useEffect(()=>{if(adminPage>adminPages)setAdminPage(adminPages)},[adminPage,adminPages]);
+  const adminPages=Math.max(1,Math.ceil(adminTotal/adminPageSize)),shown=adminDocs;
+  useEffect(()=>{if(adminPage<=adminPages)return;const timer=window.setTimeout(()=>setAdminPage(adminPages),0);return()=>window.clearTimeout(timer)},[adminPage,adminPages]);
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2285,14 +2279,14 @@ function PlatformView({
     approvals: Record<string, unknown>[];
     settings: Record<string, unknown>[];
   };
-  type ScanResult = { expired:Array<Record<string,unknown>>;duplicates:Array<{docs:Array<Record<string,unknown>>;reason:string}>;parseFails:Array<Record<string,unknown>>;empty:Array<Record<string,unknown>>;pending:Array<Record<string,unknown>>;zeroSearch:Array<Record<string,unknown>> };
+  type ScanDocument = { id:number;title:string;version:number;dept_name:string;owner:string;status:string;review_due_at?:string;source_name?:string;parse_status?:string };
+  type ScanResult = { expired:ScanDocument[];duplicates:Array<{docs:ScanDocument[];reason:string}>;parseFails:ScanDocument[];empty:ScanDocument[];pending:ScanDocument[];zeroSearch:Array<{query:string;cnt:number;last_time?:string}> };
   const [data, setData] = useState<PlatformData | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanResult, setScanResult] = useState<ScanResult|null>(null);
   const [scanLoading, setScanLoading] = useState(false);
   const [agentResult, setAgentResult] = useState<{trace:Array<{tool:string;args:unknown;result:string}>;summary:string}|null>(null);
   const [agentLoading, setAgentLoading] = useState(false);
-  const [agentPanelOpen, setAgentPanelOpen] = useState(false);
   const [agentQuestion, setAgentQuestion] = useState("");
   async function runAgentChat(question?:string) {
     const q = question || agentQuestion.trim();
@@ -2304,12 +2298,12 @@ function PlatformView({
       if(!r.ok) throw new Error(p.error?.message??"Agent执行失败");
       setAgentResult({trace:p.data?.toolCalls||[],summary:p.data?.answer||""});
       setAgentQuestion("");
-    } catch(e:any) { notify(e.message); }
+    } catch(error) { notify(error instanceof Error?error.message:"Agent 执行失败"); }
     finally { setAgentLoading(false); }
   }
-  async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(e:any){notify(e.message)}finally{setScanLoading(false)}}
-  async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(e:any){notify(e.message)}finally{setAgentLoading(false)}}
-  async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");runScan()}catch(e:any){notify(e.message)}}
+  async function runScan(){setScanLoading(true);setScanResult(null);setAgentResult(null);try{const r=await fetch("/api/governance/scan",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"巡检失败");setScanResult(p.data);notify(`巡检完成：${p.data.expired.length}过期 ${p.data.duplicates.length}重复`)}catch(error){notify(error instanceof Error?error.message:"巡检失败")}finally{setScanLoading(false)}}
+  async function runAgentAnalysis(){setAgentLoading(true);try{const r=await fetch("/api/governance/scan?agent=true",{cache:"no-store"});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"Agent分析失败");setAgentResult({trace:p.data.agentTrace||[],summary:p.data.agentSummary||""});notify(`Agent完成：${p.data.agentTrace?.length||0}步推理`)}catch(error){notify(error instanceof Error?error.message:"Agent 分析失败")}finally{setAgentLoading(false)}}
+  async function handleScanAction(action:string,id:number,title:string=""){const labels:Record<string,string>={ARCHIVE:"作废",REPROCESS:"重新解析",MARK_DUP:"标记重复",DELETE:"删除",CREATE_GAP_TASK:"建知识缺口任务"};if(!confirm(`确认对《${title}》执行${labels[action]||action}？此操作将写入审批记录。`))return;try{let r;if(action==="ARCHIVE"){r=await fetch("/api/documents",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,action:"archive",comment:"巡检作废"})})}else if(action==="DELETE"){r=await fetch(`/api/documents/${id}`,{method:"DELETE",headers:{"content-type":"application/json"},body:JSON.stringify({action:"delete"})})}else if(action==="REPROCESS"){r=await fetch("/api/platform",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"PROCESS",documentId:id})})}else if(action==="MARK_DUP"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"SAVE_TAG",name:"疑似重复",documentId:id})})}else if(action==="CREATE_GAP_TASK"){r=await fetch("/api/enterprise",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"CREATE_GAP_TASK",reason:title,detail:'搜索"{title}"无结果'})})}else{notify("不支持的操作");return}const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"操作失败");notify("已执行");void runScan()}catch(error){notify(error instanceof Error?error.message:"操作失败")}}
   async function load() {
     setLoading(true);
     try {
@@ -2388,13 +2382,13 @@ function PlatformView({
       {scanResult&&<div className="scan-dashboard">
         <section className="platform-card wide-card">
           <header><h2>🔍 智能巡检报告</h2><span>{scanResult.expired.length}过期 {scanResult.duplicates.length}重复 {scanResult.parseFails.length}解析失败 {scanResult.empty.length}空内容</span></header>
-          {agentResult&&<div className="agent-trace"><details><summary>🤖 Agent 自主规划了 {agentResult.trace.length} 步推理（点击展开链路）</summary><div className="trace-list">{agentResult.trace.map((t:any,i:number)=><div key={i} className="trace-step"><span className="trace-num">{i+1}</span><div><b>{t.tool}</b></div></div>)}</div></details></div>}
+          {agentResult&&<div className="agent-trace"><details><summary>🤖 Agent 自主规划了 {agentResult.trace.length} 步推理（点击展开链路）</summary><div className="trace-list">{agentResult.trace.map((t,i)=><div key={i} className="trace-step"><span className="trace-num">{i+1}</span><div><b>{t.tool}</b></div></div>)}</div></details></div>}
           {agentResult?.summary&&<div className="agent-summary"><b>🤖 Agent 分析结论</b><p style={{whiteSpace:"pre-wrap",maxHeight:300,overflow:"auto"}}>{agentResult.summary}</p></div>}
-          {scanResult.expired.length>0&&<div className="scan-group"><h3>📌 过期文档（{scanResult.expired.length}）</h3>{scanResult.expired.map((d:any)=><div key={d.id} className="scan-item expired"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner} · 复核日：{d.review_due_at?.slice(0,10)}</small></div>{d.status==='EXPIRED_VOID'?<span className="scan-done">已作废</span>:<button onClick={()=>handleScanAction('ARCHIVE',d.id,d.title)}>作废</button>}</div>)}</div>}
-          {scanResult.duplicates.length>0&&<div className="scan-group"><h3>🔄 疑似重复（{scanResult.duplicates.length} 组）</h3>{scanResult.duplicates.map((g:any,i:number)=><div key={i} className="scan-item duplicate"><div><b>{g.reason}</b><small>{g.docs.map((d:any)=>`《${d.title}》V${d.version}.0`).join(' vs ')}</small></div><button onClick={()=>handleScanAction('MARK_DUP',g.docs[0].id,g.docs[0].title)}>标记重复</button></div>)}</div>}
-          {scanResult.parseFails.length>0&&<div className="scan-group"><h3>⚠️ 解析失败（{scanResult.parseFails.length}）</h3>{scanResult.parseFails.map((d:any)=><div key={d.id} className="scan-item fail"><div><b>{d.title}</b><small>{d.dept_name} · {d.source_name||'未知文件'} · 状态：{d.parse_status}</small></div><button onClick={()=>handleScanAction('REPROCESS',d.id,d.title)}>重新解析</button></div>)}</div>}
-          {scanResult.empty.length>0&&<div className="scan-group"><h3>📝 空内容草稿（{scanResult.empty.length}）</h3>{scanResult.empty.map((d:any)=><div key={d.id} className="scan-item empty-draft"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner}</small></div><button onClick={()=>handleScanAction('DELETE',d.id,d.title)}>删除</button></div>)}</div>}
-          {scanResult.zeroSearch.length>0&&<div className="scan-group"><h3>🔎 搜索无结果（{scanResult.zeroSearch.length} 次）</h3>{scanResult.zeroSearch.slice(0,5).map((s:any,i:number)=><div key={i} className="scan-item zero"><div><b>&ldquo;{s.query}&rdquo;</b><small>出现 {s.cnt} 次 · 最近：{s.last_time?.slice(0,10)}</small></div><button onClick={()=>handleScanAction('CREATE_GAP_TASK',0,s.query)}>补充知识</button></div>)}</div>}
+          {scanResult.expired.length>0&&<div className="scan-group"><h3>📌 过期文档（{scanResult.expired.length}）</h3>{scanResult.expired.map(d=><div key={d.id} className="scan-item expired"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner} · 复核日：{d.review_due_at?.slice(0,10)}</small></div>{d.status==='EXPIRED_VOID'?<span className="scan-done">已作废</span>:<button onClick={()=>handleScanAction('ARCHIVE',d.id,d.title)}>作废</button>}</div>)}</div>}
+          {scanResult.duplicates.length>0&&<div className="scan-group"><h3>🔄 疑似重复（{scanResult.duplicates.length} 组）</h3>{scanResult.duplicates.map((g,i)=><div key={i} className="scan-item duplicate"><div><b>{g.reason}</b><small>{g.docs.map(d=>`《${d.title}》V${d.version}.0`).join(' vs ')}</small></div><button onClick={()=>handleScanAction('MARK_DUP',g.docs[0].id,g.docs[0].title)}>标记重复</button></div>)}</div>}
+          {scanResult.parseFails.length>0&&<div className="scan-group"><h3>⚠️ 解析失败（{scanResult.parseFails.length}）</h3>{scanResult.parseFails.map(d=><div key={d.id} className="scan-item fail"><div><b>{d.title}</b><small>{d.dept_name} · {d.source_name||'未知文件'} · 状态：{d.parse_status}</small></div><button onClick={()=>handleScanAction('REPROCESS',d.id,d.title)}>重新解析</button></div>)}</div>}
+          {scanResult.empty.length>0&&<div className="scan-group"><h3>📝 空内容草稿（{scanResult.empty.length}）</h3>{scanResult.empty.map(d=><div key={d.id} className="scan-item empty-draft"><div><b>{d.title}</b><small>V{d.version}.0 · {d.dept_name} · 负责人：{d.owner}</small></div><button onClick={()=>handleScanAction('DELETE',d.id,d.title)}>删除</button></div>)}</div>}
+          {scanResult.zeroSearch.length>0&&<div className="scan-group"><h3>🔎 搜索无结果（{scanResult.zeroSearch.length} 次）</h3>{scanResult.zeroSearch.slice(0,5).map((s,i)=><div key={i} className="scan-item zero"><div><b>&ldquo;{s.query}&rdquo;</b><small>出现 {s.cnt} 次 · 最近：{s.last_time?.slice(0,10)}</small></div><button onClick={()=>handleScanAction('CREATE_GAP_TASK',0,s.query)}>补充知识</button></div>)}</div>}
         </section>
       </div>}
       <div className="platform-grid">
@@ -2516,7 +2510,7 @@ function PlatformView({
         </div>
         {agentResult&&(
           <div style={{margin:"0 18px 12px"}}>
-            {agentResult.trace.length>0&&<details style={{marginBottom:8}}><summary style={{fontSize:10,color:"#1a6b5e",cursor:"pointer"}}>推理链路（{agentResult.trace.length} 步）</summary><div style={{marginTop:6,display:"grid",gap:3}}>{agentResult.trace.map((t:any,i:number)=><div key={i} style={{display:"flex",gap:6,padding:"5px 8px",background:"#f8faf9",borderRadius:4,fontSize:9}}><span style={{color:"#16796d",fontWeight:700}}>{i+1}.</span><b style={{color:"#1a5c55"}}>{t.tool}</b></div>)}</div></details>}
+            {agentResult.trace.length>0&&<details style={{marginBottom:8}}><summary style={{fontSize:10,color:"#1a6b5e",cursor:"pointer"}}>推理链路（{agentResult.trace.length} 步）</summary><div style={{marginTop:6,display:"grid",gap:3}}>{agentResult.trace.map((t,i)=><div key={i} style={{display:"flex",gap:6,padding:"5px 8px",background:"#f8faf9",borderRadius:4,fontSize:9}}><span style={{color:"#16796d",fontWeight:700}}>{i+1}.</span><b style={{color:"#1a5c55"}}>{t.tool}</b></div>)}</div></details>}
             <div style={{padding:10,background:"#f0f7fa",borderRadius:6,fontSize:10,color:"#4a6878",whiteSpace:"pre-wrap",maxHeight:260,overflow:"auto"}}>{agentResult.summary}</div>
           </div>
         )}
@@ -2543,7 +2537,6 @@ function EnterprisePanels({
   const [promptTest,setPromptTest]=useState<{answer:string;sources:Array<Record<string,unknown>>;assembledPrompt:string;provider:string;model:string}|null>(null);
   const [promptTesting,setPromptTesting]=useState(false);
   const [comparePromptIds,setComparePromptIds]=useState<[number,number]>([0,0]);
-  useEffect(()=>{if(selectedPromptId>0)setAiStrategyTab("evaluation");},[selectedPromptId]);
   const [pendingTaxonomyDelete,setPendingTaxonomyDelete]=useState<{type:"CATEGORY"|"GROUP"|"TAG";id:number;name:string;code?:string;deptId?:number|null;references?:number;targetId?:number}|null>(null);
   const [editingCategory,setEditingCategory]=useState<Record<string,unknown>|null>(null);
   const [data, setData] = useState<Record<
@@ -2582,7 +2575,6 @@ function EnterprisePanels({
       </section>
     );
   const categories = data.categories ?? [],
-    groups=data.groups??[],
     departments=data.departments??[],
     security = data.security ?? [],
     prompts = data.prompts ?? [],
@@ -2881,15 +2873,22 @@ function EnterprisePanels({
 }
 
 function SettingsView({ role, notify,onConfigurationChange }: { role: string; notify: (m: string) => void;onConfigurationChange:(data:Record<string,Record<string,unknown>[]>)=>void }) {
-  const [tasks, setTasks] = useState<Array<{id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string}>>([]);
+  type ScheduledTaskItem={id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string;last_status?:string|null;last_detail?:string|null};
+  type DeliveryItem={id:number;event_type:string;recipient:string;status:string;attempt:number;error_message:string;document_title?:string|null;update_time:string};
+  type TaskRunItem={id:number;task_code:string;status:string;detail:string;started_at:string;finished_at?:string|null};
+  const [tasks, setTasks] = useState<ScheduledTaskItem[]>([]);
+  const [deliveries,setDeliveries]=useState<DeliveryItem[]>([]);
+  const [taskRuns,setTaskRuns]=useState<TaskRunItem[]>([]);
+  const [retryingDelivery,setRetryingDelivery]=useState<number|null>(null);
   const [aiSettings,setAiSettings]=useState<Record<string,string>>({});
   const [aiCapabilities,setAiCapabilities]=useState<Record<string,unknown>[]>([]);
   const [semanticProgress, setSemanticProgress] = useState("");
   const [modelTesting,setModelTesting]=useState<number|null>(null);
-  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok) setTasks(p.data.tasks||[]); } catch { } }
+  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok){setTasks(p.data.tasks||[]);setDeliveries(p.data.deliveries||[]);setTaskRuns(p.data.runs||[]);} } catch { } }
   async function loadSettings(){try{const r=await fetch("/api/platform",{cache:"no-store"});const p=await r.json();if(r.ok){setAiSettings(Object.fromEntries((p.data.settings??[]).map((item:Record<string,unknown>)=>[String(item.key),String(item.value)])));setAiCapabilities(p.data.aiCapabilities??[]);}}catch{}}
-  async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(e:any){notify(e.message)}}
-  async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(e:any){notify(e.message)}}
+  async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(error){notify(error instanceof Error?error.message:"任务更新失败")}}
+  async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(error){notify(error instanceof Error?error.message:"执行频率更新失败")}}
+  async function retryDelivery(id:number){if(retryingDelivery!==null)return;setRetryingDelivery(id);try{const r=await fetch("/api/admin/scheduled-tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"RETRY_NOTIFICATION",id})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"重试失败");await loadTasks();notify(p.data.status==="SENT"?"邮件重试发送成功":`邮件仍未发送：${p.data.error||p.data.status}`)}catch(error){notify(error instanceof Error?error.message:"邮件重试失败")}finally{setRetryingDelivery(null)}}
   async function rebuildSemantic() {
     if (semanticProgress) return;
     try {
@@ -2915,7 +2914,7 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
     return true;
   }
   async function testModel(serviceId:number){if(modelTesting!==null)return;setModelTesting(serviceId);try{const r=await fetch('/api/platform',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'TEST_MODEL_ROUTE',serviceId})}),p=await r.json();if(!r.ok)throw new Error(p.error?.message||'连接失败');notify(`连接正常：${p.data.model} · ${p.data.latencyMs}ms`);}catch(e){notify(e instanceof Error?e.message:'连接失败')}finally{setModelTesting(null)}}
-  useEffect(() => { loadTasks();loadSettings(); }, []);
+  useEffect(() => { const timer=window.setTimeout(()=>{void loadTasks();void loadSettings()},0);return()=>window.clearTimeout(timer) }, []);
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2938,11 +2937,12 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
               <b style={{fontSize:10}}>{t.name}</b>
               <small style={{fontSize:8,color:"#8b9d98"}}>{t.description}</small>
               {t.last_run_at && <small style={{fontSize:7,color:"#a0b0aa"}}>上次执行：{t.last_run_at.slice(0,16).replace("T"," ")}</small>}
+              {t.last_status&&<small style={{fontSize:7,color:t.last_status==="SUCCESS"?"#16796d":"#b45309"}}>最近结果：{t.last_status==="SUCCESS"?"成功":"失败"}{t.last_detail?` · ${t.last_detail}`:""}</small>}
             </div>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <select value={t.cron_expr} onChange={e=>updateTaskSchedule(t.id,e.target.value)} style={{fontSize:8,padding:"3px 6px",border:"1px solid #d4dde2",borderRadius:4}}>
-                {!['0 8 * * *','0 18 * * *','0 19 * * *','0 20 * * *','0 8 * * 1','0 8 1 * *'].includes(t.cron_expr)&&<option value={t.cron_expr}>自定义：{t.cron_expr}</option>}
-                <option value="0 8 * * *">每天8:00</option><option value="0 18 * * *">每天18:00</option><option value="0 19 * * *">每天19:00</option><option value="0 20 * * *">每天20:00</option><option value="0 8 * * 1">每周一8:00</option><option value="0 8 1 * *">每月1日8:00</option>
+                {!['* * * * *','0 8 * * *','0 18 * * *','0 19 * * *','0 20 * * *','0 8 * * 1','0 8 1 * *'].includes(t.cron_expr)&&<option value={t.cron_expr}>自定义：{t.cron_expr}</option>}
+                <option value="* * * * *">每小时</option><option value="0 8 * * *">每天8:00</option><option value="0 18 * * *">每天18:00</option><option value="0 19 * * *">每天19:00</option><option value="0 20 * * *">每天20:00</option><option value="0 8 * * 1">每周一8:00</option><option value="0 8 1 * *">每月1日8:00</option>
               </select>
               <label style={{display:"flex",alignItems:"center",gap:4,fontSize:9,color:"#637a84",cursor:"pointer"}}>
                 <input type="checkbox" checked={t.enabled===1} onChange={e=>toggleTask(t.id,e.target.checked)} style={{accentColor:"#16796d"}} />{t.enabled?"开":"关"}
@@ -2950,6 +2950,14 @@ function SettingsView({ role, notify,onConfigurationChange }: { role: string; no
             </div>
           </div>
         ))}
+      </section>
+      <section className="platform-card wide-card" style={{marginBottom:18}}>
+        <header><div><h2>通知投递</h2><p>站内通知不受邮件失败影响；邮件失败原因和重试次数在此留痕。</p></div></header>
+        {deliveries.length===0?<div className="empty-state">暂无邮件投递记录</div>:deliveries.slice(0,10).map(item=><div key={item.id} className="scan-item" style={{margin:"0 18px 8px"}}><div><b style={{fontSize:10}}>{item.event_type}{item.document_title?` · ${item.document_title}`:""}</b><small>{item.recipient} · {item.status} · 尝试 {item.attempt} 次</small>{item.error_message&&<small style={{color:"#b45309"}}>失败原因：{item.error_message}</small>}</div>{item.status==="FAILED"&&<button disabled={retryingDelivery!==null} onClick={()=>retryDelivery(item.id)}>{retryingDelivery===item.id?"重试中…":"重试邮件"}</button>}</div>)}
+      </section>
+      <section className="platform-card wide-card" style={{marginBottom:18}}>
+        <header><div><h2>任务运行记录</h2><p>展示任务实际执行结果；配置变更不等同于任务已经运行。</p></div></header>
+        {taskRuns.length===0?<div className="empty-state">任务尚无运行记录</div>:taskRuns.slice(0,10).map(item=><div key={item.id} className="scan-item" style={{margin:"0 18px 8px"}}><div><b style={{fontSize:10}}>{item.task_code} · {item.status==="SUCCESS"?"成功":item.status==="FAILED"?"失败":"运行中"}</b><small>{item.started_at.slice(0,16).replace("T"," ")}{item.detail?` · ${item.detail}`:""}</small></div></div>)}
       </section>
       {role === "SUPER_ADMIN" && (
         <>
@@ -3230,7 +3238,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
       setEditingRole(null);
       await load();
       if(editingRole.id)window.setTimeout(()=>window.location.reload(),500);
-    } catch (e: any) { notify(e.message); }
+    } catch (error) { notify(error instanceof Error?error.message:"角色保存失败"); }
   }
   async function deleteRole(id: number, name: string) {
     if (!confirm(`确认删除角色「${name}」？系统角色不可删除。`)) return;
@@ -3240,7 +3248,7 @@ function AccountAdminView({ notify }: { notify: (message: string) => void }) {
       if (!r.ok) throw new Error(p.error?.message ?? "删除失败");
       notify("角色已删除");
       await load();
-    } catch (e: any) { notify(e.message); }
+    } catch (error) { notify(error instanceof Error?error.message:"角色删除失败"); }
   }
   function togglePerm(pid: number) {
     if (!editingRole) return;
@@ -3825,9 +3833,6 @@ function UploadModal({
   const [reviewDate] = useState(() =>
     new Date(Date.now() + Math.max(1,Number(config['governance.review_days']||180)) * 86400000).toISOString().slice(0, 10),
   );
-  const department =
-    options.departments.find((item) => item.id === deptId) ??
-    options.departments[0];
   const departmentMembers = options.members.filter(
     (item) => item.dept_id === deptId,
   );
@@ -4011,7 +4016,7 @@ function UploadModal({
               rows={4}
               placeholder="可粘贴核心内容，上传后仍可继续编辑"
             />
-            {ocrReviewNotice&&<div className="ocr-review-notice" role="alert"><b>需要人工校对后再提交</b><span>{ocrReviewNotice}</span><small>身份资料将自动设为机密、仅本部门可见，并记录下载行为。</small></div>}
+            {ocrReviewNotice&&<div className="ocr-review-notice" role="alert"><b>需要人工处理后再提交</b><span>{ocrReviewNotice}</span><small>人工确认后的正文将用于摘要和检索，原件仍会安全保存。</small></div>}
           </label>
         </div>
         <div className="publish-choice">

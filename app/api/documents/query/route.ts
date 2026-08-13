@@ -9,7 +9,7 @@ export async function GET(request:Request){const rid=requestId(request);try{
   if(mode==="manage"&&!['governance:admin','governance:department_review','governance:business_review','governance:enterprise_review','governance:compliance_review','page:approval_pending','page:approval_history','page:document_admin','page:lifecycle_governance'].some(permission=>hasPermission(ctx,permission)))throw new ApiError(403,"FORBIDDEN","无权访问管理资料列表");
   const page=Math.max(1,Number(url.searchParams.get("page"))||1),pageSize=Math.min(100,Math.max(5,Number(url.searchParams.get("pageSize"))||15));
   const access=documentListScope(ctx,"d"),where=[access.sql],binds:unknown[]=[...access.binds];
-  if(mode==="mine"){where.push("d.create_user_id=?");binds.push(ctx.userId);}
+  if(mode==="mine"){where.push("(d.create_user_id=? OR COALESCE(d.owner_user_id,d.create_user_id)=?)");binds.push(ctx.userId,ctx.userId);}
   if(mode==="manage"&&ctx.scope!=="global"){where.push(`d.dept_id IN (${ctx.deptIds.map(()=>"?").join(",")})`);binds.push(...ctx.deptIds);}
   const optionClause=where.join(" AND "),optionBinds=[...binds];
   if(url.searchParams.get("lifecycle")==="1")where.push("(d.status='EXPIRED_VOID' OR d.review_due_at IS NOT NULL)");

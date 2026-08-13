@@ -21,17 +21,18 @@ test("homophone correction is persisted, dual-retrieved and visible to users", a
   assert.match(page, /猜你想查“\{correction\.corrected\}”/);
   assert.match(page, /仍搜索“\{correction\.original\}”/);
   assert.match(ask, /系统识别意图：\$\{correctedQuestion\}/);
-  assert.match(ask, /embedTexts\(\[correctedQuestion\]\)/);
+  assert.match(ask, /embedTexts\(\[retrievalIntent\]\)/);
 });
 
 test("automatic homophone inference cannot overwrite explicit user intent", async()=>{
   const [correction,ask]=await Promise.all([read("lib/query-correction.ts"),read("app/api/ai/ask/route.ts")]);
-  assert.match(correction,/语料自动推断只能作为候选/);
+  assert.match(correction,/语料自动推断只作为检索扩展/);
   assert.match(correction,/explicitUserCorrection/);
   assert.match(ask,/clarifiedQuestion/);
   assert.match(ask,/必须以本轮纠正为准/);
   assert.match(ask,/deterministicFollowUpSummary/);
-  assert.match(correction,/corrected:original/);
+  assert.match(correction,/拼音相似候选仅用于检索/);
+  assert.match(ask,/const retrievalIntent=/);
 });
 
 test("conversation acknowledgements never enter enterprise knowledge retrieval", async()=>{

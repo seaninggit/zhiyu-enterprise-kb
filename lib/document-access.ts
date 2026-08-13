@@ -30,7 +30,7 @@ export function documentListScope(ctx:AuthContext,alias="d"){
   if(hasScope(ctx,"global"))return{sql:`${alias}.is_deleted=0`,binds:[] as unknown[]};
   const access=grantedAccess(ctx,alias,"VIEW");
   if(ctx.role==="DEPT_ADMIN"||ctx.permissions.includes("governance:admin"))return{sql:`${alias}.is_deleted=0 AND (${alias}.dept_id IN (${placeholders(ctx.deptIds)}) OR (${published(alias)} AND ${access.sql}))`,binds:[...ctx.deptIds,...access.binds]};
-  return{sql:`${alias}.is_deleted=0 AND ((${alias}.create_user_id=? AND ${alias}.dept_id IN (${placeholders(ctx.deptIds)})) OR EXISTS(SELECT 1 FROM approval_instances ai JOIN approval_steps aps ON aps.instance_id=ai.id WHERE ai.document_id=${alias}.id AND aps.assignee_user_id=?) OR (${published(alias)} AND ${access.sql}))`,binds:[ctx.userId,...ctx.deptIds,ctx.userId,...access.binds]};
+  return{sql:`${alias}.is_deleted=0 AND ((((${alias}.create_user_id=? OR COALESCE(${alias}.owner_user_id,${alias}.create_user_id)=?) AND ${alias}.dept_id IN (${placeholders(ctx.deptIds)}))) OR EXISTS(SELECT 1 FROM approval_instances ai JOIN approval_steps aps ON aps.instance_id=ai.id WHERE ai.document_id=${alias}.id AND aps.assignee_user_id=?) OR (${published(alias)} AND ${access.sql}))`,binds:[ctx.userId,ctx.userId,...ctx.deptIds,ctx.userId,...access.binds]};
 }
 
 async function explicitPermission(documentId:number,spaceId:number|null,permission:"VIEW"|"EDIT",ctx:AuthContext){

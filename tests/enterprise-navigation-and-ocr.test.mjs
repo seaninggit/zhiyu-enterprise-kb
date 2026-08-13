@@ -9,9 +9,9 @@ test("navigation is role-configurable and management duties are separated",()=>{
   assert.match(page,/hasPerm\("page:approval_pending"\)/);assert.match(page,/feedbackGovernance/);assert.match(page,/lifecycleGovernance/);assert.match(roles,/expandPermissionTree/);
 });
 
-test("OCR enhances images and blocks low-confidence text for human review",()=>{
+test("OCR enhances images and requires human review even when aggregate confidence is high",()=>{
   const client=read("lib/client-knowledge.ts"),page=read("app/page.tsx");
-  assert.match(client,/preprocessImage/);assert.match(client,/normalizeOcrText/);assert.match(client,/needsReview:confidence<82/);assert.match(page,/请先校对“正文 \/ 解析补充”/);
+  assert.match(client,/preprocessImage/);assert.match(client,/normalizeOcrText/);assert.match(client,/needsReview:true/);assert.match(client,/needsReview:result\.usedOcr/);assert.match(page,/请先校对“正文 \/ 解析补充”/);
 });
 
 test("external employees are not enrolled into every department",()=>{
@@ -44,5 +44,5 @@ test("document responsibility is transferred instead of administrator editing",(
 test("identity documents are forced into confidential traced department storage",()=>{
   const route=read("app/api/documents/route.ts"),page=read("app/page.tsx");
   assert.match(route,/sensitiveIdentity/);assert.match(route,/"CONFIDENTIAL"/);assert.match(route,/effectiveShareScope/);assert.match(route,/watermark_enabled/);
-  assert.match(page,/需要人工校对后再提交/);assert.match(page,/身份资料将自动设为机密/);
+  assert.match(page,/需要人工处理后再提交/);assert.match(page,/人工确认后的正文将用于摘要和检索/);
 });

@@ -5,7 +5,7 @@ export function validatedGroundedAnswer(generated:string|undefined,sources:Array
   return generated.trim();
 }
 
-export function deterministicGroundedSummary(sources:Array<{citation:number;title:string;version:number;excerpt:string}>,_question=""){
+export function deterministicGroundedSummary(sources:Array<{citation:number;title:string;version:number;excerpt:string}>){
   return `公司知识依据\n\n${sources.map(source=>`[${source.citation}] 《${source.title}》V${source.version}.0：${source.excerpt}`).join("\n\n")}\n\n以上是当前检索到的企业知识。资料未明确写出的地区、人群或业务范围不能据此推定，请以引用原文为准。`;
 }
 
@@ -50,13 +50,17 @@ export function areSourcesRelevant(question:string,sources:Array<{title:string;e
   if(!keyTerms.length)return true; // 太短无法判断，放行
   // 每条引用的关键词命中数
   let bestHits=0;
+  let bestTitleHits=0;
   for(const s of sources){
     const text=`${s.title} ${s.excerpt}`.toLowerCase();
     let hits=0;
     for(const t of keyTerms)if(text.includes(t))hits++;
     if(hits>bestHits)bestHits=hits;
+    const title=String(s.title).toLowerCase();
+    const titleHits=keyTerms.reduce((count,term)=>count+(title.includes(term)?1:0),0);
+    if(titleHits>bestTitleHits)bestTitleHits=titleHits;
   }
-  // 标题命中任一关键词 → 相关；否则至少 2 个内容命中
-  const titleMatch=sources.some(s=>{const t=String(s.title).toLowerCase();return keyTerms.some(k=>t.includes(k));});
-  return titleMatch||bestHits>=2;
+  // 问题越具体，引用必须覆盖越多有效词；不能因一个常见二元词命中标题就放行。
+  const requiredHits=Math.max(2,Math.ceil(keyTerms.length*.25));
+  return Math.max(bestHits,bestTitleHits)>=requiredHits;
 }

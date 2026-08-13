@@ -11,7 +11,7 @@ export async function GET(request: Request) {
     if (treeId) {
       const tree = await db.prepare("SELECT * FROM decision_trees WHERE id=? AND is_active=1").bind(treeId).first();
       const nodes = await db.prepare("SELECT * FROM decision_nodes WHERE tree_id=? ORDER BY id").bind(treeId).all();
-      const roots = nodes.results.filter((n: any) => !n.parent_id);
+      const roots = nodes.results.filter((node: Record<string, unknown>) => !node.parent_id);
       return ok({ tree, rootNodes: roots, allNodes: nodes.results }, rid);
     }
 

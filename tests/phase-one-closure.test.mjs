@@ -14,11 +14,13 @@ test("assigned reviewers can see routed documents without content edit authority
 });
 
 test("submission is owner or explicit EDIT ACL controlled and approval actors remain distinct", async () => {
-  const [documents,routing] = await Promise.all([source("app/api/documents/route.ts"),source("lib/approval-routing.ts")]);
+  const [documents,routing,query,access] = await Promise.all([source("app/api/documents/route.ts"),source("lib/approval-routing.ts"),source("app/api/documents/query/route.ts"),source("lib/document-access.ts")]);
   assert.match(documents, /payload\.action === "submit" \? !await canEditDocument\(doc,ctx\)/);
   assert.match(documents, /approvalStep\?\.modifier_user_id/);
   assert.match(documents, /assertCurrentReviewer/);
   assert.match(routing, /SELF_APPROVAL_FORBIDDEN/);
+  assert.match(query, /COALESCE\(d\.owner_user_id,d\.create_user_id\)=\?/);
+  assert.match(access, /COALESCE\(\$\{alias\}\.owner_user_id,\$\{alias\}\.create_user_id\)=\?/);
 });
 
 test("member lifecycle blocks orphaning and performs explicit auditable bulk transfer", async () => {
@@ -55,4 +57,20 @@ test("contextual questions re-retrieve globally and degrade without inventing re
   assert.doesNotMatch(ask, /const chunkScope=useContextFilter/);
   assert.match(ask, /不能把通用规定推定为特定地区/);
   assert.match(ask, /contextDocumentIds\.has\(Number\(row\.document_id\)\)/);
+  assert.match(ask, /已经明确的对象、地区、人群、部门、版本及其他适用范围/);
+  assert.match(ask, /除非当前问题明确替换或否定/);
+  assert.doesNotMatch(ask, /为什么\|怎么办\|时限\|材料\|步骤\|流程/);
+});
+
+test("file ingestion requires human confirmation for OCR and safe handling for empty or unsupported files", async () => {
+  const [page, client] = await Promise.all([
+    source("app/page.tsx"),
+    source("lib/client-knowledge.ts"),
+  ]);
+  assert.match(client, /needsReview:true/);
+  assert.match(client, /needsReview:result\.usedOcr/);
+  assert.match(page, /file\.name && file\.size === 0/);
+  assert.match(page, /extraction\.method === "NONE" && !hadManualContent/);
+  assert.match(page, /const contentForSummary = String\(data\.get\("content"\)/);
+  assert.doesNotMatch(page, /姓名、证件号码、签发机关和有效期限/);
 });

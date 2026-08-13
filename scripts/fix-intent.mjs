@@ -30,7 +30,6 @@ code = code.replace(
 );
 
 // 5. 在 platformIntent 的 return null 之后插入语义兜底 + Agent 模式
-const insertPoint = code.indexOf('export async function POST');
 const hasContext = `    const hasContext=Boolean(payload.conversationId);
     let direct=platformIntent(question,ctx.displayName,ctx.role,ctx.isPublicViewer);
     if(!direct){

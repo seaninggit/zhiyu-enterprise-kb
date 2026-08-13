@@ -42,6 +42,9 @@ const worker = {
 
     return handler.fetch(request, env, ctx);
   },
+  async scheduled(controller: ScheduledController, env: Env) {
+    await runScheduled(controller.scheduledTime, env);
+  },
 };
 
 export default worker;
@@ -50,21 +53,28 @@ export default worker;
 function cronFieldMatches(field:string,value:number){return field==="*"||field.split(",").some(part=>Number(part)===value);}
 function isCronDue(expression:string,date:Date){const [minute,hour,day,month,weekday]=expression.trim().split(/\s+/);if(!weekday)return false;return cronFieldMatches(minute,date.getUTCMinutes())&&cronFieldMatches(hour,date.getUTCHours())&&cronFieldMatches(day,date.getUTCDate())&&cronFieldMatches(month,date.getUTCMonth()+1)&&cronFieldMatches(weekday,date.getUTCDay());}
 
-export async function scheduled(controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
+async function runScheduled(scheduledTime: number, env: Env) {
   const db = env.DB;
   const now = new Date().toISOString().slice(0, 19).replace("T", " ");
   const rid = `cron-${Date.now()}`;
   const runTs = new Date().toISOString();
 
   const tasks = await db.prepare("SELECT code,cron_expr FROM scheduled_tasks WHERE enabled=1").all<{code:string;cron_expr:string}>();
-  const beijingTime=new Date(controller.scheduledTime+8*60*60*1000);
+  const beijingTime=new Date(scheduledTime+8*60*60*1000);
   const enabled = new Set(tasks.results.filter(task=>isCronDue(task.cron_expr,beijingTime)).map(t => t.code));
   if(!enabled.size)return;
 
   let archived = 0, duplicates = 0, corrections = 0, reminded = 0;
   const alerts: string[] = [];
+  const runTask=async(code:string,operation:()=>Promise<string>)=>{
+    const created=await db.prepare("INSERT INTO scheduled_task_runs(task_code,status,request_id) VALUES(?,'RUNNING',?)").bind(code,rid).run();
+    const runId=Number(created.meta.last_row_id);
+    try{const detail=await operation();await db.prepare("UPDATE scheduled_task_runs SET status='SUCCESS',detail=?,finished_at=CURRENT_TIMESTAMP WHERE id=?").bind(detail,runId).run();}
+    catch(error){const detail=error instanceof Error?error.message:"任务执行失败";await db.prepare("UPDATE scheduled_task_runs SET status='FAILED',detail=?,finished_at=CURRENT_TIMESTAMP WHERE id=?").bind(detail,runId).run();await db.prepare("INSERT INTO audit_logs(dept_id,action,actor_user_id,actor,detail,request_id) VALUES(1,'CRON_TASK_FAILED',1,'系统',?,?)").bind(`${code}：${detail}`,rid).run();}
+  };
 
   if (enabled.has("archive_expired")) {
+    await runTask("archive_expired",async()=>{
     // 查高频引用：过去30天被AI引用的文档
     const cited = await db.prepare("SELECT source_document_ids FROM ai_query_logs WHERE create_time > date('now','-30 days')").all<{source_document_ids:string}>();
     const citeCounts: Record<number,number> = {};
@@ -79,9 +89,12 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
       else if (cnt >= 3) alerts.push(`MID：《${doc.title}》已过期，被引用${cnt}次`);
     }
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='archive_expired'").bind(runTs).run();
+    return `作废 ${archived} 份；预警 ${alerts.length} 条`;
+    });
   }
 
   if (enabled.has("detect_duplicates")) {
+    await runTask("detect_duplicates",async()=>{
     const titles = await db.prepare("SELECT id,title,dept_id FROM documents WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' ORDER BY title").all<{id:number;title:string;dept_id:number}>();
     const seen = new Set<number>();
     for (let i=0;i<titles.results.length;i++){
@@ -100,9 +113,12 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
       }
     }
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='detect_duplicates'").bind(runTs).run();
+    return `发现疑似重复 ${duplicates} 组`;
+    });
   }
 
   if (enabled.has("search_self_learn")) {
+    await runTask("search_self_learn",async()=>{
     const recentZeroSearches = await db.prepare("SELECT s.user_id,s.query,s.create_time FROM search_logs s WHERE s.result_count=0 AND s.create_time>date('now','-7 days') ORDER BY s.create_time").all<{user_id:number;query:string;create_time:string}>();
     for (const zero of recentZeroSearches.results) {
       const laterHit = await db.prepare("SELECT query FROM search_logs WHERE user_id=? AND result_count>0 AND create_time>? AND create_time<datetime(?,'+1 day') ORDER BY create_time LIMIT 1").bind(zero.user_id, zero.create_time, zero.create_time).first<{query:string}>();
@@ -117,15 +133,20 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
       }
     }
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='search_self_learn'").bind(runTs).run();
+    return `学习纠错 ${corrections} 条`;
+    });
   }
 
   if (enabled.has("review_reminders")) {
+    await runTask("review_reminders",async()=>{
     const dueSoon = await db.prepare("SELECT d.id,d.title,d.owner_user_id FROM documents d WHERE d.is_deleted=0 AND d.status='ARCHIVED_ACTIVE' AND d.review_due_at BETWEEN date('now') AND date('now','+30 days')").all<{id:number;title:string;owner_user_id:number|null}>();
     for (const doc of dueSoon.results) {
       await db.prepare("INSERT OR IGNORE INTO notifications(user_id, type, title, content, document_id) VALUES(?,'GOVERNANCE','知识复核提醒',?,?)").bind(doc.owner_user_id || 1, `文档《${doc.title}》复核日期临近，请安排复核。`, doc.id).run();
       reminded++;
     }
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='review_reminders'").bind(runTs).run();
+    return `生成复核提醒 ${reminded} 条`;
+    });
   }
 
   // 巡检完成后推送汇总通知给管理员
@@ -137,6 +158,7 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
 
   // 运营周报（每周一执行）
   if (enabled.has("agent_weekly_report")) {
+    await runTask("agent_weekly_report",async()=>{
     const [newDocs, searches, zeroResults, feedbacks] = await Promise.all([
       db.prepare("SELECT COUNT(*) cnt FROM documents WHERE is_deleted=0 AND create_time > date('now','-7 days')").first<{cnt:number}>(),
       db.prepare("SELECT COUNT(*) cnt FROM search_logs WHERE create_time > date('now','-7 days')").first<{cnt:number}>(),
@@ -156,6 +178,8 @@ export async function scheduled(controller: ScheduledController, env: Env, _ctx:
     ];
     await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(1,'GOVERNANCE','运营周报',?)").bind(report.join("\n")).run();
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='agent_weekly_report'").bind(runTs).run();
+    return `周报已生成；新增文档 ${newDocs?.cnt||0} 份，搜索 ${searches?.cnt||0} 次`;
+    });
   }
 
   await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(1,'CRON_GOVERNANCE',1,'系统',?,?)").bind(`巡检：作废${archived} 查重${duplicates} 纠错${corrections} 提醒${reminded}`, rid).run();

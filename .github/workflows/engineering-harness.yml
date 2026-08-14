@@ -1,0 +1,34 @@
+name: Engineering Harness
+
+on:
+  pull_request:
+  push:
+    branches: [main, agent/complete-phase-one]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: harness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y sqlite3
+      - run: npm ci
+      - run: npm run harness:ci
+      - name: Upload machine-readable Harness evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-report-${{ github.run_id }}
+          path: harness/reports/*.json
+          if-no-files-found: warn

@@ -8,6 +8,15 @@
   --teal: #2b84a6;
   --teal-dark: #226b88;
   --cream: #f8f4ea;
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 14px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --focus-ring: 0 0 0 3px rgba(43, 132, 166, .28);
+  --layer-modal: 100;
 }
 
 * { box-sizing: border-box; }

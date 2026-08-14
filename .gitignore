@@ -40,5 +40,7 @@ next-env.d.ts
 /dist/
 /.wrangler/
 /outputs/
+/harness/evidence/*.json
+/harness/reports/*.json
 /work/
 tsconfig.tsbuildinfo

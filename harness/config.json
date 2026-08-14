@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "phase": "phase-one-governed-rag",
+  "excludedCapabilities": [
+    "professional-vector-database",
+    "controlled-agentic-rag",
+    "oa-hr-approval-connectors",
+    "risk-tiered-agent-execution",
+    "full-promptops-ui"
+  ],
+  "profiles": {
+    "quick": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "diff-check"],
+    "ci": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "diff-check"],
+    "release": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "release-state", "deploy-dry-run", "diff-check"]
+  },
+  "maintainability": {
+    "defaultMaxLines": 700,
+    "grandfatheredMaxLines": {
+      "app/page.tsx": 4750,
+      "app/api/enterprise/route.ts": 1510
+    }
+  },
+  "release": {
+    "config": "wrangler.production.jsonc",
+    "requiredDomains": ["zhiyu-kb.xyz", "www.zhiyu-kb.xyz"],
+    "requiredBindings": ["DB"],
+    "forbiddenTrackedPaths": [".dev.vars", ".env", ".env.local", ".env.production"],
+    "forbiddenTrackedPrefixes": [".local-backups/", "demo-files/"]
+  }
+}

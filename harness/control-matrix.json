@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "rule": "A control is complete only at its declared evidence level; weaker evidence must not be substituted.",
+  "domains": {
+    "product-scope": [{"id":"phase-boundary","owner":"product","gate":"guardrails","evidence":"source"}],
+    "workflow-integrity": [{"id":"multi-role-workflow","owner":"product-engineering","gate":"acceptance","evidence":"runtime"}],
+    "frontend-ux": [
+      {"id":"frontend-static-quality","owner":"frontend","gate":"frontend-quality","evidence":"automated"},
+      {"id":"visual-desktop","owner":"frontend","gate":"acceptance","evidence":"runtime"},
+      {"id":"visual-mobile","owner":"frontend","gate":"acceptance","evidence":"runtime"},
+      {"id":"accessibility-keyboard","owner":"frontend","gate":"acceptance","evidence":"runtime"}
+    ],
+    "api-contract": [{"id":"api-errors-and-request-id","owner":"backend","gate":"tests","evidence":"automated"}],
+    "data-lifecycle": [{"id":"migration-and-recovery","owner":"data","gate":"acceptance","evidence":"runtime"}],
+    "permissions-security": [{"id":"permission-negative","owner":"security","gate":"acceptance","evidence":"runtime"}],
+    "privacy-compliance": [{"id":"sensitive-data-handling","owner":"security","gate":"acceptance","evidence":"runtime"}],
+    "ai-rag-quality": [{"id":"rag-quality","owner":"ai","gate":"acceptance","evidence":"runtime"}],
+    "file-ingestion": [{"id":"file-and-ocr","owner":"knowledge-operations","gate":"acceptance","evidence":"runtime"}],
+    "background-jobs": [{"id":"scheduled-real-trigger","owner":"operations","gate":"acceptance","evidence":"runtime"}],
+    "notifications-integrations": [{"id":"notification-retry","owner":"operations","gate":"acceptance","evidence":"runtime"}],
+    "performance-capacity": [{"id":"performance-budget","owner":"engineering","gate":"acceptance","evidence":"runtime"}],
+    "reliability-recovery": [{"id":"failure-and-restore-drill","owner":"operations","gate":"acceptance","evidence":"runtime"}],
+    "observability-operations": [{"id":"monitoring-and-alerting","owner":"operations","gate":"acceptance","evidence":"runtime"}],
+    "supply-chain-secrets": [{"id":"release-artifact-security","owner":"security","gate":"release-state","evidence":"automated"}],
+    "cost-governance": [{"id":"cost-and-quota","owner":"operations","gate":"acceptance","evidence":"runtime"}],
+    "delivery-release": [{"id":"production-smoke-rollback","owner":"release","gate":"acceptance","evidence":"production"}],
+    "maintainability": [{"id":"complexity-budget","owner":"engineering","gate":"maintainability","evidence":"automated"}],
+    "documentation-handoff": [{"id":"handoff-traceability","owner":"delivery","gate":"acceptance","evidence":"source"}]
+  }
+}

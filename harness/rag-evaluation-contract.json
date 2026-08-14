@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "dataPolicy": "Cases and business data must be created through authenticated product surfaces; this contract must not contain expected enterprise answers.",
+  "requiredCategories": [
+    "exact", "paraphrase", "typo", "abbreviation", "multi_turn_scope_change",
+    "table", "ocr", "version_isolation", "conflict", "no_evidence",
+    "permission_denial", "sensitive_content", "model_degradation", "embedding_degradation"
+  ],
+  "requiredMetrics": [
+    "recall_at_k", "ndcg_at_k", "citation_precision", "claim_support_rate",
+    "refusal_accuracy", "permission_leakage_rate", "critical_number_error_rate",
+    "p50_latency_ms", "p95_latency_ms", "estimated_cost", "vector_coverage_rate"
+  ],
+  "blockingGates": {
+    "permission_leakage_rate": { "max": 0 },
+    "critical_number_error_rate": { "max": 0 },
+    "citation_precision": { "min": 0.95 },
+    "claim_support_rate": { "min": 0.95 },
+    "refusal_accuracy": { "min": 0.9 }
+  }
+}

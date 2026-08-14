@@ -10,7 +10,17 @@
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
     "test": "npm run build && node --test tests/*.test.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test:guardrails": "node --test tests/engineering-guardrails.test.mjs",
+    "harness:quick": "node scripts/harness.mjs quick",
+    "harness:ci": "node scripts/harness.mjs ci",
+    "harness:release": "node scripts/harness.mjs release",
+    "harness:acceptance": "node scripts/validate-acceptance-evidence.mjs",
+    "check:migrations": "node scripts/check-migrations.mjs",
+    "check:rag-eval": "node scripts/check-rag-evaluation-contract.mjs",
+    "check:maintainability": "node scripts/check-maintainability.mjs",
+    "check:controls": "node scripts/check-control-matrix.mjs",
+    "check:frontend": "node scripts/check-frontend-quality.mjs",
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern outputs --ignore-pattern .wrangler",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {

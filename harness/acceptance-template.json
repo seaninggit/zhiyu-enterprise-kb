@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "environment": "isolated-local",
+  "commit": "REPLACE_WITH_TESTED_COMMIT",
+  "createdAt": "REPLACE_WITH_ISO_TIMESTAMP",
+  "checks": [
+    { "id": "multi-role-workflow", "status": "pending", "evidence": [] },
+    { "id": "permission-negative", "status": "pending", "evidence": [] },
+    { "id": "rag-quality", "status": "pending", "evidence": [] },
+    { "id": "file-and-ocr", "status": "pending", "evidence": [] },
+    { "id": "notification-retry", "status": "pending", "evidence": [] },
+    { "id": "scheduled-real-trigger", "status": "pending", "evidence": [] },
+    { "id": "migration-and-recovery", "status": "pending", "evidence": [] },
+    { "id": "visual-desktop", "status": "pending", "evidence": [] },
+    { "id": "visual-mobile", "status": "pending", "evidence": [] },
+    { "id": "accessibility-keyboard", "status": "pending", "evidence": [] },
+    { "id": "sensitive-data-handling", "status": "pending", "evidence": [] },
+    { "id": "performance-budget", "status": "pending", "evidence": [] },
+    { "id": "failure-and-restore-drill", "status": "pending", "evidence": [] },
+    { "id": "monitoring-and-alerting", "status": "pending", "evidence": [] },
+    { "id": "cost-and-quota", "status": "pending", "evidence": [] },
+    { "id": "production-smoke-rollback", "status": "pending", "evidence": [] },
+    { "id": "handoff-traceability", "status": "pending", "evidence": [] }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "standardViewports": [
+    {"name":"desktop","width":1440,"height":900},
+    {"name":"laptop","width":1280,"height":800},
+    {"name":"tablet","width":768,"height":1024},
+    {"name":"mobile","width":390,"height":844}
+  ],
+  "requiredTokens": ["--font-xs","--font-sm","--font-md","--space-1","--space-2","--radius-sm","--radius-md","--focus-ring","--layer-modal"],
+  "standards": {"bodyFontMinPx":12,"controlFontMinPx":12,"interactiveTargetMinPx":32,"textContrastMin":4.5,"largeTextContrastMin":3,"zoomPercent":200},
+  "legacyDebtCeilings": {"fontBelow12":343,"fontBelow8":31,"hardcodedHexColors":968,"zIndexDeclarations":22,"importantDeclarations":16},
+  "requiredStates": ["default","hover","focus-visible","disabled","loading","empty","error","permission-denied","degraded"],
+  "runtimeChecks": ["no-overlap","no-clipping","no-horizontal-scroll","long-text","keyboard-only","screen-reader-name","contrast","zoom-200","reduced-motion"]
+}

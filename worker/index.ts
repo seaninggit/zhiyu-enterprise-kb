@@ -1,6 +1,8 @@
 /** Cloudflare Worker entry point for Zhiyu Enterprise Knowledge Hub. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { parseExpiryGovernanceConfig } from "../lib/expiry-governance";
+import { runGovernanceAgent } from "../lib/governance-agent";
 
 interface Env {
   ASSETS: Fetcher;
@@ -55,17 +57,19 @@ function isCronDue(expression:string,date:Date){const [minute,hour,day,month,wee
 
 async function runScheduled(scheduledTime: number, env: Env) {
   const db = env.DB;
-  const now = new Date().toISOString().slice(0, 19).replace("T", " ");
   const rid = `cron-${Date.now()}`;
   const runTs = new Date().toISOString();
 
-  const tasks = await db.prepare("SELECT code,cron_expr FROM scheduled_tasks WHERE enabled=1").all<{code:string;cron_expr:string}>();
+  const tasks = await db.prepare("SELECT code,cron_expr,config_json,config_version FROM scheduled_tasks WHERE enabled=1").all<{code:string;cron_expr:string;config_json:string;config_version:number}>();
   const beijingTime=new Date(scheduledTime+8*60*60*1000);
-  const enabled = new Set(tasks.results.filter(task=>isCronDue(task.cron_expr,beijingTime)).map(t => t.code));
-  if(!enabled.size)return;
+  const dueTasks = new Map(tasks.results.filter(task=>isCronDue(task.cron_expr,beijingTime)).map(task => [task.code,task]));
+  if(!dueTasks.size)return;
 
-  let archived = 0, duplicates = 0, corrections = 0, reminded = 0;
+  // 到期治理任务改由 Agent 工具创建，此处不再由定时器直接计数
+  const expiryTasks = 0;
+  let duplicates = 0, corrections = 0, reminded = 0;
   const alerts: string[] = [];
+  const agentRuns: string[] = [];
   const runTask=async(code:string,operation:()=>Promise<string>)=>{
     const created=await db.prepare("INSERT INTO scheduled_task_runs(task_code,status,request_id) VALUES(?,'RUNNING',?)").bind(code,rid).run();
     const runId=Number(created.meta.last_row_id);
@@ -73,27 +77,23 @@ async function runScheduled(scheduledTime: number, env: Env) {
     catch(error){const detail=error instanceof Error?error.message:"任务执行失败";await db.prepare("UPDATE scheduled_task_runs SET status='FAILED',detail=?,finished_at=CURRENT_TIMESTAMP WHERE id=?").bind(detail,runId).run();await db.prepare("INSERT INTO audit_logs(dept_id,action,actor_user_id,actor,detail,request_id) VALUES(1,'CRON_TASK_FAILED',1,'系统',?,?)").bind(`${code}：${detail}`,rid).run();}
   };
 
-  if (enabled.has("archive_expired")) {
+  if (dueTasks.has("archive_expired")) {
     await runTask("archive_expired",async()=>{
-    // 查高频引用：过去30天被AI引用的文档
-    const cited = await db.prepare("SELECT source_document_ids FROM ai_query_logs WHERE create_time > date('now','-30 days')").all<{source_document_ids:string}>();
-    const citeCounts: Record<number,number> = {};
-    for (const row of cited.results) { try { const ids=JSON.parse(row.source_document_ids||"[]") as number[]; for(const id of ids) citeCounts[id]=(citeCounts[id]||0)+1; } catch {} }
-    // 作废前检查哪些是高频文档
-    const expiring = await db.prepare("SELECT id,title FROM documents WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' AND review_due_at < date('now')").all<{id:number;title:string}>();
-    const r = await db.prepare("UPDATE documents SET status='EXPIRED_VOID', update_time=? WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' AND review_due_at < date('now')").bind(now).run();
-    archived = r.meta.changes;
-    for (const doc of expiring.results) {
-      const cnt = citeCounts[doc.id] || 0;
-      if (cnt >= 10) alerts.push(`HIGH：《${doc.title}》已过期，过去30天被AI引用${cnt}次，建议尽快更新`);
-      else if (cnt >= 3) alerts.push(`MID：《${doc.title}》已过期，被引用${cnt}次`);
-    }
+    const task=dueTasks.get("archive_expired")!;
+    const expiryConfig=parseExpiryGovernanceConfig(task.config_json);
+    // 稳定触发键：同一天同一任务只产生一次 Agent 运行，重复触发由 run 表唯一约束去重
+    const triggerKey=`cron:${beijingTime.toISOString().slice(0,10)}`;
+    const result=await runGovernanceAgent(db,env as unknown as Record<string,unknown>,{definitionCode:"EXPIRY_GOVERNANCE_V1",triggerType:"SCHEDULED",triggerKey,requestId:rid,expiryConfig,expiryConfigVersion:task.config_version});
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='archive_expired'").bind(runTs).run();
-    return `作废 ${archived} 份；预警 ${alerts.length} 条`;
+    const summary=result.deduplicated
+      ? `重复触发已跳过：同触发键已有运行 #${result.runId}（${result.status}）`
+      : `Agent 运行 #${result.runId}：${result.status}${result.stopReason?`（${result.stopReason}）`:""}，工具调用 ${result.toolCalls} 次`;
+    agentRuns.push(summary);
+    return summary;
     });
   }
 
-  if (enabled.has("detect_duplicates")) {
+  if (dueTasks.has("detect_duplicates")) {
     await runTask("detect_duplicates",async()=>{
     const titles = await db.prepare("SELECT id,title,dept_id FROM documents WHERE is_deleted=0 AND status='ARCHIVED_ACTIVE' ORDER BY title").all<{id:number;title:string;dept_id:number}>();
     const seen = new Set<number>();
@@ -117,7 +117,7 @@ async function runScheduled(scheduledTime: number, env: Env) {
     });
   }
 
-  if (enabled.has("search_self_learn")) {
+  if (dueTasks.has("search_self_learn")) {
     await runTask("search_self_learn",async()=>{
     const recentZeroSearches = await db.prepare("SELECT s.user_id,s.query,s.create_time FROM search_logs s WHERE s.result_count=0 AND s.create_time>date('now','-7 days') ORDER BY s.create_time").all<{user_id:number;query:string;create_time:string}>();
     for (const zero of recentZeroSearches.results) {
@@ -137,7 +137,7 @@ async function runScheduled(scheduledTime: number, env: Env) {
     });
   }
 
-  if (enabled.has("review_reminders")) {
+  if (dueTasks.has("review_reminders")) {
     await runTask("review_reminders",async()=>{
     const dueSoon = await db.prepare("SELECT d.id,d.title,d.owner_user_id FROM documents d WHERE d.is_deleted=0 AND d.status='ARCHIVED_ACTIVE' AND d.review_due_at BETWEEN date('now') AND date('now','+30 days')").all<{id:number;title:string;owner_user_id:number|null}>();
     for (const doc of dueSoon.results) {
@@ -150,14 +150,15 @@ async function runScheduled(scheduledTime: number, env: Env) {
   }
 
   // 巡检完成后推送汇总通知给管理员
-  if (archived > 0 || duplicates > 0 || alerts.length > 0) {
-    const lines = [`本次巡检：作废${archived}份，查重${duplicates}组，纠错${corrections}条，复核提醒${reminded}份`];
+  if (expiryTasks > 0 || duplicates > 0 || alerts.length > 0 || agentRuns.length > 0) {
+    const lines = [`本次巡检：到期治理任务${expiryTasks}项，查重${duplicates}组，纠错${corrections}条，复核提醒${reminded}份`];
     if (alerts.length > 0) { lines.push(""); lines.push("异常预警："); lines.push(...alerts); }
+    if (agentRuns.length > 0) { lines.push(""); lines.push("Agent 运行："); lines.push(...agentRuns); }
     await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(1,'GOVERNANCE','巡检报告',?)").bind(lines.join("\n")).run();
   }
 
   // 运营周报（每周一执行）
-  if (enabled.has("agent_weekly_report")) {
+  if (dueTasks.has("agent_weekly_report")) {
     await runTask("agent_weekly_report",async()=>{
     const [newDocs, searches, zeroResults, feedbacks] = await Promise.all([
       db.prepare("SELECT COUNT(*) cnt FROM documents WHERE is_deleted=0 AND create_time > date('now','-7 days')").first<{cnt:number}>(),
@@ -174,7 +175,7 @@ async function runScheduled(scheduledTime: number, env: Env) {
       `AI 回答负面反馈：${feedbacks?.cnt||0} 条`,
       `治理待办：${openTasks?.cnt||0} 项`,
       "",
-      `自动处理：作废过期 ${archived} 份，查重 ${duplicates} 组，纠错 ${corrections} 条`,
+      `自动处理：创建到期治理任务 ${expiryTasks} 项，查重 ${duplicates} 组，纠错 ${corrections} 条，到期治理 Agent 运行 ${agentRuns.length} 次`,
     ];
     await db.prepare("INSERT INTO notifications(user_id, type, title, content) VALUES(1,'GOVERNANCE','运营周报',?)").bind(report.join("\n")).run();
     await db.prepare("UPDATE scheduled_tasks SET last_run_at=? WHERE code='agent_weekly_report'").bind(runTs).run();
@@ -182,5 +183,5 @@ async function runScheduled(scheduledTime: number, env: Env) {
     });
   }
 
-  await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(1,'CRON_GOVERNANCE',1,'系统',?,?)").bind(`巡检：作废${archived} 查重${duplicates} 纠错${corrections} 提醒${reminded}`, rid).run();
+  await db.prepare("INSERT INTO audit_logs(dept_id, action, actor_user_id, actor, detail, request_id) VALUES(1,'CRON_GOVERNANCE',1,'系统',?,?)").bind(`巡检：到期治理任务${expiryTasks} 查重${duplicates} 纠错${corrections} 提醒${reminded}`, rid).run();
 }

@@ -25,6 +25,11 @@
     "cost-governance": [{"id":"cost-and-quota","owner":"operations","gate":"acceptance","evidence":"runtime"}],
     "delivery-release": [{"id":"production-smoke-rollback","owner":"release","gate":"acceptance","evidence":"production"}],
     "maintainability": [{"id":"complexity-budget","owner":"engineering","gate":"maintainability","evidence":"automated"}],
-    "documentation-handoff": [{"id":"handoff-traceability","owner":"delivery","gate":"acceptance","evidence":"source"}]
+    "documentation-handoff": [{"id":"handoff-traceability","owner":"delivery","gate":"acceptance","evidence":"source"}],
+    "agent-governance": [
+      {"id":"agent-architecture-negative","owner":"engineering","gate":"agent-architecture","evidence":"automated"},
+      {"id":"agent-pause-confirmation-recovery","owner":"product-engineering","gate":"acceptance","evidence":"runtime"},
+      {"id":"agent-persist-steps-tokens-cost","owner":"engineering","gate":"acceptance","evidence":"runtime"}
+    ]
   }
 }

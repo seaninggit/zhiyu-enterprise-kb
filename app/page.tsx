@@ -7,6 +7,8 @@ import {
   extractKnowledgeFile,
   type ExtractionProgress,
 } from "../lib/client-knowledge";
+import ExpiryGovernanceSettings, { type ExpiryGovernanceFormValue } from "./ExpiryGovernanceSettings";
+import AgentRunsPanel from "./AgentRunsPanel";
 
 if (typeof window !== "undefined") {
   const originalFetch = window.fetch.bind(window);
@@ -2896,21 +2898,25 @@ function EnterprisePanels({
 }
 
 function SettingsView({ role, notify }: { role: string; notify: (m: string) => void }) {
-  type ScheduledTaskItem={id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string;last_status?:string|null;last_detail?:string|null};
+  type ScheduledTaskItem={id:number;code:string;name:string;description:string;enabled:number;last_run_at:string|null;cron_expr:string;last_status?:string|null;last_detail?:string|null;expiry_config?:ExpiryGovernanceFormValue};
   type DeliveryItem={id:number;event_type:string;recipient:string;status:string;attempt:number;error_message:string;document_title?:string|null;update_time:string};
   type TaskRunItem={id:number;task_code:string;status:string;detail:string;started_at:string;finished_at?:string|null};
+  type DepartmentOption={id:number;name:string};
   const [tasks, setTasks] = useState<ScheduledTaskItem[]>([]);
   const [deliveries,setDeliveries]=useState<DeliveryItem[]>([]);
   const [taskRuns,setTaskRuns]=useState<TaskRunItem[]>([]);
+  const [workflowDepartments,setWorkflowDepartments]=useState<DepartmentOption[]>([]);
   const [retryingDelivery,setRetryingDelivery]=useState<number|null>(null);
   const [aiSettings,setAiSettings]=useState<Record<string,string>>({});
   const [aiCapabilities,setAiCapabilities]=useState<Record<string,unknown>[]>([]);
   const [semanticProgress, setSemanticProgress] = useState("");
   const [modelTesting,setModelTesting]=useState<number|null>(null);
-  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok){setTasks(p.data.tasks||[]);setDeliveries(p.data.deliveries||[]);setTaskRuns(p.data.runs||[]);} } catch { } }
+  const [savingExpiry,setSavingExpiry]=useState(false);
+  async function loadTasks() { try { const r=await fetch("/api/admin/scheduled-tasks",{cache:"no-store"}); const p=await r.json(); if(r.ok){setTasks(p.data.tasks||[]);setDeliveries(p.data.deliveries||[]);setTaskRuns(p.data.runs||[]);setWorkflowDepartments(p.data.departments||[]);} } catch { } }
   async function loadSettings(){try{const r=await fetch("/api/platform",{cache:"no-store"});const p=await r.json();if(r.ok){setAiSettings(Object.fromEntries((p.data.settings??[]).map((item:Record<string,unknown>)=>[String(item.key),String(item.value)])));setAiCapabilities(p.data.aiCapabilities??[]);}}catch{}}
   async function toggleTask(id:number,enabled:boolean){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,enabled})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks()}catch(error){notify(error instanceof Error?error.message:"任务更新失败")}}
   async function updateTaskSchedule(id:number,cron_expr:string){try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,cron_expr})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"失败");await loadTasks();notify("执行频率已更新")}catch(error){notify(error instanceof Error?error.message:"执行频率更新失败")}}
+  async function saveExpiryConfig(id:number,expiryConfig:ExpiryGovernanceFormValue){if(savingExpiry)return;setSavingExpiry(true);try{const r=await fetch("/api/admin/scheduled-tasks",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({id,expiryConfig})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"保存失败");await loadTasks();notify("制度到期治理策略已保存")}catch(error){notify(error instanceof Error?error.message:"治理策略保存失败")}finally{setSavingExpiry(false)}}
   async function retryDelivery(id:number){if(retryingDelivery!==null)return;setRetryingDelivery(id);try{const r=await fetch("/api/admin/scheduled-tasks",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({action:"RETRY_NOTIFICATION",id})});const p=await r.json();if(!r.ok)throw new Error(p.error?.message??"重试失败");await loadTasks();notify(p.data.status==="SENT"?"邮件重试发送成功":`邮件仍未发送：${p.data.error||p.data.status}`)}catch(error){notify(error instanceof Error?error.message:"邮件重试失败")}finally{setRetryingDelivery(null)}}
   async function rebuildSemantic() {
     if (semanticProgress) return;
@@ -2938,6 +2944,7 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
   }
   async function testModel(serviceId:number){if(modelTesting!==null)return;setModelTesting(serviceId);try{const r=await fetch('/api/platform',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({action:'TEST_MODEL_ROUTE',serviceId})}),p=await r.json();if(!r.ok)throw new Error(p.error?.message||'连接失败');notify(`连接正常：${p.data.model} · ${p.data.latencyMs}ms`);}catch(e){notify(e instanceof Error?e.message:'连接失败')}finally{setModelTesting(null)}}
   useEffect(() => { const timer=window.setTimeout(()=>{void loadTasks();void loadSettings()},0);return()=>window.clearTimeout(timer) }, []);
+  const expiryTask=tasks.find(task=>task.code==="archive_expired"&&task.expiry_config);
   return (
     <main className="workspace">
       <section className="admin-heading">
@@ -2973,6 +2980,8 @@ function SettingsView({ role, notify }: { role: string; notify: (m: string) => v
             </div>
           </div>
         ))}
+        {expiryTask?.expiry_config&&<ExpiryGovernanceSettings value={expiryTask.expiry_config} departments={workflowDepartments} saving={savingExpiry} onSave={config=>saveExpiryConfig(expiryTask.id,config)}/>}
+        <AgentRunsPanel/>
       </section>
       <section className="platform-card wide-card" style={{marginBottom:18}}>
         <header><div><h2>通知投递</h2><p>站内通知不受邮件失败影响；邮件失败原因和重试次数在此留痕。</p></div></header>

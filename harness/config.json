@@ -1,17 +1,21 @@
 {
   "version": 1,
-  "phase": "phase-one-governed-rag",
+  "phase": "phase-one-governed-rag-and-controlled-agent-v1",
+  "allowedCapabilities": [
+    "governed-rag",
+    "controlled-agent-v1",
+    "expiry-governance-agent"
+  ],
   "excludedCapabilities": [
     "professional-vector-database",
-    "controlled-agentic-rag",
     "oa-hr-approval-connectors",
-    "risk-tiered-agent-execution",
+    "high-risk-autonomous-agent-actions",
     "full-promptops-ui"
   ],
   "profiles": {
-    "quick": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "diff-check"],
-    "ci": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "diff-check"],
-    "release": ["guardrails", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "release-state", "deploy-dry-run", "diff-check"]
+    "quick": ["guardrails", "product-scope", "agent-architecture", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "diff-check"],
+    "ci": ["guardrails", "product-scope", "agent-architecture", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "diff-check"],
+    "release": ["guardrails", "product-scope", "agent-architecture", "control-matrix", "frontend-quality", "migration-contract", "rag-evaluation-contract", "maintainability", "lint", "build", "tests", "release-state", "deploy-dry-run", "diff-check"]
   },
   "maintainability": {
     "defaultMaxLines": 700,

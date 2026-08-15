@@ -2,6 +2,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
+import { repositoryFiles } from "./project-files.mjs";
 
 const root = resolve(process.argv[2] || process.cwd());
 const failures = [];
@@ -13,7 +14,8 @@ const required = [
 ];
 for (const item of required) if (!existsSync(resolve(root, item))) failures.push(`missing required project path: ${item}`);
 
-const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
+const repository = repositoryFiles(root);
 for (const path of tracked) {
   if (path === ".dev.vars" || path.startsWith(".local-backups/") || path.startsWith("demo-files/")) failures.push(`excluded local artifact is tracked: ${path}`);
 }
@@ -30,7 +32,7 @@ if (!existsSync(resolve(root, "scripts/check-maintainability.mjs"))) failures.pu
 if (!existsSync(resolve(root, "scripts/check-control-matrix.mjs"))) failures.push("control matrix check is missing");
 if (!existsSync(resolve(root, "scripts/check-frontend-quality.mjs"))) failures.push("frontend quality check is missing");
 
-const productionFiles = tracked.filter(path => /^(app|lib|worker|db)\/.+\.(ts|tsx|js|mjs)$/.test(path));
+const productionFiles = repository.filter(path => /^(app|lib|worker|db)\/.+\.(ts|tsx|js|mjs)$/.test(path));
 const businessExamples = "北京|上海|广州|深圳|材料|报销|差旅";
 const inputName = "question|query|title|correctedQuestion|retrievalIntent";
 const directBusinessBranch = new RegExp(
@@ -51,4 +53,4 @@ if (failures.length) {
   console.error(failures.map(item => `- ${item}`).join("\n"));
   process.exit(1);
 }
-console.log(`Zhiyu repository guardrails passed (${tracked.length} tracked files checked).`);
+console.log(`Zhiyu repository guardrails passed (${repository.length} tracked and untracked files checked).`);

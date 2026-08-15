@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zhiyu-enterprise-kb-staging",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "rules": [
+    { "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }
+  ],
+  "assets": { "directory": "dist/client" },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zhiyu-kb-staging",
+      "database_id": "f4cb3f87-3d59-445f-ae99-abfaed1013d5",
+      "migrations_dir": "drizzle"
+    }
+  ],
+  "observability": { "enabled": true },
+  "triggers": { "crons": ["0 18 * * *"] }
+}

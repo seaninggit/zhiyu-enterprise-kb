@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { repositoryFiles } from "./project-files.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const config = JSON.parse(readFileSync(resolve(root, "harness/config.json"), "utf8")).maintainability;
-const files = execFileSync("git", ["ls-files", "app", "lib", "worker", "db"], { cwd: root, encoding: "utf8" })
-  .trim().split("\n").filter(file => /\.(?:ts|tsx|js|mjs)$/.test(file));
+const files = repositoryFiles(root, ["app", "lib", "worker", "db"])
+  .filter(file => /\.(?:ts|tsx|js|mjs)$/.test(file));
 const failures = [];
 const largest = [];
 for (const file of files) {

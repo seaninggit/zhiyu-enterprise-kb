@@ -21,7 +21,8 @@
     "check:controls": "node scripts/check-control-matrix.mjs",
     "check:frontend": "node scripts/check-frontend-quality.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next --ignore-pattern outputs --ignore-pattern .wrangler",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "agent-eval": "node scripts/agent-eval.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^3.8.1",
@@ -52,7 +53,7 @@
     "typescript": "5.9.3",
     "vinext": "0.0.50",
     "vite": "8.0.13",
-    "wrangler": "4.92.0"
+    "wrangler": "^4.123.0"
   },
   "type": "module"
 }

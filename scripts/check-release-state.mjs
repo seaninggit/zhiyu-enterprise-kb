@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const harness = JSON.parse(readFileSync(resolve(root, "harness/config.json"), "utf8"));
 const production = readFileSync(resolve(root, harness.release.config), "utf8");
-const tracked = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" }).split("\0").filter(Boolean);
 const failures = [];
 for (const path of harness.release.forbiddenTrackedPaths || [])
   if (tracked.includes(path)) failures.push(`forbidden release artifact is tracked: ${path}`);

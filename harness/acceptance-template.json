@@ -20,6 +20,8 @@
     { "id": "monitoring-and-alerting", "status": "pending", "evidence": [] },
     { "id": "cost-and-quota", "status": "pending", "evidence": [] },
     { "id": "production-smoke-rollback", "status": "pending", "evidence": [] },
-    { "id": "handoff-traceability", "status": "pending", "evidence": [] }
+    { "id": "handoff-traceability", "status": "pending", "evidence": [] },
+    { "id": "agent-pause-confirmation-recovery", "status": "pending", "evidence": [] },
+    { "id": "agent-persist-steps-tokens-cost", "status": "pending", "evidence": [] }
   ]
 }

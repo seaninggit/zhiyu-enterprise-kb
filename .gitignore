@@ -35,6 +35,10 @@ yarn-error.log*
 # vercel
 .vercel
 
+# local workspace artifacts, never commit
+/.local-backups/
+/demo-files/
+
 # typescript
 next-env.d.ts
 /dist/

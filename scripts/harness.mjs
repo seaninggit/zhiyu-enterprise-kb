@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { repositoryFiles } from "./project-files.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const profile = process.argv[2] || "quick";
@@ -12,6 +14,8 @@ if (!stepNames) throw new Error(`Unknown harness profile: ${profile}`);
 
 const commands = {
   guardrails: ["node", ["scripts/check-engineering-guardrails.mjs", "."]],
+  "product-scope": ["node", ["scripts/check-product-scope.mjs"]],
+  "agent-architecture": ["node", ["scripts/check-agent-architecture.mjs"]],
   "control-matrix": ["node", ["scripts/check-control-matrix.mjs"]],
   "frontend-quality": ["node", ["scripts/check-frontend-quality.mjs"]],
   "migration-contract": ["node", ["scripts/check-migrations.mjs"]],
@@ -26,9 +30,15 @@ const commands = {
 };
 
 const startedAt = new Date();
-const report = { schemaVersion: 1, profile, startedAt: startedAt.toISOString(), commit: "", branch: "", steps: [] };
+const report = { schemaVersion: 2, profile, startedAt: startedAt.toISOString(), commit: "", branch: "", worktreeFingerprint: "", worktreeStatus: [], steps: [] };
 report.commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
 report.branch = execFileSync("git", ["branch", "--show-current"], { cwd: root, encoding: "utf8" }).trim();
+report.worktreeStatus = execFileSync("git", ["-c", "core.quotepath=false", "status", "--short"], { cwd: root, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+const fingerprint = createHash("sha256");
+for (const file of repositoryFiles(root).sort()) {
+  fingerprint.update(file).update("\0").update(readFileSync(resolve(root, file))).update("\0");
+}
+report.worktreeFingerprint = fingerprint.digest("hex");
 
 let failed = false;
 for (const name of stepNames) {
